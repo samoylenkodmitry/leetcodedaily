@@ -21,10 +21,6 @@ jobs:
             runner: ubuntu-latest
             bin_name: leetcodedaily
             artifact_name: leetcodedaily-${{ github.ref_name }}-linux-x86_64.tar.gz
-          - label: macos-x86_64
-            runner: macos-13
-            bin_name: leetcodedaily
-            artifact_name: leetcodedaily-${{ github.ref_name }}-macos-x86_64.tar.gz
           - label: macos-aarch64
             runner: macos-14
             bin_name: leetcodedaily

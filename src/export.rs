@@ -110,15 +110,13 @@ fn compose_card(draft: &PostDraft) -> Result<RgbaImage> {
     let mut canvas = canvas.to_rgba8();
 
     let panel = BoxArea::new(104, 112, 1392, 660);
-    let left_code = BoxArea::new(panel.x + 54, panel.y + 80, 612, 374);
-    let right_code = BoxArea::new(panel.x + 726, panel.y + 80, 612, 374);
-    let tldr_box = BoxArea::new(panel.x + 54, panel.y + 486, 1284, 134);
+    let panel_padding = 56;
+    let code_gap = 24u32;
+    let tldr_height = 108u32;
+    let tldr_gap = 26u32;
 
     let mut overlay_layer = RgbaImage::new(CANVAS_WIDTH, CANVAS_HEIGHT);
     fill_rounded_box(&mut overlay_layer, panel, 46, rgba(5, 8, 14, 210));
-    fill_rounded_box(&mut overlay_layer, left_code, 28, rgba(16, 22, 34, 185));
-    fill_rounded_box(&mut overlay_layer, right_code, 28, rgba(16, 22, 34, 185));
-    fill_rounded_box(&mut overlay_layer, tldr_box, 28, rgba(19, 26, 40, 205));
     overlay(&mut canvas, &overlay_layer, 0, 0);
 
     let qr = tint_alpha(
@@ -132,70 +130,92 @@ fn compose_card(draft: &PostDraft) -> Result<RgbaImage> {
 
     let code_scale = PxScale::from(24.0);
     let label_scale = PxScale::from(28.0);
-    let badge_scale = PxScale::from(32.0);
     let tldr_scale = PxScale::from(30.0);
+    let inner_x = panel.x + panel_padding;
+    let inner_width = panel.width.saturating_sub((panel_padding * 2) as u32);
+    let code_top = panel.y + panel_padding;
+    let code_region_height = panel
+        .height
+        .saturating_sub((panel_padding * 2) as u32 + tldr_height + tldr_gap);
+    let code_blocks = visible_code_blocks(draft);
 
-    draw_code_panel(
-        &mut canvas,
-        &assets,
-        left_code,
-        "kotlin",
-        &draft.kotlin_runtime_ms,
-        &draft.kotlin_code,
-        code_scale,
-        label_scale,
-    );
-    draw_code_panel(
-        &mut canvas,
-        &assets,
-        right_code,
-        "rust",
-        &draft.rust_runtime_ms,
-        &draft.rust_code,
-        code_scale,
-        label_scale,
-    );
+    if code_blocks.len() == 1 {
+        let block_height = code_region_height.min(320).max(220);
+        let offset = code_region_height.saturating_sub(block_height) / 2;
+        let block = &code_blocks[0];
+        draw_code_panel(
+            &mut canvas,
+            &assets,
+            BoxArea::new(inner_x, code_top + offset as i32, inner_width, block_height),
+            block.language,
+            block.runtime_ms,
+            block.code,
+            code_scale,
+            label_scale,
+        );
+    } else {
+        let block_height = code_region_height.saturating_sub(code_gap) / 2;
+        for (index, block) in code_blocks.iter().enumerate() {
+            let y = code_top + index as i32 * (block_height as i32 + code_gap as i32);
+            draw_code_panel(
+                &mut canvas,
+                &assets,
+                BoxArea::new(inner_x, y, inner_width, block_height),
+                block.language,
+                block.runtime_ms,
+                block.code,
+                code_scale,
+                label_scale,
+            );
+        }
+    }
 
-    let badge_color = rgba(169, 255, 232, 255);
-    let body_color = rgba(246, 249, 252, 255);
-    let accent_color = rgba(255, 180, 78, 255);
-
-    draw_text_mut(
-        &mut canvas,
-        badge_color,
-        tldr_box.x + 28,
-        tldr_box.y + 22,
-        badge_scale,
-        &assets.sans_font,
-        &draft.preview_badge(),
-    );
+    let tldr_y = panel.y + panel.height as i32 - panel_padding - tldr_height as i32;
+    let body_color = rgba(170, 176, 187, 255);
     draw_wrapped_lines(
         &mut canvas,
         body_color,
-        tldr_box.x + 28,
-        tldr_box.y + 66,
-        tldr_box.width.saturating_sub(56),
+        inner_x,
+        tldr_y,
+        inner_width,
         tldr_scale,
         &assets.sans_font,
         &wrap_paragraph(
             &draft.preview_tldr(),
             &assets.sans_font,
             tldr_scale,
-            tldr_box.width.saturating_sub(56),
+            inner_width,
         ),
         40,
     );
-    draw_text_mut(
-        &mut canvas,
-        accent_color,
-        panel.x + 54,
-        panel.y + 34,
-        PxScale::from(38.0),
-        &assets.sans_font,
-        &draft.preview_title(),
-    );
 
     Ok(canvas)
+}
+
+fn visible_code_blocks<'a>(draft: &'a PostDraft) -> Vec<CodeBlock<'a>> {
+    let mut blocks = Vec::new();
+    if !draft.kotlin_code.trim().is_empty() {
+        blocks.push(CodeBlock {
+            language: "kotlin",
+            runtime_ms: &draft.kotlin_runtime_ms,
+            code: &draft.kotlin_code,
+        });
+    }
+    if !draft.rust_code.trim().is_empty() {
+        blocks.push(CodeBlock {
+            language: "rust",
+            runtime_ms: &draft.rust_runtime_ms,
+            code: &draft.rust_code,
+        });
+    }
+    if blocks.is_empty() {
+        blocks.push(CodeBlock {
+            language: "kotlin",
+            runtime_ms: &draft.kotlin_runtime_ms,
+            code: &draft.kotlin_code,
+        });
+    }
+    blocks
 }
 
 fn draw_code_panel(
@@ -411,6 +431,12 @@ fn runtime_label(value: &str) -> String {
     } else {
         format!("{trimmed}ms")
     }
+}
+
+struct CodeBlock<'a> {
+    language: &'static str,
+    runtime_ms: &'a str,
+    code: &'a str,
 }
 
 #[cfg(not(target_arch = "wasm32"))]

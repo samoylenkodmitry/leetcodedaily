@@ -21,6 +21,14 @@ const WEB_SURFACE_MAX_DIM: u32 = 1900;
 #[cfg(target_arch = "wasm32")]
 const WEB_CANVAS_MARGIN: f64 = 48.0;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EditorTab {
+    Output,
+    Meta,
+    Writeup,
+    Code,
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run() {
     launcher_with_size(APP_WIDTH, APP_HEIGHT).run(App);
@@ -94,6 +102,7 @@ fn clamp_web_dimension(target: u32, viewport: f64, device_pixel_ratio: f64) -> u
 fn App() {
     let scroll_state = remember(|| ScrollState::new(0.0)).with(|state| state.clone());
     let fields = remember(EditorFields::default).with(|fields| fields.clone());
+    let active_tab = useState(|| EditorTab::Output);
     let boot = remember({
         let fields = fields.clone();
         move || match generate_preview(&PostDraft::from_fields(&fields)) {
@@ -118,12 +127,13 @@ fn App() {
     });
 
     let markdown_preview = PostDraft::from_fields(&fields).markdown();
+    let current_tab = active_tab.value();
 
     Column(
         Modifier::empty()
             .fill_max_size()
             .background(ui_surface())
-            .vertical_scroll(scroll_state, false)
+            .vertical_scroll(scroll_state.clone(), false)
             .padding(28.0),
         ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(22.0)),
         {
@@ -131,16 +141,94 @@ fn App() {
             let status = status.clone();
             let preview_state = preview_state.clone();
             let markdown_preview = markdown_preview.clone();
+            let active_tab = active_tab.clone();
+            let scroll_state = scroll_state.clone();
             move || {
                 ActionsCard(fields.clone(), status.clone(), preview_state.clone());
-                PreviewCard(preview_state.clone());
-                MarkdownCard(markdown_preview.clone());
-                ProblemMetaCard(fields.clone());
-                WriteupCard(fields.clone());
-                CodeCard(fields.clone());
+                section_card({
+                    let active_tab = active_tab.clone();
+                    let scroll_state = scroll_state.clone();
+                    move || {
+                        Row(
+                            Modifier::empty().fill_max_width(),
+                            RowSpec::default()
+                                .horizontal_arrangement(LinearArrangement::spaced_by(12.0)),
+                            {
+                                let active_tab = active_tab.clone();
+                                let scroll_state = scroll_state.clone();
+                                move || {
+                                    tab_button(
+                                        "Output",
+                                        active_tab.value() == EditorTab::Output,
+                                        {
+                                            let active_tab = active_tab.clone();
+                                            let scroll_state = scroll_state.clone();
+                                            move || {
+                                                active_tab.set(EditorTab::Output);
+                                                scroll_state.scroll_to(0.0);
+                                            }
+                                        },
+                                    );
+                                    tab_button("Meta", active_tab.value() == EditorTab::Meta, {
+                                        let active_tab = active_tab.clone();
+                                        let scroll_state = scroll_state.clone();
+                                        move || {
+                                            active_tab.set(EditorTab::Meta);
+                                            scroll_state.scroll_to(0.0);
+                                        }
+                                    });
+                                    tab_button(
+                                        "Writeup",
+                                        active_tab.value() == EditorTab::Writeup,
+                                        {
+                                            let active_tab = active_tab.clone();
+                                            let scroll_state = scroll_state.clone();
+                                            move || {
+                                                active_tab.set(EditorTab::Writeup);
+                                                scroll_state.scroll_to(0.0);
+                                            }
+                                        },
+                                    );
+                                    tab_button("Code", active_tab.value() == EditorTab::Code, {
+                                        let active_tab = active_tab.clone();
+                                        let scroll_state = scroll_state.clone();
+                                        move || {
+                                            active_tab.set(EditorTab::Code);
+                                            scroll_state.scroll_to(0.0);
+                                        }
+                                    });
+                                }
+                            },
+                        );
+                    }
+                });
+                ActiveTabContent(
+                    current_tab,
+                    fields.clone(),
+                    preview_state.clone(),
+                    markdown_preview.clone(),
+                );
             }
         },
     );
+}
+
+#[composable]
+fn ActiveTabContent(
+    active_tab: EditorTab,
+    fields: EditorFields,
+    preview_state: MutableState<PreviewState>,
+    markdown_preview: String,
+) {
+    match active_tab {
+        EditorTab::Output => {
+            PreviewCard(preview_state);
+            MarkdownCard(markdown_preview);
+        }
+        EditorTab::Meta => ProblemMetaCard(fields),
+        EditorTab::Writeup => WriteupCard(fields),
+        EditorTab::Code => CodeCard(fields),
+    }
 }
 
 #[composable]
@@ -390,8 +478,8 @@ fn WriteupCard(fields: EditorFields) {
 
                         Text("Writeup", Modifier::empty(), heading_style(28.0));
                         labeled_field("Problem TLDR", problem_tldr, 3, 6);
-                        labeled_field("Intuition", intuition, 5, 10);
-                        labeled_field("Approach", approach, 5, 10);
+                        labeled_field("Intuition", intuition, 6, 14);
+                        labeled_field("Approach", approach, 6, 14);
                         labeled_field("Time Complexity Inner Value", time_complexity, 1, 2);
                         labeled_field("Space Complexity Inner Value", space_complexity, 1, 2);
                     }
@@ -419,9 +507,9 @@ fn CodeCard(fields: EditorFields) {
 
                         Text("Code Blocks", Modifier::empty(), heading_style(28.0));
                         labeled_field("Kotlin Runtime (ms)", kotlin_runtime_ms, 1, 1);
-                        labeled_field("Kotlin Code", kotlin_code, 10, 18);
+                        labeled_code_field("Kotlin Code", kotlin_code, 10, 18);
                         labeled_field("Rust Runtime (ms)", rust_runtime_ms, 1, 1);
-                        labeled_field("Rust Code", rust_code, 10, 18);
+                        labeled_code_field("Rust Code", rust_code, 10, 18);
                     }
                 },
             );
@@ -463,6 +551,25 @@ fn primary_button(label: &'static str, on_click: impl FnMut() + 'static) {
 }
 
 #[composable]
+fn tab_button(label: &'static str, selected: bool, on_click: impl FnMut() + 'static) {
+    let background = if selected {
+        button_surface()
+    } else {
+        panel_surface()
+    };
+    Button(
+        Modifier::empty()
+            .background(background)
+            .rounded_corners(18.0)
+            .padding_symmetric(20.0, 14.0),
+        on_click,
+        move || {
+            Text(label, Modifier::empty(), tab_text_style(selected));
+        },
+    );
+}
+
+#[composable]
 fn labeled_field(label: &'static str, state: TextFieldState, min_lines: usize, max_lines: usize) {
     Column(
         Modifier::empty().fill_max_width(),
@@ -484,6 +591,50 @@ fn labeled_field(label: &'static str, state: TextFieldState, min_lines: usize, m
                         Modifier::empty().fill_max_width(),
                         BasicTextFieldOptions {
                             text_style: field_text_style(),
+                            cursor_color: Color::from_rgb_u8(255, 194, 85),
+                            line_limits: if min_lines == 1 && max_lines == 1 {
+                                TextFieldLineLimits::SingleLine
+                            } else {
+                                TextFieldLineLimits::MultiLine {
+                                    min_lines,
+                                    max_lines,
+                                }
+                            },
+                        },
+                    );
+                },
+            );
+        },
+    );
+}
+
+#[composable]
+fn labeled_code_field(
+    label: &'static str,
+    state: TextFieldState,
+    min_lines: usize,
+    max_lines: usize,
+) {
+    Column(
+        Modifier::empty().fill_max_width(),
+        ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(8.0)),
+        move || {
+            Text(label, Modifier::empty(), label_style());
+
+            let field_state = state.clone();
+            ComposeBox(
+                Modifier::empty()
+                    .fill_max_width()
+                    .background(panel_surface())
+                    .rounded_corners(18.0)
+                    .padding(14.0),
+                BoxSpec::default(),
+                move || {
+                    BasicTextFieldWithOptions(
+                        field_state.clone(),
+                        Modifier::empty().fill_max_width(),
+                        BasicTextFieldOptions {
+                            text_style: code_field_style(),
                             cursor_color: Color::from_rgb_u8(255, 194, 85),
                             line_limits: if min_lines == 1 && max_lines == 1 {
                                 TextFieldLineLimits::SingleLine
@@ -565,6 +716,17 @@ fn code_text_style(size: f32) -> TextStyle {
 }
 
 fn field_text_style() -> TextStyle {
+    TextStyle {
+        span_style: SpanStyle {
+            color: Some(Color::from_rgb_u8(232, 238, 245)),
+            font_size: cranpose::text::TextUnit::Sp(18.0),
+            ..SpanStyle::default()
+        },
+        paragraph_style: ParagraphStyle::default(),
+    }
+}
+
+fn code_field_style() -> TextStyle {
     code_text_style(18.0)
 }
 
@@ -586,6 +748,22 @@ fn button_text_style() -> TextStyle {
             color: Some(Color::from_rgb_u8(14, 18, 24)),
             font_size: cranpose::text::TextUnit::Sp(17.0),
             font_weight: Some(cranpose::text::FontWeight::BOLD),
+            ..SpanStyle::default()
+        },
+        paragraph_style: ParagraphStyle::default(),
+    }
+}
+
+fn tab_text_style(selected: bool) -> TextStyle {
+    TextStyle {
+        span_style: SpanStyle {
+            color: Some(if selected {
+                Color::from_rgb_u8(14, 18, 24)
+            } else {
+                Color::from_rgb_u8(215, 224, 233)
+            }),
+            font_size: cranpose::text::TextUnit::Sp(17.0),
+            font_weight: Some(cranpose::text::FontWeight::SEMI_BOLD),
             ..SpanStyle::default()
         },
         paragraph_style: ParagraphStyle::default(),

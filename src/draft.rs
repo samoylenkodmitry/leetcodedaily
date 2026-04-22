@@ -97,7 +97,7 @@ impl PostDraft {
             blog_post_url: trim_or(fields.blog_post_url.text(), ""),
             substack_url: trim_or(fields.substack_url.text(), ""),
             youtube_url: trim_or(fields.youtube_url.text(), ""),
-            reference_url: trim_or(fields.reference_url.text(), DEFAULT_REFERENCE_URL),
+            reference_url: trim_or(fields.reference_url.text(), ""),
             telegram_text: normalize_block(fields.telegram_text.text()),
             problem_tldr: normalize_block(fields.problem_tldr.text()),
             intuition: normalize_block(fields.intuition.text()),
@@ -112,48 +112,67 @@ impl PostDraft {
     }
 
     pub fn markdown(&self) -> String {
-        format!(
-            "# {date}\n{problem_line} {difficulty}\n[blog post]({blog_post_url})\n[substack]({substack_url})\n[youtube]({youtube_url})\n\n\n\n{reference_url}\n\n#### Join me on Telegram\n\n{telegram_text}\n\n#### Problem TLDR\n\n{problem_tldr}\n\n#### Intuition\n\n{intuition}\n\n#### Approach\n\n{approach}\n\n#### Complexity\n\n- Time complexity:\n$$O({time_complexity})$$\n\n- Space complexity:\n$$O({space_complexity})$$\n\n#### Code\n\n```kotlin [-Kotlin {kotlin_runtime_label}]\n{kotlin_code}\n```\n```rust [-Rust {rust_runtime_label}]\n{rust_code}\n```\n",
-            date = self.date_or_placeholder(),
-            problem_line = markdown_link(&self.problem_title, &self.problem_url),
-            difficulty = self.difficulty_or_placeholder(),
-            blog_post_url = self.blog_post_url,
-            substack_url = self.substack_url,
-            youtube_url = self.youtube_url,
-            reference_url = if self.reference_url.is_empty() {
-                DEFAULT_REFERENCE_URL.to_string()
-            } else {
-                self.reference_url.clone()
-            },
-            telegram_text = self.telegram_text,
-            problem_tldr = self.problem_tldr,
-            intuition = self.intuition,
-            approach = self.approach,
-            time_complexity = self.complexity_value(&self.time_complexity),
-            space_complexity = self.complexity_value(&self.space_complexity),
-            kotlin_runtime_label = runtime_label(&self.kotlin_runtime_ms),
-            kotlin_code = self.kotlin_code,
-            rust_runtime_label = runtime_label(&self.rust_runtime_ms),
-            rust_code = self.rust_code,
-        )
-    }
+        let mut lines = vec![format!("# {}", self.date_or_placeholder())];
 
-    pub fn preview_title(&self) -> String {
-        if self.problem_title.is_empty() {
-            "LeetCode Daily".to_string()
-        } else {
-            self.problem_title.clone()
+        let problem_line = self.problem_header_line();
+        if !problem_line.is_empty() {
+            lines.push(problem_line);
         }
-    }
 
-    pub fn preview_badge(&self) -> String {
-        let title = if self.problem_tldr.is_empty() {
-            self.preview_title()
-        } else {
-            self.problem_tldr.clone()
-        };
-        let difficulty = self.difficulty_or_placeholder();
-        format!("{title} #{difficulty}")
+        push_optional_link(&mut lines, "blog post", &self.blog_post_url);
+        push_optional_link(&mut lines, "substack", &self.substack_url);
+        push_optional_link(&mut lines, "youtube", &self.youtube_url);
+
+        lines.push(String::new());
+        if !self.reference_url.trim().is_empty() {
+            lines.push(self.reference_url.trim().to_string());
+            lines.push(String::new());
+        }
+
+        lines.push("#### Join me on Telegram".to_string());
+        lines.push(String::new());
+        lines.push(self.telegram_text.clone());
+        lines.push(String::new());
+        lines.push("#### Problem TLDR".to_string());
+        lines.push(String::new());
+        lines.push(self.problem_tldr.clone());
+        lines.push(String::new());
+        lines.push("#### Intuition".to_string());
+        lines.push(String::new());
+        lines.push(self.intuition.clone());
+        lines.push(String::new());
+        lines.push("#### Approach".to_string());
+        lines.push(String::new());
+        lines.push(self.approach.clone());
+        lines.push(String::new());
+        lines.push("#### Complexity".to_string());
+        lines.push(String::new());
+        lines.push("- Time complexity:".to_string());
+        lines.push(format!(
+            "$$O({})$$",
+            self.complexity_value(&self.time_complexity)
+        ));
+        lines.push(String::new());
+        lines.push("- Space complexity:".to_string());
+        lines.push(format!(
+            "$$O({})$$",
+            self.complexity_value(&self.space_complexity)
+        ));
+        lines.push(String::new());
+        lines.push("#### Code".to_string());
+        lines.push(String::new());
+        lines.push(format!(
+            "```kotlin [-Kotlin {}]\n{}\n```",
+            runtime_label(&self.kotlin_runtime_ms),
+            self.kotlin_code
+        ));
+        lines.push(format!(
+            "```rust [-Rust {}]\n{}\n```",
+            runtime_label(&self.rust_runtime_ms),
+            self.rust_code
+        ));
+
+        format!("{}\n", lines.join("\n"))
     }
 
     pub fn preview_tldr(&self) -> String {
@@ -201,6 +220,18 @@ impl PostDraft {
             value.trim().to_string()
         }
     }
+
+    fn problem_header_line(&self) -> String {
+        let title = self.problem_title.trim();
+        let difficulty = self.difficulty_or_placeholder();
+        if title.is_empty() {
+            difficulty
+        } else if self.problem_url.trim().is_empty() {
+            format!("{title} {difficulty}")
+        } else {
+            format!("{} {difficulty}", markdown_link(title, &self.problem_url))
+        }
+    }
 }
 
 fn trim_or(value: String, fallback: &str) -> String {
@@ -221,12 +252,13 @@ fn normalize_code(value: String) -> String {
 }
 
 fn markdown_link(label: &str, url: &str) -> String {
-    let safe_label = label.trim();
+    format!("[{}]({})", label.trim(), url.trim())
+}
+
+fn push_optional_link(lines: &mut Vec<String>, label: &str, url: &str) {
     let safe_url = url.trim();
-    if safe_label.is_empty() && safe_url.is_empty() {
-        "[]()".to_string()
-    } else {
-        format!("[{safe_label}]({safe_url})")
+    if !safe_url.is_empty() {
+        lines.push(format!("[{label}]({safe_url})"));
     }
 }
 
@@ -302,5 +334,38 @@ mod tests {
         assert!(markdown.contains("#### Problem TLDR"));
         assert!(markdown.contains("```kotlin [-Kotlin 28ms]"));
         assert!(markdown.contains("```rust [-Rust 1ms]"));
+        assert!(!markdown.contains("[blog post]()"));
+        assert!(!markdown.contains("[substack]()"));
+        assert!(!markdown.contains("[youtube]()"));
+    }
+
+    #[test]
+    fn markdown_skips_empty_urls_and_uses_plain_title_without_problem_link() {
+        let draft = PostDraft {
+            date: "05.10.2025".to_string(),
+            problem_title: "Words Within Two Edits of Dictionary".to_string(),
+            problem_url: String::new(),
+            difficulty: "medium".to_string(),
+            blog_post_url: String::new(),
+            substack_url: String::new(),
+            youtube_url: String::new(),
+            reference_url: String::new(),
+            telegram_text: String::new(),
+            problem_tldr: String::new(),
+            intuition: String::new(),
+            approach: String::new(),
+            time_complexity: String::new(),
+            space_complexity: String::new(),
+            kotlin_runtime_ms: String::new(),
+            kotlin_code: String::new(),
+            rust_runtime_ms: String::new(),
+            rust_code: String::new(),
+        };
+
+        let markdown = draft.markdown();
+
+        assert!(markdown.contains("Words Within Two Edits of Dictionary medium"));
+        assert!(!markdown.contains("[Words Within Two Edits of Dictionary]("));
+        assert!(!markdown.contains("https://dmitrysamoylenko.com/2023/07/14/leetcode_daily.html"));
     }
 }
