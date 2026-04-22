@@ -27,6 +27,12 @@ cargo run
 cargo build --target wasm32-unknown-unknown --release --lib
 ```
 
+## GitHub Pages
+
+The web build is deployed by GitHub Actions to:
+
+`https://samoylenkodmitry.github.io/leetcodedaily/`
+
 ## Test
 
 ```bash
