@@ -1,0 +1,16 @@
+[package]
+name = "leetcodedaily"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ab_glyph = "0.2.32"
+anyhow = "1.0.102"
+arboard = "3.6.1"
+chrono = "0.4.44"
+cranpose = "0.0.59"
+cranpose-core = "0.0.59"
+cranpose-foundation = "0.0.59"
+fontdb = "0.23.0"
+image = "0.25.10"
+imageproc = "0.26.1"

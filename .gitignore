@@ -1,0 +1,4 @@
+/target
+.codex
+output/*.png
+output/*.webp
