@@ -2,10 +2,10 @@ use crate::{assets, draft::PostDraft};
 use ab_glyph::{FontArc, PxScale};
 use anyhow::{Context, Result, anyhow};
 use cranpose::ImageBitmap;
-use image::imageops::{FilterType, overlay};
-use image::{DynamicImage, Rgba, RgbaImage};
 #[cfg(not(target_arch = "wasm32"))]
 use image::ImageFormat;
+use image::imageops::{FilterType, overlay};
+use image::{DynamicImage, Rgba, RgbaImage};
 use imageproc::drawing::{draw_filled_circle_mut, draw_filled_rect_mut, draw_text_mut, text_size};
 use imageproc::rect::Rect;
 #[cfg(not(target_arch = "wasm32"))]

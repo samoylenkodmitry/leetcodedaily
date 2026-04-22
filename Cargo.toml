@@ -23,3 +23,4 @@ cranpose = { version = "0.0.51", default-features = false, features = ["desktop"
 cranpose = { version = "0.0.51", default-features = false, features = ["web", "renderer-wgpu"] }
 wasm-bindgen = "0.2.118"
 wasm-bindgen-futures = "0.4.55"
+web-sys = { version = "0.3", features = ["Window"] }

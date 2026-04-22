@@ -3,10 +3,10 @@
 use crate::draft::{EditorFields, PostDraft};
 use crate::export::{PreviewState, generate_preview, save_webp};
 use anyhow::Result;
-#[cfg(not(target_arch = "wasm32"))]
-use arboard::Clipboard;
 #[cfg(target_arch = "wasm32")]
 use anyhow::anyhow;
+#[cfg(not(target_arch = "wasm32"))]
+use arboard::Clipboard;
 use cranpose::Box as ComposeBox;
 use cranpose::DEFAULT_ALPHA;
 use cranpose::prelude::*;
@@ -14,21 +14,80 @@ use cranpose::widgets::BasicTextFieldWithOptions;
 use cranpose_core::MutableState;
 use cranpose_foundation::text::{TextFieldLineLimits, TextFieldState};
 
+const APP_WIDTH: u32 = 1480;
+const APP_HEIGHT: u32 = 1560;
+#[cfg(any(test, target_arch = "wasm32"))]
+const WEB_SURFACE_MAX_DIM: u32 = 1900;
+#[cfg(target_arch = "wasm32")]
+const WEB_CANVAS_MARGIN: f64 = 48.0;
+
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run() {
-    launcher().run(App);
+    launcher_with_size(APP_WIDTH, APP_HEIGHT).run(App);
 }
 
 #[cfg(target_arch = "wasm32")]
 pub async fn run_web() -> Result<(), wasm_bindgen::JsValue> {
-    launcher().run_web("app-canvas", App).await
+    let (width, height) = web_canvas_size()?;
+    launcher_with_size(width, height)
+        .run_web("app-canvas", App)
+        .await
 }
 
-fn launcher() -> AppLauncher {
+fn launcher_with_size(width: u32, height: u32) -> AppLauncher {
     AppLauncher::new()
         .with_title("LeetCode Daily Composer")
-        .with_size(1480, 1560)
+        .with_size(width, height)
         .with_fonts(crate::assets::APP_FONTS)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn web_canvas_size() -> Result<(u32, u32), wasm_bindgen::JsValue> {
+    let window =
+        web_sys::window().ok_or_else(|| wasm_bindgen::JsValue::from_str("missing window"))?;
+    let viewport_width = js_number(&window.inner_width()?)? - WEB_CANVAS_MARGIN;
+    let viewport_height = js_number(&window.inner_height()?)? - WEB_CANVAS_MARGIN;
+    let device_pixel_ratio = window.device_pixel_ratio().max(1.0);
+    Ok(compute_web_canvas_size(
+        viewport_width,
+        viewport_height,
+        device_pixel_ratio,
+    ))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn js_number(value: &wasm_bindgen::JsValue) -> Result<f64, wasm_bindgen::JsValue> {
+    value
+        .as_f64()
+        .ok_or_else(|| wasm_bindgen::JsValue::from_str("expected numeric window dimension"))
+}
+
+#[cfg(any(test, target_arch = "wasm32"))]
+fn compute_web_canvas_size(
+    viewport_width: f64,
+    viewport_height: f64,
+    device_pixel_ratio: f64,
+) -> (u32, u32) {
+    let width = clamp_web_dimension(APP_WIDTH, viewport_width, device_pixel_ratio);
+    let height = clamp_web_dimension(APP_HEIGHT, viewport_height, device_pixel_ratio);
+    (width, height)
+}
+
+#[cfg(any(test, target_arch = "wasm32"))]
+fn clamp_web_dimension(target: u32, viewport: f64, device_pixel_ratio: f64) -> u32 {
+    let target = f64::from(target);
+    let viewport = if viewport.is_finite() {
+        viewport.max(1.0)
+    } else {
+        target
+    };
+    let dpr = if device_pixel_ratio.is_finite() {
+        device_pixel_ratio.max(1.0)
+    } else {
+        1.0
+    };
+    let max_logical = (f64::from(WEB_SURFACE_MAX_DIM) / dpr).floor().max(1.0);
+    target.min(viewport).min(max_logical).floor().max(1.0) as u32
 }
 
 #[composable]
@@ -547,4 +606,22 @@ fn panel_surface() -> Color {
 
 fn button_surface() -> Color {
     Color::from_rgb_u8(255, 194, 85)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{APP_HEIGHT, APP_WIDTH, WEB_SURFACE_MAX_DIM, compute_web_canvas_size};
+
+    #[test]
+    fn web_canvas_size_stays_under_surface_limit() {
+        let (width, height) = compute_web_canvas_size(APP_WIDTH as f64, APP_HEIGHT as f64, 1.5);
+        assert!((width as f64 * 1.5).ceil() <= WEB_SURFACE_MAX_DIM as f64);
+        assert!((height as f64 * 1.5).ceil() <= WEB_SURFACE_MAX_DIM as f64);
+    }
+
+    #[test]
+    fn web_canvas_size_respects_viewport() {
+        let (width, height) = compute_web_canvas_size(980.0, 740.0, 1.0);
+        assert_eq!((width, height), (980, 740));
+    }
 }
