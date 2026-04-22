@@ -1,0 +1,122 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-native:
+    name: Build ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux-x86_64
+            runner: ubuntu-latest
+            bin_name: leetcodedaily
+            artifact_name: leetcodedaily-${{ github.ref_name }}-linux-x86_64.tar.gz
+          - label: macos-x86_64
+            runner: macos-13
+            bin_name: leetcodedaily
+            artifact_name: leetcodedaily-${{ github.ref_name }}-macos-x86_64.tar.gz
+          - label: macos-aarch64
+            runner: macos-14
+            bin_name: leetcodedaily
+            artifact_name: leetcodedaily-${{ github.ref_name }}-macos-aarch64.tar.gz
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwayland-dev \
+            libx11-dev \
+            libx11-xcb-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Package binary
+        shell: bash
+        run: |
+          mkdir -p release-root
+          cp target/release/${{ matrix.bin_name }} release-root/
+          cp README.md release-root/
+          tar -czf ${{ matrix.artifact_name }} -C release-root .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.label }}
+          path: ${{ matrix.artifact_name }}
+
+  build-web:
+    name: Build web
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install wasm-bindgen CLI
+        run: cargo install wasm-bindgen-cli --version 0.2.118 --locked
+
+      - name: Build wasm bundle
+        run: |
+          cargo build --release --target wasm32-unknown-unknown --locked --lib
+          mkdir -p dist/web
+          wasm-bindgen \
+            --target web \
+            --out-dir dist/web \
+            target/wasm32-unknown-unknown/release/leetcodedaily.wasm
+          cp web/index.html dist/web/index.html
+
+      - name: Package web bundle
+        run: |
+          tar -czf leetcodedaily-${{ github.ref_name }}-web.tar.gz -C dist/web .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web
+          path: leetcodedaily-${{ github.ref_name }}-web.tar.gz
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs:
+      - build-native
+      - build-web
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true

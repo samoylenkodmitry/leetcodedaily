@@ -1,5 +1,6 @@
 use chrono::Local;
 use cranpose_foundation::text::TextFieldState;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 
 const DEFAULT_REFERENCE_URL: &str = "https://dmitrysamoylenko.com/2023/07/14/leetcode_daily.html";
@@ -163,6 +164,7 @@ impl PostDraft {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn suggested_export_path(&self) -> PathBuf {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let slug = slugify(if self.problem_title.is_empty() {

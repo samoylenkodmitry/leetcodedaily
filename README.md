@@ -1,6 +1,6 @@
 # LeetCode Daily Composer
 
-Desktop GUI app built with `cranpose 0.0.59` for assembling daily LeetCode post markdown and rendering a shareable code card image.
+Desktop and web app built with `cranpose 0.0.51` for assembling daily LeetCode post markdown and rendering a shareable code card image.
 
 ## What It Does
 
@@ -8,6 +8,7 @@ Desktop GUI app built with `cranpose 0.0.59` for assembling daily LeetCode post 
 - Copies the final markdown to the clipboard
 - Generates a preview image from the bundled background and QR assets
 - Saves the final image as WebP into `output/`
+- Includes a release workflow that publishes Linux, macOS, and web artifacts for each pushed git tag
 
 ## Assets
 
@@ -18,6 +19,12 @@ Desktop GUI app built with `cranpose 0.0.59` for assembling daily LeetCode post 
 
 ```bash
 cargo run
+```
+
+## Web Build
+
+```bash
+cargo build --target wasm32-unknown-unknown --release --lib
 ```
 
 ## Test

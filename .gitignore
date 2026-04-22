@@ -1,4 +1,5 @@
 /target
 .codex
+dist
 output/*.png
 output/*.webp

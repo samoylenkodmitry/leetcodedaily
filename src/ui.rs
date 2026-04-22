@@ -3,7 +3,10 @@
 use crate::draft::{EditorFields, PostDraft};
 use crate::export::{PreviewState, generate_preview, save_webp};
 use anyhow::Result;
+#[cfg(not(target_arch = "wasm32"))]
 use arboard::Clipboard;
+#[cfg(target_arch = "wasm32")]
+use anyhow::anyhow;
 use cranpose::Box as ComposeBox;
 use cranpose::DEFAULT_ALPHA;
 use cranpose::prelude::*;
@@ -11,11 +14,21 @@ use cranpose::widgets::BasicTextFieldWithOptions;
 use cranpose_core::MutableState;
 use cranpose_foundation::text::{TextFieldLineLimits, TextFieldState};
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn run() {
+    launcher().run(App);
+}
+
+#[cfg(target_arch = "wasm32")]
+pub async fn run_web() -> Result<(), wasm_bindgen::JsValue> {
+    launcher().run_web("app-canvas", App).await
+}
+
+fn launcher() -> AppLauncher {
     AppLauncher::new()
         .with_title("LeetCode Daily Composer")
         .with_size(1480, 1560)
-        .run(App);
+        .with_fonts(crate::assets::APP_FONTS)
 }
 
 #[composable]
@@ -430,9 +443,20 @@ fn labeled_field(label: &'static str, state: TextFieldState, min_lines: usize, m
 }
 
 fn copy_markdown(markdown: &str) -> Result<()> {
-    let mut clipboard = Clipboard::new()?;
-    clipboard.set_text(markdown.to_string())?;
-    Ok(())
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut clipboard = Clipboard::new()?;
+        clipboard.set_text(markdown.to_string())?;
+        return Ok(());
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = markdown;
+        Err(anyhow!(
+            "clipboard copy is not implemented in the web build yet"
+        ))
+    }
 }
 
 fn heading_style(size: f32) -> TextStyle {

@@ -1,14 +1,17 @@
-use crate::draft::PostDraft;
+use crate::{assets, draft::PostDraft};
 use ab_glyph::{FontArc, PxScale};
 use anyhow::{Context, Result, anyhow};
 use cranpose::ImageBitmap;
-use fontdb::{Database, Family, Query, Style, Weight};
 use image::imageops::{FilterType, overlay};
-use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
+use image::{DynamicImage, Rgba, RgbaImage};
+#[cfg(not(target_arch = "wasm32"))]
+use image::ImageFormat;
 use imageproc::drawing::{draw_filled_circle_mut, draw_filled_rect_mut, draw_text_mut, text_size};
 use imageproc::rect::Rect;
+#[cfg(not(target_arch = "wasm32"))]
 use std::fs;
-use std::path::{Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::PathBuf;
 
 const CANVAS_WIDTH: u32 = 1600;
 const CANVAS_HEIGHT: u32 = 900;
@@ -32,46 +35,70 @@ impl PreviewState {
 }
 
 pub fn generate_preview(draft: &PostDraft) -> Result<PreviewState> {
-    let output_dir = output_dir();
-    fs::create_dir_all(&output_dir).context("creating output directory")?;
-
     let rendered = compose_card(draft)?;
-    let preview_png_path = output_dir.join("preview-latest.png");
-    rendered
-        .save(&preview_png_path)
-        .with_context(|| format!("saving preview to {}", preview_png_path.display()))?;
-
     let bitmap = image_bitmap_from(&rendered)?;
 
-    Ok(PreviewState {
-        bitmap,
-        preview_png_path: preview_png_path.display().to_string(),
-        last_saved_webp_path: None,
-    })
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let output_dir = output_dir();
+        fs::create_dir_all(&output_dir).context("creating output directory")?;
+
+        let preview_png_path = output_dir.join("preview-latest.png");
+        rendered
+            .save(&preview_png_path)
+            .with_context(|| format!("saving preview to {}", preview_png_path.display()))?;
+
+        return Ok(PreviewState {
+            bitmap,
+            preview_png_path: preview_png_path.display().to_string(),
+            last_saved_webp_path: None,
+        });
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = rendered;
+        Ok(PreviewState {
+            bitmap,
+            preview_png_path: String::new(),
+            last_saved_webp_path: None,
+        })
+    }
 }
 
 pub fn save_webp(draft: &PostDraft) -> Result<PreviewState> {
-    let output_dir = output_dir();
-    fs::create_dir_all(&output_dir).context("creating output directory")?;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let output_dir = output_dir();
+        fs::create_dir_all(&output_dir).context("creating output directory")?;
 
-    let rendered = compose_card(draft)?;
-    let preview_png_path = output_dir.join("preview-latest.png");
-    rendered
-        .save(&preview_png_path)
-        .with_context(|| format!("saving preview to {}", preview_png_path.display()))?;
+        let rendered = compose_card(draft)?;
+        let preview_png_path = output_dir.join("preview-latest.png");
+        rendered
+            .save(&preview_png_path)
+            .with_context(|| format!("saving preview to {}", preview_png_path.display()))?;
 
-    let export_path = draft.suggested_export_path();
-    DynamicImage::ImageRgba8(rendered.clone())
-        .save_with_format(&export_path, ImageFormat::WebP)
-        .with_context(|| format!("saving WebP to {}", export_path.display()))?;
+        let export_path = draft.suggested_export_path();
+        DynamicImage::ImageRgba8(rendered.clone())
+            .save_with_format(&export_path, ImageFormat::WebP)
+            .with_context(|| format!("saving WebP to {}", export_path.display()))?;
 
-    let bitmap = image_bitmap_from(&rendered)?;
+        let bitmap = image_bitmap_from(&rendered)?;
 
-    Ok(PreviewState {
-        bitmap,
-        preview_png_path: preview_png_path.display().to_string(),
-        last_saved_webp_path: Some(export_path.display().to_string()),
-    })
+        return Ok(PreviewState {
+            bitmap,
+            preview_png_path: preview_png_path.display().to_string(),
+            last_saved_webp_path: Some(export_path.display().to_string()),
+        });
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = draft;
+        Err(anyhow!(
+            "WebP export is not implemented in the web build yet"
+        ))
+    }
 }
 
 fn compose_card(draft: &PostDraft) -> Result<RgbaImage> {
@@ -386,6 +413,7 @@ fn runtime_label(value: &str) -> String {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn output_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("output")
 }
@@ -419,56 +447,22 @@ struct AssetPack {
 impl AssetPack {
     fn load() -> Result<Self> {
         Ok(Self {
-            background: image::open(asset_path("assets/background.jpg"))
-                .context("loading background image")?,
-            qr: image::open(asset_path("assets/qr-overlay.png")).context("loading QR image")?,
-            mono_font: load_system_font(
-                &[
-                    Family::Name("DejaVu Sans Mono"),
-                    Family::Name("JetBrains Mono"),
-                    Family::Monospace,
-                ],
-                Weight::NORMAL,
-            )
-            .context("loading monospace font")?,
-            sans_font: load_system_font(
-                &[
-                    Family::Name("DejaVu Sans"),
-                    Family::Name("Arial"),
-                    Family::SansSerif,
-                ],
-                Weight::NORMAL,
-            )
-            .context("loading sans font")?,
+            background: image::load_from_memory(assets::BACKGROUND_JPG)
+                .context("loading background image from embedded bytes")?,
+            qr: image::load_from_memory(assets::QR_OVERLAY_PNG)
+                .context("loading QR image from embedded bytes")?,
+            mono_font: load_font(assets::DEJAVU_SANS_MONO_TTF)
+                .context("loading embedded monospace font")?,
+            sans_font: load_font(assets::DEJAVU_SANS_TTF).context("loading embedded sans font")?,
         })
     }
 }
 
-fn asset_path(relative: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
+fn load_font(bytes: &[u8]) -> Result<FontArc> {
+    FontArc::try_from_vec(bytes.to_vec()).map_err(|_| anyhow!("invalid font data"))
 }
 
-fn load_system_font(families: &[Family<'_>], weight: Weight) -> Result<FontArc> {
-    let mut db = Database::new();
-    db.load_system_fonts();
-    let query = Query {
-        families,
-        weight,
-        style: Style::Normal,
-        ..Query::default()
-    };
-
-    let font_id = db
-        .query(&query)
-        .ok_or_else(|| anyhow!("no matching system font found"))?;
-
-    db.with_face_data(font_id, |data, _index| {
-        FontArc::try_from_vec(data.to_vec()).map_err(|_| anyhow!("invalid font data"))
-    })
-    .ok_or_else(|| anyhow!("font face data unavailable"))?
-}
-
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::{generate_preview, save_webp};
     use crate::draft::PostDraft;
