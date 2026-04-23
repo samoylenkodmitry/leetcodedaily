@@ -33,7 +33,6 @@ const CODE_LABEL_GAP: i32 = 4;
 const CODE_HEADER_TO_BODY_GAP: i32 = 14;
 const CODE_BOTTOM_PADDING: i32 = 10;
 const MIN_CODE_GAP: u32 = 20;
-const MAX_EXTRA_CODE_GAP: u32 = 68;
 const TEXT_EMBOLDEN_X_OFFSETS: [i32; 2] = [0, 1];
 const TEXT_WIDTH_SAFETY: u32 = 10;
 
@@ -159,8 +158,7 @@ fn compose_card(draft: &PostDraft) -> Result<RgbaImage> {
         inner_width,
         code_region_height,
     );
-    let stack_offset = code_region_height.saturating_sub(code_group_layout.stack_height) / 2;
-    let mut current_y = code_top + stack_offset as i32;
+    let mut current_y = code_top + code_group_layout.top_offset as i32;
     for (index, (block, layout)) in code_blocks
         .iter()
         .zip(code_group_layout.blocks.iter())
@@ -253,7 +251,19 @@ fn draw_code_panel(
 
     let title = format!("// {language}");
     let runtime = format!("// {}", runtime_label(runtime_ms));
-    let text_x = area.x + CODE_SIDE_PADDING as i32;
+    let content_width = measured_code_text_width(&assets.mono_font, layout.label_scale, &title)
+        .max(measured_code_text_width(
+            &assets.mono_font,
+            layout.label_scale,
+            &runtime,
+        ))
+        .max(max_line_width(
+            &assets.mono_font,
+            layout.code_scale,
+            &layout.lines,
+        ));
+    let centered_offset = ((area.width.saturating_sub(content_width)) / 2) as i32;
+    let text_x = area.x + centered_offset.max(CODE_SIDE_PADDING as i32);
     let title_y = area.y + CODE_LABEL_TOP_PADDING;
     let runtime_y = title_y + layout.label_line_height + CODE_LABEL_GAP;
 
@@ -405,41 +415,25 @@ fn fit_code_group_layout(
             .zip(blocks.iter())
             .all(|(layout, block)| code_layout_fits(font, block, layout, content_width))
         {
-            let stack_height = code_stack_height(&layouts, height);
+            let plan = plan_code_group_layout(&layouts, height);
+            let stack_height = plan_stack_height(&layouts, plan.gap);
             if stack_height <= height {
                 return FittedCodeGroupLayout {
-                    gap: code_group_gap(&layouts, height),
-                    stack_height,
+                    gap: plan.gap,
+                    top_offset: plan.top_offset,
                     blocks: layouts,
                 };
             }
         }
 
-        last = Some((layouts, content_width, height));
+        last = Some(layouts);
     }
 
-    let (mut layouts, content_width, available_height) =
-        last.expect("code sizes must not be empty");
-    let gap = min_code_gap(layouts.len());
-    let total_gap = gap.saturating_mul(layouts.len().saturating_sub(1) as u32) as i32;
-    let shared_height =
-        ((available_height as i32 - total_gap).max(1) / layouts.len() as i32).max(1);
-    for layout in &mut layouts {
-        let available_code_height =
-            (shared_height - code_header_height(layout) as i32).max(layout.code_line_height);
-        let max_lines = (available_code_height / layout.code_line_height).max(1) as usize;
-        layout.lines = truncate_lines(layout.lines.clone(), max_lines);
-        while max_line_width(font, layout.code_scale, &layout.lines) > content_width
-            && layout.lines.len() > 1
-        {
-            let new_len = layout.lines.len().saturating_sub(1).max(1);
-            layout.lines = truncate_lines(layout.lines.clone(), new_len);
-        }
-    }
-    let stack_height = code_stack_height(&layouts, height);
+    let layouts = last.expect("code sizes must not be empty");
+    let plan = fallback_code_group_layout(&layouts, height);
     FittedCodeGroupLayout {
-        gap,
-        stack_height,
+        gap: plan.gap,
+        top_offset: plan.top_offset,
         blocks: layouts,
     }
 }
@@ -661,7 +655,7 @@ struct FittedCodeLayout {
 
 struct FittedCodeGroupLayout {
     gap: u32,
-    stack_height: u32,
+    top_offset: u32,
     blocks: Vec<FittedCodeLayout>,
 }
 
@@ -764,46 +758,60 @@ fn min_code_gap(block_count: usize) -> u32 {
     if block_count > 1 { MIN_CODE_GAP } else { 0 }
 }
 
-fn preferred_code_gap(
+fn block_height_sum(layouts: &[FittedCodeLayout]) -> u32 {
+    layouts.iter().map(code_block_height).sum::<u32>()
+}
+
+fn plan_stack_height(layouts: &[FittedCodeLayout], gap: u32) -> u32 {
+    block_height_sum(layouts) + gap.saturating_mul(layouts.len().saturating_sub(1) as u32)
+}
+
+fn plan_code_group_layout(layouts: &[FittedCodeLayout], available_height: u32) -> CodeGroupPlan {
+    let block_sum = block_height_sum(layouts);
+    if layouts.len() <= 1 {
+        let free = available_height.saturating_sub(block_sum);
+        return CodeGroupPlan {
+            gap: 0,
+            top_offset: free / 2,
+        };
+    }
+
+    let baseline_gap = MIN_CODE_GAP;
+    let baseline_stack = block_sum + baseline_gap;
+    let extra = available_height.saturating_sub(baseline_stack);
+    let gap = baseline_gap + ((extra as u64 * 55) / 100) as u32;
+    let remaining = available_height.saturating_sub(block_sum + gap);
+    let top_offset = ((remaining as u64 * 60) / 100) as u32;
+    CodeGroupPlan { gap, top_offset }
+}
+
+fn fallback_code_group_layout(
+    layouts: &[FittedCodeLayout],
     available_height: u32,
-    baseline_stack_height: u32,
-    block_count: usize,
-) -> u32 {
-    if block_count <= 1 {
-        return 0;
+) -> CodeGroupPlan {
+    if layouts.len() <= 1 {
+        return CodeGroupPlan {
+            gap: 0,
+            top_offset: 0,
+        };
     }
 
-    let extra_gap =
-        (available_height.saturating_sub(baseline_stack_height) / 4).min(MAX_EXTRA_CODE_GAP);
-    MIN_CODE_GAP + extra_gap
-}
-
-fn code_group_gap(layouts: &[FittedCodeLayout], available_height: u32) -> u32 {
-    let baseline_gap = min_code_gap(layouts.len());
-    if baseline_gap == 0 {
-        return 0;
-    }
-
-    let block_height_sum = layouts.iter().map(code_block_height).sum::<u32>();
-    let baseline_stack_height =
-        block_height_sum + baseline_gap.saturating_mul(layouts.len().saturating_sub(1) as u32);
-    if baseline_stack_height > available_height {
-        baseline_gap
+    let min_gap = min_code_gap(layouts.len());
+    let block_sum = block_height_sum(layouts);
+    let required_height = block_sum + min_gap;
+    if required_height <= available_height {
+        plan_code_group_layout(layouts, available_height)
     } else {
-        preferred_code_gap(available_height, baseline_stack_height, layouts.len())
+        CodeGroupPlan {
+            gap: min_gap,
+            top_offset: 0,
+        }
     }
 }
 
-fn code_stack_height(layouts: &[FittedCodeLayout], available_height: u32) -> u32 {
-    let block_height_sum = layouts.iter().map(code_block_height).sum::<u32>();
-    let gap = code_group_gap(layouts, available_height);
-    let baseline_stack_height =
-        block_height_sum + gap.saturating_mul(layouts.len().saturating_sub(1) as u32);
-    if baseline_stack_height > available_height {
-        baseline_stack_height
-    } else {
-        baseline_stack_height
-    }
+struct CodeGroupPlan {
+    gap: u32,
+    top_offset: u32,
 }
 
 #[derive(Clone)]
