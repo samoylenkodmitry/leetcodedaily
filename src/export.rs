@@ -172,6 +172,7 @@ fn compose_card(draft: &PostDraft) -> Result<RgbaImage> {
             block.language,
             block.runtime_ms,
             layout,
+            code_group_layout.shared_text_width,
         );
         current_y += block_height as i32;
         if index + 1 < code_group_layout.blocks.len() {
@@ -244,6 +245,7 @@ fn draw_code_panel(
     language: &str,
     runtime_ms: &str,
     layout: &FittedCodeLayout,
+    shared_text_width: u32,
 ) {
     let label_color = rgba(148, 229, 255, 255);
     let runtime_color = rgba(255, 180, 78, 255);
@@ -251,18 +253,7 @@ fn draw_code_panel(
 
     let title = format!("// {language}");
     let runtime = format!("// {}", runtime_label(runtime_ms));
-    let content_width = measured_code_text_width(&assets.mono_font, layout.label_scale, &title)
-        .max(measured_code_text_width(
-            &assets.mono_font,
-            layout.label_scale,
-            &runtime,
-        ))
-        .max(max_line_width(
-            &assets.mono_font,
-            layout.code_scale,
-            &layout.lines,
-        ));
-    let centered_offset = ((area.width.saturating_sub(content_width)) / 2) as i32;
+    let centered_offset = ((area.width.saturating_sub(shared_text_width)) / 2) as i32;
     let text_x = area.x + centered_offset.max(CODE_SIDE_PADDING as i32);
     let title_y = area.y + CODE_LABEL_TOP_PADDING;
     let runtime_y = title_y + layout.label_line_height + CODE_LABEL_GAP;
@@ -421,6 +412,7 @@ fn fit_code_group_layout(
                 return FittedCodeGroupLayout {
                     gap: plan.gap,
                     top_offset: plan.top_offset,
+                    shared_text_width: code_group_shared_width(font, blocks, &layouts),
                     blocks: layouts,
                 };
             }
@@ -434,6 +426,7 @@ fn fit_code_group_layout(
     FittedCodeGroupLayout {
         gap: plan.gap,
         top_offset: plan.top_offset,
+        shared_text_width: code_group_shared_width(font, blocks, &layouts),
         blocks: layouts,
     }
 }
@@ -494,6 +487,15 @@ fn code_layout_fits(
     layout: &FittedCodeLayout,
     available_width: u32,
 ) -> bool {
+    let content_width = code_block_content_width(font, block, layout);
+    content_width <= available_width.saturating_sub(TEXT_WIDTH_SAFETY)
+}
+
+fn code_block_content_width(
+    font: &FontArc,
+    block: &CodeBlock<'_>,
+    layout: &FittedCodeLayout,
+) -> u32 {
     let title_width =
         measured_code_text_width(font, layout.label_scale, &format!("// {}", block.language));
     let runtime_width = measured_code_text_width(
@@ -501,10 +503,22 @@ fn code_layout_fits(
         layout.label_scale,
         &format!("// {}", runtime_label(block.runtime_ms)),
     );
-    let content_width = max_line_width(font, layout.code_scale, &layout.lines)
+    max_line_width(font, layout.code_scale, &layout.lines)
         .max(title_width)
-        .max(runtime_width);
-    content_width <= available_width.saturating_sub(TEXT_WIDTH_SAFETY)
+        .max(runtime_width)
+}
+
+fn code_group_shared_width(
+    font: &FontArc,
+    blocks: &[CodeBlock<'_>],
+    layouts: &[FittedCodeLayout],
+) -> u32 {
+    blocks
+        .iter()
+        .zip(layouts.iter())
+        .map(|(block, layout)| code_block_content_width(font, block, layout))
+        .max()
+        .unwrap_or(0)
 }
 
 fn max_line_width(font: &FontArc, scale: PxScale, lines: &[String]) -> u32 {
@@ -656,6 +670,7 @@ struct FittedCodeLayout {
 struct FittedCodeGroupLayout {
     gap: u32,
     top_offset: u32,
+    shared_text_width: u32,
     blocks: Vec<FittedCodeLayout>,
 }
 
