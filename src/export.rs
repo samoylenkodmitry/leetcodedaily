@@ -2,26 +2,27 @@ use crate::{assets, draft::PostDraft};
 use ab_glyph::{FontArc, PxScale};
 use anyhow::{Context, Result, anyhow};
 use cranpose::ImageBitmap;
-use image::ImageFormat;
 use image::imageops::{FilterType, overlay};
 use image::{DynamicImage, Rgba, RgbaImage};
 use imageproc::drawing::{draw_filled_circle_mut, draw_filled_rect_mut, draw_text_mut, text_size};
 use imageproc::rect::Rect;
 #[cfg(not(target_arch = "wasm32"))]
 use std::fs;
-#[cfg(target_arch = "wasm32")]
-use std::io::Cursor;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 #[cfg(target_arch = "wasm32")]
-use wasm_bindgen::JsCast;
+use wasm_bindgen::{Clamped, JsCast, JsValue};
 #[cfg(target_arch = "wasm32")]
-use web_sys::{Blob, BlobPropertyBag, HtmlAnchorElement, Url};
+use web_sys::{CanvasRenderingContext2d, HtmlAnchorElement, HtmlCanvasElement, ImageData};
 
 const CANVAS_WIDTH: u32 = 1600;
 const CANVAS_HEIGHT: u32 = 900;
 const TEXT_SUPERSAMPLE: u32 = 4;
+const WEBP_TARGET_BYTES: usize = 220 * 1024;
+const WEBP_QUALITY_STEPS: [f32; 12] = [
+    84.0, 80.0, 76.0, 72.0, 68.0, 64.0, 60.0, 56.0, 52.0, 48.0, 44.0, 40.0,
+];
 const CODE_FONT_SIZES: [f32; 25] = [
     84.0, 80.0, 76.0, 72.0, 68.0, 64.0, 60.0, 56.0, 52.0, 48.0, 44.0, 40.0, 36.0, 32.0, 28.0, 24.0,
     22.0, 20.0, 18.0, 16.0, 14.0, 12.0, 10.0, 8.0, 6.0,
@@ -163,8 +164,8 @@ pub fn save_webp(draft: &PostDraft) -> Result<PreviewState> {
         fs::create_dir_all(&output_dir).context("creating output directory")?;
 
         let export_path = draft.suggested_export_path();
-        DynamicImage::ImageRgba8(rendered)
-            .save_with_format(&export_path, ImageFormat::WebP)
+        let bytes = encode_webp_bytes(&rendered)?;
+        fs::write(&export_path, &bytes)
             .with_context(|| format!("saving WebP to {}", export_path.display()))?;
 
         return Ok(PreviewState {
@@ -175,9 +176,9 @@ pub fn save_webp(draft: &PostDraft) -> Result<PreviewState> {
 
     #[cfg(target_arch = "wasm32")]
     {
-        let bytes = encode_webp_bytes(&rendered)?;
+        let data_url = encode_webp_data_url(&rendered)?;
         let filename = draft.suggested_export_filename();
-        download_webp_bytes(&filename, &bytes)?;
+        download_webp_data_url(&filename, &data_url)?;
         Ok(PreviewState {
             bitmap,
             last_saved_webp_path: Some(filename),
@@ -748,13 +749,73 @@ fn superscaled_scale(scale: PxScale) -> PxScale {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(target_arch = "wasm32"))]
 fn encode_webp_bytes(image: &RgbaImage) -> Result<Vec<u8>> {
-    let mut cursor = Cursor::new(Vec::new());
-    DynamicImage::ImageRgba8(image.clone())
-        .write_to(&mut cursor, ImageFormat::WebP)
-        .context("encoding preview as WebP")?;
-    Ok(cursor.into_inner())
+    let encoder = webp::Encoder::from_rgba(image.as_raw(), image.width(), image.height());
+    let mut fallback = None;
+
+    for &quality in &WEBP_QUALITY_STEPS {
+        let bytes = encoder.encode(quality).to_vec();
+        if bytes.len() <= WEBP_TARGET_BYTES {
+            return Ok(bytes);
+        }
+        fallback = Some(bytes);
+    }
+
+    fallback.ok_or_else(|| anyhow!("encoding preview as WebP failed"))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn encode_webp_data_url(image: &RgbaImage) -> Result<String> {
+    let window = web_sys::window().ok_or_else(|| anyhow!("missing window"))?;
+    let document = window
+        .document()
+        .ok_or_else(|| anyhow!("missing document"))?;
+    let canvas = document
+        .create_element("canvas")
+        .map_err(|error| anyhow!("creating export canvas failed: {error:?}"))?
+        .dyn_into::<HtmlCanvasElement>()
+        .map_err(|_| anyhow!("casting export canvas failed"))?;
+    canvas.set_width(image.width());
+    canvas.set_height(image.height());
+
+    let context = canvas
+        .get_context("2d")
+        .map_err(|error| anyhow!("getting canvas context failed: {error:?}"))?
+        .ok_or_else(|| anyhow!("missing 2d canvas context"))?
+        .dyn_into::<CanvasRenderingContext2d>()
+        .map_err(|_| anyhow!("casting canvas context failed"))?;
+
+    let image_data = ImageData::new_with_u8_clamped_array_and_sh(
+        Clamped(image.as_raw()),
+        image.width(),
+        image.height(),
+    )
+    .map_err(|error| anyhow!("creating canvas image data failed: {error:?}"))?;
+    context
+        .put_image_data(&image_data, 0.0, 0.0)
+        .map_err(|error| anyhow!("drawing canvas image data failed: {error:?}"))?;
+
+    let mut fallback = None;
+    for &quality in &WEBP_QUALITY_STEPS {
+        let data_url = canvas
+            .to_data_url_with_type_and_encoder_options(
+                "image/webp",
+                &JsValue::from_f64(f64::from(quality) / 100.0),
+            )
+            .map_err(|error| anyhow!("encoding WebP in browser failed: {error:?}"))?;
+
+        if !data_url.starts_with("data:image/webp") {
+            return Err(anyhow!("browser did not return WebP data"));
+        }
+
+        if estimated_data_url_bytes(&data_url) <= WEBP_TARGET_BYTES {
+            return Ok(data_url);
+        }
+        fallback = Some(data_url);
+    }
+
+    fallback.ok_or_else(|| anyhow!("encoding preview as WebP failed"))
 }
 
 fn runtime_label(value: &str) -> String {
@@ -809,7 +870,15 @@ fn output_dir() -> PathBuf {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn download_webp_bytes(filename: &str, bytes: &[u8]) -> Result<()> {
+fn estimated_data_url_bytes(data_url: &str) -> usize {
+    data_url
+        .split_once(',')
+        .map(|(_, encoded)| encoded.len().saturating_mul(3) / 4)
+        .unwrap_or_else(|| data_url.len())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn download_webp_data_url(filename: &str, data_url: &str) -> Result<()> {
     let window = web_sys::window().ok_or_else(|| anyhow!("missing window"))?;
     let document = window
         .document()
@@ -818,23 +887,12 @@ fn download_webp_bytes(filename: &str, bytes: &[u8]) -> Result<()> {
         .body()
         .ok_or_else(|| anyhow!("missing document body"))?;
 
-    let options = BlobPropertyBag::new();
-    options.set_type("image/webp");
-    let parts = js_sys::Array::new();
-    let byte_array = js_sys::Uint8Array::from(bytes);
-    parts.push(byte_array.as_ref());
-
-    let blob = Blob::new_with_u8_array_sequence_and_options(&parts.into(), &options)
-        .map_err(|error| anyhow!("creating WebP blob failed: {error:?}"))?;
-    let object_url = Url::create_object_url_with_blob(&blob)
-        .map_err(|error| anyhow!("creating object URL failed: {error:?}"))?;
-
     let anchor = document
         .create_element("a")
         .map_err(|error| anyhow!("creating download link failed: {error:?}"))?
         .dyn_into::<HtmlAnchorElement>()
         .map_err(|_| anyhow!("casting download link failed"))?;
-    anchor.set_href(&object_url);
+    anchor.set_href(data_url);
     anchor.set_download(filename);
 
     let anchor_html = anchor
@@ -846,8 +904,6 @@ fn download_webp_bytes(filename: &str, bytes: &[u8]) -> Result<()> {
     anchor_html.click();
     body.remove_child(&anchor_html)
         .map_err(|error| anyhow!("removing download link failed: {error:?}"))?;
-    Url::revoke_object_url(&object_url)
-        .map_err(|error| anyhow!("releasing object URL failed: {error:?}"))?;
     Ok(())
 }
 
@@ -995,8 +1051,8 @@ fn preview_mono_font() -> &'static FontArc {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::{
-        PreviewState, compose_card, fit_code_layout, image_bitmap_from, render_preview_frame,
-        save_webp,
+        PreviewState, WEBP_TARGET_BYTES, compose_card, fit_code_layout, image_bitmap_from,
+        render_preview_frame, save_webp,
     };
     use crate::draft::PostDraft;
     use std::fs;
@@ -1041,6 +1097,12 @@ mod tests {
         let saved = save_webp(&draft).expect("webp save");
         let webp_path = saved.last_saved_webp_path.clone().expect("saved webp path");
         assert!(Path::new(&webp_path).exists());
+        let metadata = fs::metadata(&webp_path).expect("webp metadata");
+        assert!(
+            metadata.len() as usize <= WEBP_TARGET_BYTES + 16 * 1024,
+            "expected WebP near target size, got {} bytes",
+            metadata.len()
+        );
 
         let _ = fs::remove_file(webp_path);
     }
