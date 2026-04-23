@@ -114,7 +114,7 @@ fn App() {
     let preview_state = useState(PreviewState::placeholder);
     let status = useState(|| "Preview refreshes when you open the Output tab.".to_string());
     let current_draft = PostDraft::from_fields(&fields);
-    let markdown_preview = current_draft.markdown();
+    let markdown_preview = current_draft.blog_template();
     let current_tab = active_tab.value();
 
     cranpose_core::LaunchedEffect!(current_tab, {
@@ -263,55 +263,110 @@ fn ActionsCard(
                             heading_style(34.0),
                         );
                         Text(
-                            "Fill the template, open Output when you want a fresh preview, then copy markdown or rich text or save the card as WebP.",
+                            "Fill the template, open Output when you want a fresh preview, then copy the platform-specific template you need or save the card as WebP.",
                             Modifier::empty(),
                             body_style(),
                         );
 
-                        let row_fields = fields.clone();
-                        let row_status = status.clone();
-                        let row_preview = preview_state.clone();
-                        Row(
+                        let action_fields = fields.clone();
+                        let action_status = status.clone();
+                        let action_preview = preview_state.clone();
+                        Column(
                             Modifier::empty().fill_max_width(),
-                            RowSpec::default()
-                                .horizontal_arrangement(LinearArrangement::spaced_by(12.0)),
+                            ColumnSpec::default()
+                                .vertical_arrangement(LinearArrangement::spaced_by(12.0)),
                             move || {
-                                let copy_fields = row_fields.clone();
-                                let copy_status = row_status.clone();
-                                primary_button("Copy Markdown", move || {
-                                    let draft = PostDraft::from_fields(&copy_fields);
-                                    copy_markdown_to_clipboard(
-                                        draft.markdown(),
-                                        copy_status.clone(),
-                                    );
-                                });
+                                let row_fields = action_fields.clone();
+                                let row_status = action_status.clone();
+                                Row(
+                                    Modifier::empty().fill_max_width(),
+                                    RowSpec::default()
+                                        .horizontal_arrangement(LinearArrangement::spaced_by(12.0)),
+                                    move || {
+                                        let leetcode_fields = row_fields.clone();
+                                        let leetcode_status = row_status.clone();
+                                        primary_button("Copy LeetCode", move || {
+                                            let draft = PostDraft::from_fields(&leetcode_fields);
+                                            copy_text_to_clipboard(
+                                                draft.leetcode_template(),
+                                                "LeetCode template copied.".to_string(),
+                                                leetcode_status.clone(),
+                                            );
+                                        });
 
-                                let rich_fields = row_fields.clone();
-                                let rich_status = row_status.clone();
-                                primary_button("Copy Rich Text", move || {
-                                    let draft = PostDraft::from_fields(&rich_fields);
-                                    copy_rich_text_to_clipboard(draft, rich_status.clone());
-                                });
+                                        let youtube_fields = row_fields.clone();
+                                        let youtube_status = row_status.clone();
+                                        primary_button("Copy YouTube", move || {
+                                            let draft = PostDraft::from_fields(&youtube_fields);
+                                            copy_text_to_clipboard(
+                                                draft.youtube_template(),
+                                                "YouTube template copied.".to_string(),
+                                                youtube_status.clone(),
+                                            );
+                                        });
 
-                                let save_fields = row_fields.clone();
-                                let save_status = row_status.clone();
-                                let save_preview = row_preview.clone();
-                                primary_button("Save WebP", move || {
-                                    let draft = PostDraft::from_fields(&save_fields);
-                                    match save_webp(&draft) {
-                                        Ok(preview) => {
-                                            let saved_to = preview
-                                                .last_saved_webp_path
-                                                .clone()
-                                                .unwrap_or_else(|| "output directory".to_string());
-                                            save_preview.set(preview);
-                                            save_status.set(format!("WebP saved to {saved_to}"));
-                                        }
-                                        Err(error) => {
-                                            save_status.set(format!("Saving WebP failed: {error}"))
-                                        }
-                                    }
-                                });
+                                        let blog_fields = row_fields.clone();
+                                        let blog_status = row_status.clone();
+                                        primary_button("Copy Blog", move || {
+                                            let draft = PostDraft::from_fields(&blog_fields);
+                                            copy_text_to_clipboard(
+                                                draft.blog_template(),
+                                                "Blog template copied.".to_string(),
+                                                blog_status.clone(),
+                                            );
+                                        });
+
+                                        let telegram_fields = row_fields.clone();
+                                        let telegram_status = row_status.clone();
+                                        primary_button("Copy Telegram", move || {
+                                            let draft = PostDraft::from_fields(&telegram_fields);
+                                            copy_text_to_clipboard(
+                                                draft.telegram_template(),
+                                                "Telegram template copied.".to_string(),
+                                                telegram_status.clone(),
+                                            );
+                                        });
+                                    },
+                                );
+
+                                let row_fields = action_fields.clone();
+                                let row_status = action_status.clone();
+                                let row_preview = action_preview.clone();
+                                Row(
+                                    Modifier::empty().fill_max_width(),
+                                    RowSpec::default()
+                                        .horizontal_arrangement(LinearArrangement::spaced_by(12.0)),
+                                    move || {
+                                        let rich_fields = row_fields.clone();
+                                        let rich_status = row_status.clone();
+                                        primary_button("Copy Rich Text", move || {
+                                            let draft = PostDraft::from_fields(&rich_fields);
+                                            copy_rich_text_to_clipboard(draft, rich_status.clone());
+                                        });
+
+                                        let save_fields = row_fields.clone();
+                                        let save_status = row_status.clone();
+                                        let save_preview = row_preview.clone();
+                                        primary_button("Save WebP", move || {
+                                            let draft = PostDraft::from_fields(&save_fields);
+                                            match save_webp(&draft) {
+                                                Ok(preview) => {
+                                                    let saved_to = preview
+                                                        .last_saved_webp_path
+                                                        .clone()
+                                                        .unwrap_or_else(|| {
+                                                            "~/Downloads".to_string()
+                                                        });
+                                                    save_preview.set(preview);
+                                                    save_status
+                                                        .set(format!("WebP saved to {saved_to}"));
+                                                }
+                                                Err(error) => save_status
+                                                    .set(format!("Saving WebP failed: {error}")),
+                                            }
+                                        });
+                                    },
+                                );
                             },
                         );
 
@@ -393,7 +448,11 @@ fn MarkdownCard(markdown_preview: String) {
                     let markdown_preview = markdown_preview.clone();
                     move || {
                         let markdown_content = markdown_preview.clone();
-                        Text("Markdown Output", Modifier::empty(), heading_style(28.0));
+                        Text(
+                            "Blog Template Preview",
+                            Modifier::empty(),
+                            heading_style(28.0),
+                        );
                         ComposeBox(
                             Modifier::empty()
                                 .fill_max_width()
@@ -641,22 +700,22 @@ fn labeled_code_field(
     );
 }
 
-fn copy_markdown_to_clipboard(markdown: String, status: MutableState<String>) {
+fn copy_text_to_clipboard(text: String, success_message: String, status: MutableState<String>) {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        match copy_markdown(&markdown) {
-            Ok(_) => status.set("Markdown copied to the clipboard.".to_string()),
+        match copy_text(&text) {
+            Ok(_) => status.set(success_message),
             Err(error) => status.set(format!("Clipboard copy failed: {error}")),
         }
     }
 
     #[cfg(target_arch = "wasm32")]
     {
-        match web_write_text_promise(&markdown) {
+        match web_write_text_promise(&text) {
             Ok(promise) => {
                 track_web_promise(
                     promise,
-                    "Markdown copied to the clipboard.".to_string(),
+                    success_message,
                     "Clipboard copy failed".to_string(),
                     status,
                 );
@@ -668,7 +727,7 @@ fn copy_markdown_to_clipboard(markdown: String, status: MutableState<String>) {
 
 fn copy_rich_text_to_clipboard(draft: PostDraft, status: MutableState<String>) {
     let html = draft.rich_html();
-    let fallback = draft.markdown();
+    let fallback = draft.blog_template();
 
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -695,7 +754,7 @@ fn copy_rich_text_to_clipboard(draft: PostDraft, status: MutableState<String>) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn copy_markdown(markdown: &str) -> Result<()> {
+fn copy_text(markdown: &str) -> Result<()> {
     let mut clipboard = Clipboard::new()?;
     clipboard.set_text(markdown.to_string())?;
     Ok(())

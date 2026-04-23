@@ -112,6 +112,42 @@ impl PostDraft {
     }
 
     pub fn markdown(&self) -> String {
+        self.blog_template()
+    }
+
+    pub fn leetcode_template(&self) -> String {
+        let mut lines = Vec::new();
+
+        push_optional_plain_line(&mut lines, &self.youtube_url);
+        if !lines.is_empty() {
+            lines.push(String::new());
+        }
+
+        push_markdown_section(&mut lines, "#### Join me on ", &self.telegram_text);
+        push_markdown_section(&mut lines, "#### Problem TLDR", &self.problem_tldr);
+        push_markdown_section(&mut lines, "#### Intuition", &self.intuition);
+        push_markdown_section(&mut lines, "#### Approach", &self.approach);
+        push_math_complexity_section(&mut lines, &self.time_complexity, &self.space_complexity);
+        push_markdown_heading(&mut lines, "#### Code");
+        push_runtime_code_block(
+            &mut lines,
+            "kotlin",
+            "Kotlin",
+            &self.kotlin_runtime_ms,
+            &self.kotlin_code,
+        );
+        push_runtime_code_block(
+            &mut lines,
+            "rust",
+            "Rust",
+            &self.rust_runtime_ms,
+            &self.rust_code,
+        );
+
+        finalize_markdown(lines)
+    }
+
+    pub fn youtube_template(&self) -> String {
         let mut lines = vec![format!("# {}", self.date_or_placeholder())];
 
         let problem_line = self.problem_header_line();
@@ -119,60 +155,62 @@ impl PostDraft {
             lines.push(problem_line);
         }
 
-        push_optional_link(&mut lines, "blog post", &self.blog_post_url);
         push_optional_link(&mut lines, "substack", &self.substack_url);
-        push_optional_link(&mut lines, "youtube", &self.youtube_url);
-
         lines.push(String::new());
-        if !self.reference_url.trim().is_empty() {
-            lines.push(self.reference_url.trim().to_string());
-            lines.push(String::new());
+
+        push_markdown_section(&mut lines, "#### Join me on Telegram", &self.telegram_text);
+        push_markdown_section(&mut lines, "#### Problem TLDR", &self.problem_tldr);
+        push_markdown_section(&mut lines, "#### Intuition", &self.intuition);
+        push_markdown_section(&mut lines, "#### Approach", &self.approach);
+        push_plain_complexity_section(&mut lines, &self.time_complexity, &self.space_complexity);
+        push_markdown_section(&mut lines, "#### Code", self.reference_url.trim());
+
+        finalize_markdown(lines)
+    }
+
+    pub fn blog_template(&self) -> String {
+        let mut lines = vec![format!("# {}", self.date_or_placeholder())];
+
+        let problem_line = self.problem_header_line();
+        if !problem_line.is_empty() {
+            lines.push(problem_line);
         }
 
-        lines.push("#### Join me on Telegram".to_string());
+        push_optional_link(&mut lines, "substack", &self.substack_url);
+        push_optional_link(&mut lines, "youtube", &self.youtube_url);
         lines.push(String::new());
-        lines.push(self.telegram_text.clone());
-        lines.push(String::new());
-        lines.push("#### Problem TLDR".to_string());
-        lines.push(String::new());
-        lines.push(self.problem_tldr.clone());
-        lines.push(String::new());
-        lines.push("#### Intuition".to_string());
-        lines.push(String::new());
-        lines.push(self.intuition.clone());
-        lines.push(String::new());
-        lines.push("#### Approach".to_string());
-        lines.push(String::new());
-        lines.push(self.approach.clone());
-        lines.push(String::new());
-        lines.push("#### Complexity".to_string());
-        lines.push(String::new());
-        lines.push("- Time complexity:".to_string());
-        lines.push(format!(
-            "$$O({})$$",
-            self.complexity_value(&self.time_complexity)
-        ));
-        lines.push(String::new());
-        lines.push("- Space complexity:".to_string());
-        lines.push(format!(
-            "$$O({})$$",
-            self.complexity_value(&self.space_complexity)
-        ));
-        lines.push(String::new());
-        lines.push("#### Code".to_string());
-        lines.push(String::new());
-        lines.push(format!(
-            "```kotlin [-Kotlin {}]\n{}\n```",
-            runtime_label(&self.kotlin_runtime_ms),
-            self.kotlin_code
-        ));
-        lines.push(format!(
-            "```rust [-Rust {}]\n{}\n```",
-            runtime_label(&self.rust_runtime_ms),
-            self.rust_code
-        ));
 
-        format!("{}\n", lines.join("\n"))
+        push_optional_plain_line(&mut lines, &self.reference_url);
+        if !self.reference_url.trim().is_empty() {
+            lines.push(String::new());
+        }
+        lines.push(self.image_markdown_line());
+
+        push_markdown_section(&mut lines, "#### Join me on Telegram", &self.telegram_text);
+        push_markdown_section(&mut lines, "#### Problem TLDR", &self.problem_tldr);
+        push_markdown_section(&mut lines, "#### Intuition", &self.intuition);
+        push_markdown_section(&mut lines, "#### Approach", &self.approach);
+        push_math_complexity_section(&mut lines, &self.time_complexity, &self.space_complexity);
+        push_markdown_heading(&mut lines, "#### Code");
+        push_code_block(&mut lines, "kotlin", &self.kotlin_code);
+        push_code_block(&mut lines, "rust", &self.rust_code);
+
+        finalize_markdown(lines)
+    }
+
+    pub fn telegram_template(&self) -> String {
+        let mut lines = vec![format!("# {}", self.date_or_placeholder())];
+
+        let problem_line = self.problem_header_line();
+        if !problem_line.is_empty() {
+            lines.push(problem_line);
+        }
+        lines.push(String::new());
+        if !self.problem_tldr.trim().is_empty() {
+            lines.push(self.problem_tldr.trim().to_string());
+        }
+
+        finalize_markdown(lines)
     }
 
     pub fn rich_html(&self) -> String {
@@ -231,20 +269,11 @@ impl PostDraft {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub fn suggested_export_path(&self) -> PathBuf {
-        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        manifest_dir
-            .join("output")
-            .join(self.suggested_export_filename())
+        export_dir().join(self.suggested_export_filename())
     }
 
     pub fn suggested_export_filename(&self) -> String {
-        let slug = slugify(if self.problem_title.is_empty() {
-            "leetcode-daily"
-        } else {
-            &self.problem_title
-        });
-        let date_slug = slugify(&self.date_or_placeholder());
-        format!("{date_slug}-{slug}.webp")
+        format!("{}.webp", self.date_or_placeholder())
     }
 
     pub fn date_or_placeholder(&self) -> String {
@@ -294,6 +323,11 @@ impl PostDraft {
             format!("{} {difficulty}", html_link(title, &self.problem_url))
         }
     }
+
+    fn image_markdown_line(&self) -> String {
+        let filename = self.suggested_export_filename();
+        format!("![{filename}](/assets/leetcode_daily_images/{filename})")
+    }
 }
 
 fn trim_or(value: String, fallback: &str) -> String {
@@ -330,6 +364,75 @@ fn push_optional_link(lines: &mut Vec<String>, label: &str, url: &str) {
     if !safe_url.is_empty() {
         lines.push(format!("[{label}]({safe_url})"));
     }
+}
+
+fn push_optional_plain_line(lines: &mut Vec<String>, value: &str) {
+    if !value.trim().is_empty() {
+        lines.push(value.trim().to_string());
+    }
+}
+
+fn push_markdown_heading(lines: &mut Vec<String>, title: &str) {
+    lines.push(title.to_string());
+    lines.push(String::new());
+}
+
+fn push_markdown_section(lines: &mut Vec<String>, title: &str, body: &str) {
+    push_markdown_heading(lines, title);
+    push_markdown_body(lines, body);
+    lines.push(String::new());
+}
+
+fn push_markdown_body(lines: &mut Vec<String>, body: &str) {
+    if body.trim().is_empty() {
+        return;
+    }
+    lines.extend(body.lines().map(|line| line.to_string()));
+}
+
+fn push_math_complexity_section(lines: &mut Vec<String>, time: &str, space: &str) {
+    push_markdown_heading(lines, "#### Complexity");
+    lines.push("- Time complexity:".to_string());
+    lines.push(format!("$$O({})$$", time.trim()));
+    lines.push(String::new());
+    lines.push("- Space complexity:".to_string());
+    lines.push(format!("$$O({})$$", space.trim()));
+    lines.push(String::new());
+}
+
+fn push_plain_complexity_section(lines: &mut Vec<String>, time: &str, space: &str) {
+    push_markdown_heading(lines, "#### Complexity");
+    lines.push("- Time complexity:".to_string());
+    lines.push(format!("O({})", time.trim()));
+    lines.push(String::new());
+    lines.push("- Space complexity:".to_string());
+    lines.push(format!("O({})", space.trim()));
+    lines.push(String::new());
+}
+
+fn push_runtime_code_block(
+    lines: &mut Vec<String>,
+    language: &str,
+    runtime_language: &str,
+    runtime_ms: &str,
+    code: &str,
+) {
+    lines.push(format!(
+        "```{language} [-{runtime_language} {}]\n{}\n```",
+        runtime_label(runtime_ms),
+        code
+    ));
+}
+
+fn push_code_block(lines: &mut Vec<String>, language: &str, code: &str) {
+    lines.push(format!("```{language}\n{}\n```", code));
+}
+
+fn finalize_markdown(mut lines: Vec<String>) -> String {
+    while lines.last().is_some_and(|line| line.is_empty()) {
+        lines.pop();
+    }
+    format!("{}\n", lines.join("\n"))
 }
 
 fn push_optional_html_link(html: &mut String, label: &str, url: &str) {
@@ -382,6 +485,19 @@ fn html_block(value: &str) -> String {
         .join("<br>")
 }
 
+#[cfg(all(not(target_arch = "wasm32"), test))]
+fn export_dir() -> PathBuf {
+    std::env::temp_dir().join("leetcodedaily-tests")
+}
+
+#[cfg(all(not(target_arch = "wasm32"), not(test)))]
+fn export_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join("Downloads"))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
 fn escape_html(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -432,10 +548,12 @@ mod tests {
 
         assert!(markdown.contains("# 05.10.2025"));
         assert!(markdown.contains("[Words Within Two Edits of Dictionary]("));
+        assert!(
+            markdown.contains("![05.10.2025.webp](/assets/leetcode_daily_images/05.10.2025.webp)")
+        );
         assert!(markdown.contains("#### Problem TLDR"));
-        assert!(markdown.contains("```kotlin [-Kotlin 28ms]"));
-        assert!(markdown.contains("```rust [-Rust 1ms]"));
-        assert!(!markdown.contains("[blog post]()"));
+        assert!(markdown.contains("```kotlin\nfun demo() {}\n```"));
+        assert!(markdown.contains("```rust\nfn demo() {}\n```"));
         assert!(!markdown.contains("[substack]()"));
         assert!(!markdown.contains("[youtube]()"));
     }
@@ -468,6 +586,77 @@ mod tests {
         assert!(markdown.contains("Words Within Two Edits of Dictionary medium"));
         assert!(!markdown.contains("[Words Within Two Edits of Dictionary]("));
         assert!(!markdown.contains("https://dmitrysamoylenko.com/2023/07/14/leetcode_daily.html"));
+    }
+
+    #[test]
+    fn template_export_filename_uses_date_only() {
+        let draft = PostDraft {
+            date: "23.04.2026".to_string(),
+            problem_title: "Sum of Distances".to_string(),
+            problem_url: String::new(),
+            difficulty: "medium".to_string(),
+            blog_post_url: String::new(),
+            substack_url: String::new(),
+            youtube_url: String::new(),
+            reference_url: String::new(),
+            telegram_text: String::new(),
+            problem_tldr: String::new(),
+            intuition: String::new(),
+            approach: String::new(),
+            time_complexity: String::new(),
+            space_complexity: String::new(),
+            kotlin_runtime_ms: String::new(),
+            kotlin_code: String::new(),
+            rust_runtime_ms: String::new(),
+            rust_code: String::new(),
+        };
+
+        assert_eq!(draft.suggested_export_filename(), "23.04.2026.webp");
+    }
+
+    #[test]
+    fn specialized_templates_match_expected_shapes() {
+        let draft = PostDraft {
+            date: "23.04.2026".to_string(),
+            problem_title: "2615. Sum of Distances".to_string(),
+            problem_url: "https://leetcode.com/problems/sum-of-distances/solutions/8069058/kotlin-rust-by-samoylenkodmitry-9mqf/".to_string(),
+            difficulty: "medium".to_string(),
+            blog_post_url: String::new(),
+            substack_url: "https://open.substack.com/example".to_string(),
+            youtube_url: "https://youtu.be/848sypoVAUs".to_string(),
+            reference_url: "https://dmitrysamoylenko.com/2023/07/14/leetcode_daily.html".to_string(),
+            telegram_text: "https://t.me/leetcode_daily_unstoppable/1337".to_string(),
+            problem_tldr: "Sum of distances to each occurrence".to_string(),
+            intuition: "Think".to_string(),
+            approach: "Do".to_string(),
+            time_complexity: "n".to_string(),
+            space_complexity: "n".to_string(),
+            kotlin_runtime_ms: "65".to_string(),
+            kotlin_code: "fun demo() {}".to_string(),
+            rust_runtime_ms: "11".to_string(),
+            rust_code: "fn demo() {}".to_string(),
+        };
+
+        let leetcode = draft.leetcode_template();
+        let youtube = draft.youtube_template();
+        let telegram = draft.telegram_template();
+
+        assert!(leetcode.starts_with("https://youtu.be/848sypoVAUs"));
+        assert!(leetcode.contains("```kotlin [-Kotlin 65ms]"));
+        assert!(!leetcode.contains("# 23.04.2026"));
+
+        assert!(youtube.contains("[substack](https://open.substack.com/example)"));
+        assert!(
+            youtube.contains(
+                "#### Code\n\nhttps://dmitrysamoylenko.com/2023/07/14/leetcode_daily.html"
+            )
+        );
+        assert!(youtube.contains("O(n)"));
+        assert!(!youtube.contains("$$O(n)$$"));
+
+        assert!(telegram.contains("# 23.04.2026"));
+        assert!(telegram.contains("Sum of distances to each occurrence"));
+        assert!(!telegram.contains("#### Problem TLDR"));
     }
 
     #[test]

@@ -22,8 +22,10 @@ use web_sys::{Blob, BlobPropertyBag, HtmlAnchorElement, Url};
 const CANVAS_WIDTH: u32 = 1600;
 const CANVAS_HEIGHT: u32 = 900;
 const TEXT_SUPERSAMPLE: u32 = 3;
-const CODE_FONT_SIZES: [f32; 9] = [22.0, 20.0, 18.0, 16.0, 14.0, 13.0, 12.0, 11.0, 10.0];
-const TLDR_FONT_SIZES: [f32; 6] = [20.0, 18.0, 16.0, 14.0, 13.0, 12.0];
+const CODE_FONT_SIZES: [f32; 12] = [
+    46.0, 42.0, 38.0, 34.0, 30.0, 28.0, 26.0, 24.0, 22.0, 20.0, 18.0, 16.0,
+];
+const TLDR_FONT_SIZES: [f32; 6] = [22.0, 20.0, 18.0, 16.0, 14.0, 12.0];
 
 #[derive(Clone)]
 pub struct PreviewState {
@@ -100,11 +102,11 @@ fn compose_card(draft: &PostDraft) -> Result<RgbaImage> {
         CANVAS_HEIGHT * TEXT_SUPERSAMPLE,
     );
 
-    let panel = BoxArea::new(104, 112, 1392, 660);
-    let panel_padding = 56;
-    let code_gap = 24u32;
-    let tldr_height = 108u32;
-    let tldr_gap = 26u32;
+    let panel = BoxArea::new(86, 94, 1428, 710);
+    let panel_padding = 38;
+    let code_gap = 20u32;
+    let tldr_height = 84u32;
+    let tldr_gap = 18u32;
 
     let mut overlay_layer = RgbaImage::new(CANVAS_WIDTH, CANVAS_HEIGHT);
     fill_rounded_box(&mut overlay_layer, panel, 46, rgba(5, 8, 14, 210));
@@ -128,7 +130,7 @@ fn compose_card(draft: &PostDraft) -> Result<RgbaImage> {
     let code_blocks = visible_code_blocks(draft);
 
     if code_blocks.len() == 1 {
-        let block_height = code_region_height.min(320).max(220);
+        let block_height = ((code_region_height as f32) * 0.92).round() as u32;
         let offset = code_region_height.saturating_sub(block_height) / 2;
         let block = &code_blocks[0];
         let layout =
@@ -170,7 +172,7 @@ fn compose_card(draft: &PostDraft) -> Result<RgbaImage> {
         inner_width,
         tldr_height,
         &TLDR_FONT_SIZES,
-        1.18,
+        1.16,
     );
     let tldr_text_height = tldr_layout.line_height * tldr_layout.lines.len() as i32;
     let tldr_y = (tldr_area_bottom - tldr_text_height).max(tldr_area_top);
@@ -186,7 +188,7 @@ fn compose_card(draft: &PostDraft) -> Result<RgbaImage> {
     );
 
     let text_overlay = DynamicImage::ImageRgba8(text_layer)
-        .resize_exact(CANVAS_WIDTH, CANVAS_HEIGHT, FilterType::Lanczos3)
+        .resize_exact(CANVAS_WIDTH, CANVAS_HEIGHT, FilterType::CatmullRom)
         .to_rgba8();
     overlay(&mut canvas, &text_overlay, 0, 0);
 
@@ -233,13 +235,13 @@ fn draw_code_panel(
 
     let title = format!("// {language}");
     let runtime = format!("// {}", runtime_label(runtime_ms));
-    let title_y = area.y + 18;
-    let runtime_y = title_y + layout.label_line_height + 4;
+    let title_y = area.y + 12;
+    let runtime_y = title_y + layout.label_line_height + 2;
 
     draw_text_supersampled(
         canvas,
         label_color,
-        area.x + 28,
+        area.x + 20,
         title_y,
         layout.label_scale,
         &assets.mono_font,
@@ -248,18 +250,18 @@ fn draw_code_panel(
     draw_text_supersampled(
         canvas,
         runtime_color,
-        area.x + 28,
+        area.x + 20,
         runtime_y,
         layout.label_scale,
         &assets.mono_font,
         &runtime,
     );
 
-    let code_y = runtime_y + layout.label_line_height + 18;
+    let code_y = runtime_y + layout.label_line_height + 12;
     draw_wrapped_lines(
         canvas,
         code_color,
-        area.x + 28,
+        area.x + 20,
         code_y,
         layout.code_scale,
         &assets.mono_font,
@@ -331,7 +333,7 @@ fn wrap_paragraph(text: &str, font: &FontArc, scale: PxScale, max_width: u32) ->
     }
 }
 
-fn wrap_code(code: &str, max_chars: usize) -> Vec<String> {
+fn wrap_code(code: &str, font: &FontArc, scale: PxScale, max_width: u32) -> Vec<String> {
     if code.trim().is_empty() {
         return vec!["// paste code here".to_string()];
     }
@@ -343,27 +345,34 @@ fn wrap_code(code: &str, max_chars: usize) -> Vec<String> {
             continue;
         }
 
-        let indent = raw_line.chars().take_while(|ch| ch.is_whitespace()).count();
-        let prefix = " ".repeat(indent);
+        let prefix = raw_line
+            .chars()
+            .take_while(|ch| ch.is_whitespace())
+            .collect::<String>();
         let trimmed = raw_line.trim_start();
-        let allowed = max_chars.saturating_sub(indent.max(1)).max(8);
 
-        if trimmed.chars().count() <= allowed {
+        if text_size(scale, font, raw_line).0 <= max_width {
             out.push(raw_line.to_string());
             continue;
         }
 
-        let mut current = String::new();
-        for chunk in trimmed.chars() {
-            current.push(chunk);
-            if current.chars().count() >= allowed {
-                out.push(format!("{prefix}{current}"));
-                current.clear();
+        let mut current = prefix.clone();
+        let mut wrote_code = false;
+        for ch in trimmed.chars() {
+            let mut candidate = current.clone();
+            candidate.push(ch);
+            if wrote_code && text_size(scale, font, &candidate).0 > max_width {
+                out.push(current);
+                current = prefix.clone();
+                current.push(ch);
+            } else {
+                current = candidate;
             }
+            wrote_code = true;
         }
 
-        if !current.is_empty() {
-            out.push(format!("{prefix}{current}"));
+        if !current.trim().is_empty() {
+            out.push(current);
         }
     }
     out
@@ -389,16 +398,16 @@ fn fit_code_group_layout(
     height: u32,
 ) -> Vec<FittedCodeLayout> {
     let mut last = None;
+    let content_width = width.saturating_sub(40);
 
     for &font_size in &CODE_FONT_SIZES {
         let code_scale = PxScale::from(font_size);
-        let label_size = (font_size + 2.0).max(13.0);
+        let label_size = (font_size + 2.0).max(14.0);
         let label_scale = PxScale::from(label_size);
         let label_line_height = (label_size * 1.05).ceil() as i32;
-        let code_line_height = (font_size * 1.32).ceil() as i32;
-        let header_height = 42 + label_line_height * 2;
-        let available_height = (height as i32 - header_height).max(code_line_height);
-        let max_chars = estimate_monospace_chars(font, width, code_scale);
+        let code_line_height = (font_size * 1.24).ceil() as i32;
+        let header_height = 30 + label_line_height * 2;
+        let available_height = (height as i32 - header_height - 16).max(code_line_height);
 
         let layouts = blocks
             .iter()
@@ -407,24 +416,30 @@ fn fit_code_group_layout(
                 label_scale,
                 label_line_height,
                 code_line_height,
-                lines: wrap_code(block.code, max_chars),
+                lines: wrap_code(block.code, font, code_scale, content_width),
             })
             .collect::<Vec<_>>();
 
-        if layouts
-            .iter()
-            .all(|layout| layout.lines.len() as i32 * layout.code_line_height <= available_height)
-        {
+        if layouts.iter().zip(blocks.iter()).all(|(layout, block)| {
+            code_layout_fits(font, block, layout, content_width, available_height)
+        }) {
             return layouts;
         }
 
-        last = Some((layouts, available_height));
+        last = Some((layouts, content_width, available_height));
     }
 
-    let (mut layouts, available_height) = last.expect("code sizes must not be empty");
+    let (mut layouts, content_width, available_height) =
+        last.expect("code sizes must not be empty");
     for layout in &mut layouts {
         let max_lines = (available_height / layout.code_line_height).max(1) as usize;
         layout.lines = truncate_lines(layout.lines.clone(), max_lines);
+        while max_line_width(font, layout.code_scale, &layout.lines) > content_width
+            && layout.lines.len() > 1
+        {
+            let new_len = layout.lines.len().saturating_sub(1).max(1);
+            layout.lines = truncate_lines(layout.lines.clone(), new_len);
+        }
     }
     layouts
 }
@@ -479,11 +494,33 @@ fn truncate_lines(mut lines: Vec<String>, max_lines: usize) -> Vec<String> {
     lines
 }
 
-fn estimate_monospace_chars(font: &FontArc, width: u32, scale: PxScale) -> usize {
-    let sample = "mmmmmmmmmmmm";
-    let (sample_width, _) = text_size(scale, font, sample);
-    let avg_char_width = ((sample_width as f32) / sample.len() as f32).max(1.0);
-    ((width as f32) / avg_char_width).floor().max(8.0) as usize
+fn code_layout_fits(
+    font: &FontArc,
+    block: &CodeBlock<'_>,
+    layout: &FittedCodeLayout,
+    available_width: u32,
+    available_height: i32,
+) -> bool {
+    let title_width = text_size(layout.label_scale, font, &format!("// {}", block.language)).0;
+    let runtime_width = text_size(
+        layout.label_scale,
+        font,
+        &format!("// {}", runtime_label(block.runtime_ms)),
+    )
+    .0;
+    let content_width = max_line_width(font, layout.code_scale, &layout.lines)
+        .max(title_width)
+        .max(runtime_width);
+    let content_height = layout.lines.len() as i32 * layout.code_line_height;
+    content_width <= available_width && content_height <= available_height
+}
+
+fn max_line_width(font: &FontArc, scale: PxScale, lines: &[String]) -> u32 {
+    lines
+        .iter()
+        .map(|line| text_size(scale, font, line).0)
+        .max()
+        .unwrap_or(0)
 }
 
 fn fill_rounded_box(image: &mut RgbaImage, area: BoxArea, radius: i32, color: Rgba<u8>) {
@@ -601,9 +638,17 @@ struct FittedTextLayout {
     lines: Vec<String>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), test))]
 fn output_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("output")
+    std::env::temp_dir().join("leetcodedaily-tests")
+}
+
+#[cfg(all(not(target_arch = "wasm32"), not(test)))]
+fn output_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join("Downloads"))
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
