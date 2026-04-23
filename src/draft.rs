@@ -62,7 +62,7 @@ impl Default for EditorFields {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Hash)]
 pub struct PostDraft {
     pub date: String,
     pub problem_title: String,
@@ -175,6 +175,52 @@ impl PostDraft {
         format!("{}\n", lines.join("\n"))
     }
 
+    pub fn rich_html(&self) -> String {
+        let mut html = String::from("<article>");
+        html.push_str(&format!(
+            "<h1>{}</h1>",
+            escape_html(&self.date_or_placeholder())
+        ));
+
+        let problem_line = self.problem_header_html();
+        if !problem_line.is_empty() {
+            html.push_str(&format!("<p>{problem_line}</p>"));
+        }
+
+        push_optional_html_link(&mut html, "blog post", &self.blog_post_url);
+        push_optional_html_link(&mut html, "substack", &self.substack_url);
+        push_optional_html_link(&mut html, "youtube", &self.youtube_url);
+
+        if !self.reference_url.trim().is_empty() {
+            let safe_url = escape_html(&self.reference_url);
+            html.push_str(&format!("<p><a href=\"{safe_url}\">{safe_url}</a></p>"));
+        }
+
+        push_html_section(&mut html, "Join me on Telegram", &self.telegram_text);
+        push_html_section(&mut html, "Problem TLDR", &self.problem_tldr);
+        push_html_section(&mut html, "Intuition", &self.intuition);
+        push_html_section(&mut html, "Approach", &self.approach);
+
+        html.push_str("<h4>Complexity</h4>");
+        html.push_str(&format!(
+            "<ul><li><strong>Time complexity:</strong> O({})</li><li><strong>Space complexity:</strong> O({})</li></ul>",
+            escape_html(&self.complexity_value(&self.time_complexity)),
+            escape_html(&self.complexity_value(&self.space_complexity)),
+        ));
+
+        html.push_str("<h4>Code</h4>");
+        html.push_str(&format!(
+            "<pre><code class=\"language-kotlin\">{}</code></pre>",
+            escape_html(&self.kotlin_code)
+        ));
+        html.push_str(&format!(
+            "<pre><code class=\"language-rust\">{}</code></pre>",
+            escape_html(&self.rust_code)
+        ));
+        html.push_str("</article>");
+        html
+    }
+
     pub fn preview_tldr(&self) -> String {
         if self.problem_tldr.is_empty() {
             "Summarize the problem in one sharp sentence.".to_string()
@@ -186,15 +232,19 @@ impl PostDraft {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn suggested_export_path(&self) -> PathBuf {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        manifest_dir
+            .join("output")
+            .join(self.suggested_export_filename())
+    }
+
+    pub fn suggested_export_filename(&self) -> String {
         let slug = slugify(if self.problem_title.is_empty() {
             "leetcode-daily"
         } else {
             &self.problem_title
         });
         let date_slug = slugify(&self.date_or_placeholder());
-        manifest_dir
-            .join("output")
-            .join(format!("{date_slug}-{slug}.webp"))
+        format!("{date_slug}-{slug}.webp")
     }
 
     pub fn date_or_placeholder(&self) -> String {
@@ -232,6 +282,18 @@ impl PostDraft {
             format!("{} {difficulty}", markdown_link(title, &self.problem_url))
         }
     }
+
+    fn problem_header_html(&self) -> String {
+        let title = self.problem_title.trim();
+        let difficulty = escape_html(&self.difficulty_or_placeholder());
+        if title.is_empty() {
+            difficulty
+        } else if self.problem_url.trim().is_empty() {
+            format!("{} {difficulty}", escape_html(title))
+        } else {
+            format!("{} {difficulty}", html_link(title, &self.problem_url))
+        }
+    }
 }
 
 fn trim_or(value: String, fallback: &str) -> String {
@@ -255,10 +317,32 @@ fn markdown_link(label: &str, url: &str) -> String {
     format!("[{}]({})", label.trim(), url.trim())
 }
 
+fn html_link(label: &str, url: &str) -> String {
+    format!(
+        "<a href=\"{}\">{}</a>",
+        escape_html(url.trim()),
+        escape_html(label.trim()),
+    )
+}
+
 fn push_optional_link(lines: &mut Vec<String>, label: &str, url: &str) {
     let safe_url = url.trim();
     if !safe_url.is_empty() {
         lines.push(format!("[{label}]({safe_url})"));
+    }
+}
+
+fn push_optional_html_link(html: &mut String, label: &str, url: &str) {
+    let safe_url = url.trim();
+    if !safe_url.is_empty() {
+        html.push_str(&format!("<p>{}</p>", html_link(label, safe_url)));
+    }
+}
+
+fn push_html_section(html: &mut String, title: &str, body: &str) {
+    html.push_str(&format!("<h4>{}</h4>", escape_html(title)));
+    if !body.trim().is_empty() {
+        html.push_str(&format!("<p>{}</p>", html_block(body)));
     }
 }
 
@@ -288,6 +372,23 @@ pub fn slugify(value: &str) -> String {
     }
 
     slug.trim_matches('-').to_string()
+}
+
+fn html_block(value: &str) -> String {
+    value
+        .split('\n')
+        .map(escape_html)
+        .collect::<Vec<_>>()
+        .join("<br>")
+}
+
+fn escape_html(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 #[cfg(test)]
@@ -367,5 +468,38 @@ mod tests {
         assert!(markdown.contains("Words Within Two Edits of Dictionary medium"));
         assert!(!markdown.contains("[Words Within Two Edits of Dictionary]("));
         assert!(!markdown.contains("https://dmitrysamoylenko.com/2023/07/14/leetcode_daily.html"));
+    }
+
+    #[test]
+    fn rich_html_omits_empty_optional_links() {
+        let draft = PostDraft {
+            date: "05.10.2025".to_string(),
+            problem_title: "Words Within Two Edits of Dictionary".to_string(),
+            problem_url: String::new(),
+            difficulty: "medium".to_string(),
+            blog_post_url: String::new(),
+            substack_url: String::new(),
+            youtube_url: String::new(),
+            reference_url: String::new(),
+            telegram_text: "Join".to_string(),
+            problem_tldr: "TLDR".to_string(),
+            intuition: "Think".to_string(),
+            approach: "Do".to_string(),
+            time_complexity: "n".to_string(),
+            space_complexity: "1".to_string(),
+            kotlin_runtime_ms: "28".to_string(),
+            kotlin_code: "fun demo() {}".to_string(),
+            rust_runtime_ms: "1".to_string(),
+            rust_code: "fn demo() {}".to_string(),
+        };
+
+        let html = draft.rich_html();
+
+        assert!(html.contains("<h1>05.10.2025</h1>"));
+        assert!(html.contains("<h4>Problem TLDR</h4>"));
+        assert!(html.contains("Words Within Two Edits of Dictionary medium"));
+        assert!(!html.contains("blog post</a>"));
+        assert!(html.contains("language-kotlin"));
+        assert!(html.contains("language-rust"));
     }
 }

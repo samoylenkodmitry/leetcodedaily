@@ -2,7 +2,6 @@ use crate::{assets, draft::PostDraft};
 use ab_glyph::{FontArc, PxScale};
 use anyhow::{Context, Result, anyhow};
 use cranpose::ImageBitmap;
-#[cfg(not(target_arch = "wasm32"))]
 use image::ImageFormat;
 use image::imageops::{FilterType, overlay};
 use image::{DynamicImage, Rgba, RgbaImage};
@@ -10,11 +9,20 @@ use imageproc::drawing::{draw_filled_circle_mut, draw_filled_rect_mut, draw_text
 use imageproc::rect::Rect;
 #[cfg(not(target_arch = "wasm32"))]
 use std::fs;
+#[cfg(target_arch = "wasm32")]
+use std::io::Cursor;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsCast;
+#[cfg(target_arch = "wasm32")]
+use web_sys::{Blob, BlobPropertyBag, HtmlAnchorElement, Url};
 
 const CANVAS_WIDTH: u32 = 1600;
 const CANVAS_HEIGHT: u32 = 900;
+const CODE_FONT_SIZES: [f32; 7] = [24.0, 22.0, 20.0, 18.0, 16.0, 14.0, 12.0];
+const TLDR_FONT_SIZES: [f32; 7] = [30.0, 28.0, 26.0, 24.0, 22.0, 20.0, 18.0];
 
 #[derive(Clone)]
 pub struct PreviewState {
@@ -37,53 +45,27 @@ impl PreviewState {
 pub fn generate_preview(draft: &PostDraft) -> Result<PreviewState> {
     let rendered = compose_card(draft)?;
     let bitmap = image_bitmap_from(&rendered)?;
-
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let output_dir = output_dir();
-        fs::create_dir_all(&output_dir).context("creating output directory")?;
-
-        let preview_png_path = output_dir.join("preview-latest.png");
-        rendered
-            .save(&preview_png_path)
-            .with_context(|| format!("saving preview to {}", preview_png_path.display()))?;
-
-        return Ok(PreviewState {
-            bitmap,
-            preview_png_path: preview_png_path.display().to_string(),
-            last_saved_webp_path: None,
-        });
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = rendered;
-        Ok(PreviewState {
-            bitmap,
-            preview_png_path: String::new(),
-            last_saved_webp_path: None,
-        })
-    }
+    Ok(PreviewState {
+        bitmap,
+        preview_png_path: String::new(),
+        last_saved_webp_path: None,
+    })
 }
 
 pub fn save_webp(draft: &PostDraft) -> Result<PreviewState> {
+    let rendered = compose_card(draft)?;
+    let bitmap = image_bitmap_from(&rendered)?;
+
     #[cfg(not(target_arch = "wasm32"))]
     {
         let output_dir = output_dir();
         fs::create_dir_all(&output_dir).context("creating output directory")?;
 
-        let rendered = compose_card(draft)?;
-        let preview_png_path = output_dir.join("preview-latest.png");
-        rendered
-            .save(&preview_png_path)
-            .with_context(|| format!("saving preview to {}", preview_png_path.display()))?;
-
+        let preview_png_path = save_preview_png(&rendered)?;
         let export_path = draft.suggested_export_path();
-        DynamicImage::ImageRgba8(rendered.clone())
+        DynamicImage::ImageRgba8(rendered)
             .save_with_format(&export_path, ImageFormat::WebP)
             .with_context(|| format!("saving WebP to {}", export_path.display()))?;
-
-        let bitmap = image_bitmap_from(&rendered)?;
 
         return Ok(PreviewState {
             bitmap,
@@ -94,10 +76,14 @@ pub fn save_webp(draft: &PostDraft) -> Result<PreviewState> {
 
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = draft;
-        Err(anyhow!(
-            "WebP export is not implemented in the web build yet"
-        ))
+        let bytes = encode_webp_bytes(&rendered)?;
+        let filename = draft.suggested_export_filename();
+        download_webp_bytes(&filename, &bytes)?;
+        Ok(PreviewState {
+            bitmap,
+            preview_png_path: String::new(),
+            last_saved_webp_path: Some(filename),
+        })
     }
 }
 
@@ -128,9 +114,6 @@ fn compose_card(draft: &PostDraft) -> Result<RgbaImage> {
     );
     overlay(&mut canvas, &qr, 26, 26);
 
-    let code_scale = PxScale::from(24.0);
-    let label_scale = PxScale::from(28.0);
-    let tldr_scale = PxScale::from(30.0);
     let inner_x = panel.x + panel_padding;
     let inner_width = panel.width.saturating_sub((panel_padding * 2) as u32);
     let code_top = panel.y + panel_padding;
@@ -150,8 +133,6 @@ fn compose_card(draft: &PostDraft) -> Result<RgbaImage> {
             block.language,
             block.runtime_ms,
             block.code,
-            code_scale,
-            label_scale,
         );
     } else {
         let block_height = code_region_height.saturating_sub(code_gap) / 2;
@@ -164,29 +145,30 @@ fn compose_card(draft: &PostDraft) -> Result<RgbaImage> {
                 block.language,
                 block.runtime_ms,
                 block.code,
-                code_scale,
-                label_scale,
             );
         }
     }
 
     let tldr_y = panel.y + panel.height as i32 - panel_padding - tldr_height as i32;
     let body_color = rgba(170, 176, 187, 255);
+    let tldr_layout = fit_paragraph_layout(
+        &assets.sans_font,
+        &draft.preview_tldr(),
+        inner_width,
+        tldr_height,
+        &TLDR_FONT_SIZES,
+        1.28,
+    );
     draw_wrapped_lines(
         &mut canvas,
         body_color,
         inner_x,
         tldr_y,
         inner_width,
-        tldr_scale,
+        tldr_layout.scale,
         &assets.sans_font,
-        &wrap_paragraph(
-            &draft.preview_tldr(),
-            &assets.sans_font,
-            tldr_scale,
-            inner_width,
-        ),
-        40,
+        &tldr_layout.lines,
+        tldr_layout.line_height,
     );
 
     Ok(canvas)
@@ -225,22 +207,24 @@ fn draw_code_panel(
     language: &str,
     runtime_ms: &str,
     code: &str,
-    code_scale: PxScale,
-    label_scale: PxScale,
 ) {
     let label_color = rgba(148, 229, 255, 255);
     let runtime_color = rgba(255, 180, 78, 255);
     let code_color = rgba(242, 246, 250, 255);
+    let content_width = area.width.saturating_sub(56);
+    let layout = fit_code_layout(code, content_width, area.height);
 
     let title = format!("// {language}");
     let runtime = format!("// {}", runtime_label(runtime_ms));
+    let title_y = area.y + 22;
+    let runtime_y = title_y + layout.label_line_height + 6;
 
     draw_text_mut(
         canvas,
         label_color,
         area.x + 28,
-        area.y + 22,
-        label_scale,
+        title_y,
+        layout.label_scale,
         &assets.sans_font,
         &title,
     );
@@ -248,26 +232,23 @@ fn draw_code_panel(
         canvas,
         runtime_color,
         area.x + 28,
-        area.y + 58,
-        label_scale,
+        runtime_y,
+        layout.label_scale,
         &assets.sans_font,
         &runtime,
     );
 
-    let code_y = area.y + 112;
-    let code_width = area.width.saturating_sub(56);
-    let max_chars = estimate_monospace_chars(code_width, 24.0);
-    let code_lines = wrap_code(code, max_chars);
+    let code_y = runtime_y + layout.label_line_height + 22;
     draw_wrapped_lines(
         canvas,
         code_color,
         area.x + 28,
         code_y,
-        code_width,
-        code_scale,
+        content_width,
+        layout.code_scale,
         &assets.mono_font,
-        &code_lines,
-        34,
+        &layout.lines,
+        layout.code_line_height,
     );
 }
 
@@ -373,6 +354,90 @@ fn wrap_code(code: &str, max_chars: usize) -> Vec<String> {
     out
 }
 
+fn fit_code_layout(code: &str, width: u32, height: u32) -> FittedCodeLayout {
+    let mut last = None;
+
+    for &font_size in &CODE_FONT_SIZES {
+        let code_scale = PxScale::from(font_size);
+        let label_size = (font_size + 4.0).max(16.0);
+        let label_scale = PxScale::from(label_size);
+        let label_line_height = (label_size * 1.08).ceil() as i32;
+        let code_line_height = (font_size * 1.36).ceil() as i32;
+        let max_chars = estimate_monospace_chars(width, font_size);
+        let lines = wrap_code(code, max_chars);
+        let header_height = 50 + label_line_height * 2;
+        let available_height = (height as i32 - header_height).max(code_line_height);
+        let total_height = lines.len() as i32 * code_line_height;
+        let layout = FittedCodeLayout {
+            code_scale,
+            label_scale,
+            label_line_height,
+            code_line_height,
+            lines,
+        };
+
+        if total_height <= available_height {
+            return layout;
+        }
+        last = Some((layout, available_height));
+    }
+
+    let (mut layout, available_height) = last.expect("code sizes must not be empty");
+    let max_lines = (available_height / layout.code_line_height).max(1) as usize;
+    layout.lines = truncate_lines(layout.lines, max_lines);
+    layout
+}
+
+fn fit_paragraph_layout(
+    font: &FontArc,
+    text: &str,
+    width: u32,
+    height: u32,
+    sizes: &[f32],
+    line_height_factor: f32,
+) -> FittedTextLayout {
+    let mut last = None;
+
+    for &font_size in sizes {
+        let scale = PxScale::from(font_size);
+        let line_height = (font_size * line_height_factor).ceil() as i32;
+        let lines = wrap_paragraph(text, font, scale, width);
+        let available_height = (height as i32).max(line_height);
+        let total_height = lines.len() as i32 * line_height;
+        let layout = FittedTextLayout {
+            scale,
+            line_height,
+            lines,
+        };
+
+        if total_height <= available_height {
+            return layout;
+        }
+        last = Some((layout, available_height));
+    }
+
+    let (mut layout, available_height) = last.expect("paragraph sizes must not be empty");
+    let max_lines = (available_height / layout.line_height).max(1) as usize;
+    layout.lines = truncate_lines(layout.lines, max_lines);
+    layout
+}
+
+fn truncate_lines(mut lines: Vec<String>, max_lines: usize) -> Vec<String> {
+    if lines.len() <= max_lines {
+        return lines;
+    }
+
+    lines.truncate(max_lines.max(1));
+    if let Some(last) = lines.last_mut() {
+        if last.trim().is_empty() {
+            *last = "...".to_string();
+        } else {
+            last.push_str(" ...");
+        }
+    }
+    lines
+}
+
 fn estimate_monospace_chars(width: u32, font_size: f32) -> usize {
     let avg_char_width = (font_size * 0.60).max(1.0);
     ((width as f32) / avg_char_width).floor().max(8.0) as usize
@@ -422,6 +487,15 @@ fn image_bitmap_from(image: &RgbaImage) -> Result<ImageBitmap> {
         .map_err(|error| anyhow!("converting preview into ImageBitmap failed: {error}"))
 }
 
+#[cfg(target_arch = "wasm32")]
+fn encode_webp_bytes(image: &RgbaImage) -> Result<Vec<u8>> {
+    let mut cursor = Cursor::new(Vec::new());
+    DynamicImage::ImageRgba8(image.clone())
+        .write_to(&mut cursor, ImageFormat::WebP)
+        .context("encoding preview as WebP")?;
+    Ok(cursor.into_inner())
+}
+
 fn runtime_label(value: &str) -> String {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -439,9 +513,75 @@ struct CodeBlock<'a> {
     code: &'a str,
 }
 
+struct FittedCodeLayout {
+    code_scale: PxScale,
+    label_scale: PxScale,
+    label_line_height: i32,
+    code_line_height: i32,
+    lines: Vec<String>,
+}
+
+struct FittedTextLayout {
+    scale: PxScale,
+    line_height: i32,
+    lines: Vec<String>,
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn output_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("output")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn save_preview_png(rendered: &RgbaImage) -> Result<PathBuf> {
+    let preview_png_path = output_dir().join("preview-latest.png");
+    rendered
+        .save(&preview_png_path)
+        .with_context(|| format!("saving preview to {}", preview_png_path.display()))?;
+    Ok(preview_png_path)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn download_webp_bytes(filename: &str, bytes: &[u8]) -> Result<()> {
+    let window = web_sys::window().ok_or_else(|| anyhow!("missing window"))?;
+    let document = window
+        .document()
+        .ok_or_else(|| anyhow!("missing document"))?;
+    let body = document
+        .body()
+        .ok_or_else(|| anyhow!("missing document body"))?;
+
+    let options = BlobPropertyBag::new();
+    options.set_type("image/webp");
+    let parts = js_sys::Array::new();
+    let byte_array = js_sys::Uint8Array::from(bytes);
+    parts.push(byte_array.as_ref());
+
+    let blob = Blob::new_with_u8_array_sequence_and_options(&parts.into(), &options)
+        .map_err(|error| anyhow!("creating WebP blob failed: {error:?}"))?;
+    let object_url = Url::create_object_url_with_blob(&blob)
+        .map_err(|error| anyhow!("creating object URL failed: {error:?}"))?;
+
+    let anchor = document
+        .create_element("a")
+        .map_err(|error| anyhow!("creating download link failed: {error:?}"))?
+        .dyn_into::<HtmlAnchorElement>()
+        .map_err(|_| anyhow!("casting download link failed"))?;
+    anchor.set_href(&object_url);
+    anchor.set_download(filename);
+
+    let anchor_html = anchor
+        .clone()
+        .dyn_into::<web_sys::HtmlElement>()
+        .map_err(|_| anyhow!("casting anchor element failed"))?;
+    body.append_child(&anchor_html)
+        .map_err(|error| anyhow!("adding download link failed: {error:?}"))?;
+    anchor_html.click();
+    body.remove_child(&anchor_html)
+        .map_err(|error| anyhow!("removing download link failed: {error:?}"))?;
+    Url::revoke_object_url(&object_url)
+        .map_err(|error| anyhow!("releasing object URL failed: {error:?}"))?;
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -463,24 +603,41 @@ impl BoxArea {
     }
 }
 
+#[derive(Clone)]
 struct AssetPack {
-    background: DynamicImage,
-    qr: DynamicImage,
+    background: Arc<DynamicImage>,
+    qr: Arc<DynamicImage>,
     mono_font: FontArc,
     sans_font: FontArc,
 }
 
 impl AssetPack {
     fn load() -> Result<Self> {
-        Ok(Self {
-            background: image::load_from_memory(assets::BACKGROUND_JPG)
-                .context("loading background image from embedded bytes")?,
-            qr: image::load_from_memory(assets::QR_OVERLAY_PNG)
-                .context("loading QR image from embedded bytes")?,
-            mono_font: load_font(assets::DEJAVU_SANS_MONO_TTF)
-                .context("loading embedded monospace font")?,
-            sans_font: load_font(assets::DEJAVU_SANS_TTF).context("loading embedded sans font")?,
-        })
+        static CACHE: OnceLock<Result<AssetPack, String>> = OnceLock::new();
+
+        match CACHE.get_or_init(|| {
+            Ok(AssetPack {
+                background: Arc::new(
+                    image::load_from_memory(assets::BACKGROUND_JPG)
+                        .context("loading background image from embedded bytes")
+                        .map_err(|error| error.to_string())?,
+                ),
+                qr: Arc::new(
+                    image::load_from_memory(assets::QR_OVERLAY_PNG)
+                        .context("loading QR image from embedded bytes")
+                        .map_err(|error| error.to_string())?,
+                ),
+                mono_font: load_font(assets::DEJAVU_SANS_MONO_TTF)
+                    .context("loading embedded monospace font")
+                    .map_err(|error| error.to_string())?,
+                sans_font: load_font(assets::DEJAVU_SANS_TTF)
+                    .context("loading embedded sans font")
+                    .map_err(|error| error.to_string())?,
+            })
+        }) {
+            Ok(assets) => Ok(assets.clone()),
+            Err(message) => Err(anyhow!(message.clone())),
+        }
     }
 }
 
@@ -490,7 +647,7 @@ fn load_font(bytes: &[u8]) -> Result<FontArc> {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
-    use super::{generate_preview, save_webp};
+    use super::{compose_card, fit_code_layout, generate_preview, image_bitmap_from, save_webp};
     use crate::draft::PostDraft;
     use std::fs;
     use std::path::Path;
@@ -520,16 +677,35 @@ mod tests {
             rust_code: "fn demo() {}".to_string(),
         };
 
+        let rendered = compose_card(&draft).expect("compose card");
+        let bitmap = image_bitmap_from(&rendered).expect("bitmap");
+        assert!(bitmap.width() > 0);
+        assert!(bitmap.height() > 0);
+
         let preview = generate_preview(&draft).expect("preview generation");
-        assert!(!preview.preview_png_path.is_empty());
+        assert!(preview.preview_png_path.is_empty());
         assert!(preview.bitmap.width() > 0);
         assert!(preview.bitmap.height() > 0);
-        assert!(Path::new(&preview.preview_png_path).exists());
 
         let saved = save_webp(&draft).expect("webp save");
+        assert!(Path::new(&saved.preview_png_path).exists());
         let webp_path = saved.last_saved_webp_path.clone().expect("saved webp path");
         assert!(Path::new(&webp_path).exists());
 
+        let _ = fs::remove_file(saved.preview_png_path);
         let _ = fs::remove_file(webp_path);
+    }
+
+    #[test]
+    fn fit_code_layout_shrinks_when_code_is_large() {
+        let code = (0..40)
+            .map(|index| format!("let value_{index} = {index};"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let layout = fit_code_layout(&code, 340, 180);
+
+        assert!(layout.code_scale.x <= 18.0);
+        assert!(!layout.lines.is_empty());
     }
 }

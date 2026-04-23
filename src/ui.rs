@@ -13,6 +13,14 @@ use cranpose::prelude::*;
 use cranpose::widgets::BasicTextFieldWithOptions;
 use cranpose_core::MutableState;
 use cranpose_foundation::text::{TextFieldLineLimits, TextFieldState};
+#[cfg(target_arch = "wasm32")]
+use js_sys::{Array, Object, Promise, Reflect};
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsValue;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_futures::{JsFuture, spawn_local};
+#[cfg(target_arch = "wasm32")]
+use web_sys::{Blob, BlobPropertyBag, ClipboardItem};
 
 const APP_WIDTH: u32 = 1480;
 const APP_HEIGHT: u32 = 1560;
@@ -108,7 +116,8 @@ fn App() {
         move || match generate_preview(&PostDraft::from_fields(&fields)) {
             Ok(preview) => BootState {
                 preview,
-                status: "Preview ready. Edit the fields and regenerate when needed.".to_string(),
+                status: "Preview updates as you type. Copy markdown or rich text, or save a WebP."
+                    .to_string(),
             },
             Err(error) => BootState {
                 preview: PreviewState::placeholder(),
@@ -125,9 +134,19 @@ fn App() {
         let boot = boot.clone();
         move || boot.status
     });
-
-    let markdown_preview = PostDraft::from_fields(&fields).markdown();
+    let current_draft = PostDraft::from_fields(&fields);
+    let markdown_preview = current_draft.markdown();
     let current_tab = active_tab.value();
+
+    cranpose_core::LaunchedEffect!(current_draft.clone(), {
+        let draft = current_draft.clone();
+        let preview_state = preview_state.clone();
+        let status = status.clone();
+        move |_| match generate_preview(&draft) {
+            Ok(preview) => preview_state.set(preview),
+            Err(error) => status.set(format!("Preview generation failed: {error}")),
+        }
+    });
 
     Column(
         Modifier::empty()
@@ -256,7 +275,7 @@ fn ActionsCard(
                             heading_style(34.0),
                         );
                         Text(
-                            "Fill the template, copy the final markdown, regenerate the code card preview, and export a WebP from the same app.",
+                            "Fill the template, copy markdown or rich text, and save the preview card as WebP from the same app.",
                             Modifier::empty(),
                             body_style(),
                         );
@@ -273,29 +292,17 @@ fn ActionsCard(
                                 let copy_status = row_status.clone();
                                 primary_button("Copy Markdown", move || {
                                     let draft = PostDraft::from_fields(&copy_fields);
-                                    match copy_markdown(&draft.markdown()) {
-                                        Ok(_) => copy_status
-                                            .set("Markdown copied to the clipboard.".to_string()),
-                                        Err(error) => copy_status
-                                            .set(format!("Clipboard copy failed: {error}")),
-                                    }
+                                    copy_markdown_to_clipboard(
+                                        draft.markdown(),
+                                        copy_status.clone(),
+                                    );
                                 });
 
-                                let render_fields = row_fields.clone();
-                                let render_status = row_status.clone();
-                                let render_preview = row_preview.clone();
-                                primary_button("Render Preview", move || {
-                                    let draft = PostDraft::from_fields(&render_fields);
-                                    match generate_preview(&draft) {
-                                        Ok(preview) => {
-                                            let path = preview.preview_png_path.clone();
-                                            render_preview.set(preview);
-                                            render_status
-                                                .set(format!("Preview regenerated at {path}"));
-                                        }
-                                        Err(error) => render_status
-                                            .set(format!("Preview generation failed: {error}")),
-                                    }
+                                let rich_fields = row_fields.clone();
+                                let rich_status = row_status.clone();
+                                primary_button("Copy Rich Text", move || {
+                                    let draft = PostDraft::from_fields(&rich_fields);
+                                    copy_rich_text_to_clipboard(draft, rich_status.clone());
                                 });
 
                                 let save_fields = row_fields.clone();
@@ -325,7 +332,7 @@ fn ActionsCard(
                         let preview = preview_state.value();
                         if !preview.preview_png_path.is_empty() {
                             Text(
-                                format!("Latest preview: {}", preview.preview_png_path),
+                                format!("Latest preview PNG: {}", preview.preview_png_path),
                                 Modifier::empty(),
                                 body_style(),
                             );
@@ -652,21 +659,133 @@ fn labeled_code_field(
     );
 }
 
-fn copy_markdown(markdown: &str) -> Result<()> {
+fn copy_markdown_to_clipboard(markdown: String, status: MutableState<String>) {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let mut clipboard = Clipboard::new()?;
-        clipboard.set_text(markdown.to_string())?;
-        return Ok(());
+        match copy_markdown(&markdown) {
+            Ok(_) => status.set("Markdown copied to the clipboard.".to_string()),
+            Err(error) => status.set(format!("Clipboard copy failed: {error}")),
+        }
     }
 
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = markdown;
-        Err(anyhow!(
-            "clipboard copy is not implemented in the web build yet"
-        ))
+        match web_write_text_promise(&markdown) {
+            Ok(promise) => {
+                track_web_promise(
+                    promise,
+                    "Markdown copied to the clipboard.".to_string(),
+                    "Clipboard copy failed".to_string(),
+                    status,
+                );
+            }
+            Err(error) => status.set(format!("Clipboard copy failed: {error}")),
+        }
     }
+}
+
+fn copy_rich_text_to_clipboard(draft: PostDraft, status: MutableState<String>) {
+    let html = draft.rich_html();
+    let fallback = draft.markdown();
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        match copy_rich_text(&html, &fallback) {
+            Ok(_) => status.set("Rich text copied to the clipboard.".to_string()),
+            Err(error) => status.set(format!("Rich text copy failed: {error}")),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        match web_write_rich_text_promise(&html, &fallback) {
+            Ok(promise) => {
+                track_web_promise(
+                    promise,
+                    "Rich text copied to the clipboard.".to_string(),
+                    "Rich text copy failed".to_string(),
+                    status,
+                );
+            }
+            Err(error) => status.set(format!("Rich text copy failed: {error}")),
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn copy_markdown(markdown: &str) -> Result<()> {
+    let mut clipboard = Clipboard::new()?;
+    clipboard.set_text(markdown.to_string())?;
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn copy_rich_text(html: &str, fallback: &str) -> Result<()> {
+    let mut clipboard = Clipboard::new()?;
+    clipboard.set_html(html.to_string(), Some(fallback.to_string()))?;
+    Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn web_write_text_promise(markdown: &str) -> Result<js_sys::Promise> {
+    let window = web_sys::window().ok_or_else(|| anyhow!("missing window"))?;
+    Ok(window.navigator().clipboard().write_text(markdown))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn web_write_rich_text_promise(html: &str, fallback: &str) -> Result<js_sys::Promise> {
+    let window = web_sys::window().ok_or_else(|| anyhow!("missing window"))?;
+    let clipboard = window.navigator().clipboard();
+    let record = Object::new();
+
+    let html_blob = text_blob(html, "text/html")?;
+    let fallback_blob = text_blob(fallback, "text/plain")?;
+    let html_promise = Promise::resolve(&JsValue::from(html_blob));
+    let fallback_promise = Promise::resolve(&JsValue::from(fallback_blob));
+
+    Reflect::set(
+        &record,
+        &JsValue::from_str("text/html"),
+        html_promise.as_ref(),
+    )
+    .map_err(|error| anyhow!("registering HTML clipboard data failed: {error:?}"))?;
+    Reflect::set(
+        &record,
+        &JsValue::from_str("text/plain"),
+        fallback_promise.as_ref(),
+    )
+    .map_err(|error| anyhow!("registering text clipboard data failed: {error:?}"))?;
+
+    let item = ClipboardItem::new_with_record_from_str_to_blob_promise(&record)
+        .map_err(|error| anyhow!("creating clipboard item failed: {error:?}"))?;
+    let items = Array::new();
+    items.push(item.as_ref());
+    Ok(clipboard.write(items.as_ref()))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn text_blob(contents: &str, mime_type: &str) -> Result<Blob> {
+    let parts = Array::new();
+    parts.push(&JsValue::from_str(contents));
+    let options = BlobPropertyBag::new();
+    options.set_type(mime_type);
+    Blob::new_with_str_sequence_and_options(parts.as_ref(), &options)
+        .map_err(|error| anyhow!("creating {mime_type} blob failed: {error:?}"))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn track_web_promise(
+    promise: js_sys::Promise,
+    success_message: String,
+    failure_prefix: String,
+    status: MutableState<String>,
+) {
+    spawn_local(async move {
+        match JsFuture::from(promise).await {
+            Ok(_) => status.set(success_message),
+            Err(error) => status.set(format!("{failure_prefix}: {error:?}")),
+        }
+    });
 }
 
 fn heading_style(size: f32) -> TextStyle {
