@@ -4,7 +4,7 @@ use cranpose_foundation::text::TextFieldState;
 #[cfg(not(target_arch = "wasm32"))]
 use std::fs;
 #[cfg(not(target_arch = "wasm32"))]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const DEFAULT_REFERENCE_URL: &str = "https://dmitrysamoylenko.com/2023/07/14/leetcode_daily.html";
 #[cfg(target_arch = "wasm32")]
@@ -145,6 +145,7 @@ impl PostDraft {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn markdown(&self) -> String {
         self.blog_template()
     }
@@ -390,6 +391,19 @@ pub fn persist_autosave(draft: &PostDraft) -> Result<()> {
             .map_err(|error| anyhow!("saving autosave to local storage failed: {error:?}"))?;
         Ok(())
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn write_draft_snapshot(path: &Path, draft: &PostDraft) -> Result<()> {
+    fs::write(path, encode_autosave(draft))
+        .with_context(|| format!("writing draft snapshot {}", path.display()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn read_draft_snapshot(path: &Path) -> Result<PostDraft> {
+    let encoded = fs::read_to_string(path)
+        .with_context(|| format!("reading draft snapshot {}", path.display()))?;
+    decode_autosave(&encoded)
 }
 
 pub fn autosave_destination_label() -> String {
@@ -710,6 +724,7 @@ fn runtime_label(value: &str) -> String {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn slugify(value: &str) -> String {
     let mut slug = String::new();
     let mut last_dash = false;

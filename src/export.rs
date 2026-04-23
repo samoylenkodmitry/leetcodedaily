@@ -52,6 +52,7 @@ pub struct PreviewState {
     pub last_saved_webp_path: Option<String>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, PartialEq)]
 pub(crate) struct ComposePreviewAssets {
     pub background: ImageBitmap,
@@ -61,13 +62,18 @@ pub(crate) struct ComposePreviewAssets {
 #[derive(Clone, PartialEq)]
 pub(crate) struct CardRenderPlan {
     pub panel: BoxArea,
+    pub panel_padding: u32,
     pub qr: BoxArea,
+    pub shared_text_width: u32,
+    pub code_group_top_offset: u32,
+    pub code_gap: u32,
     pub code_blocks: Vec<CodeRenderPlan>,
     pub tldr: TextRenderPlan,
 }
 
 #[derive(Clone, PartialEq)]
 pub(crate) struct CodeRenderPlan {
+    pub block_height: u32,
     pub text_x: i32,
     pub title_y: i32,
     pub runtime_y: i32,
@@ -123,6 +129,7 @@ pub fn render_preview_frame(draft: &PostDraft) -> std::result::Result<PreviewFra
         .map_err(|error| error.to_string())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn compose_preview_assets() -> Result<ComposePreviewAssets> {
     static CACHE: OnceLock<std::result::Result<ComposePreviewAssets, String>> = OnceLock::new();
 
@@ -149,6 +156,7 @@ pub(crate) fn compose_preview_assets() -> Result<ComposePreviewAssets> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn compose_preview_plan(draft: &PostDraft) -> Result<CardRenderPlan> {
     let assets = AssetPack::load()?;
     Ok(build_card_render_plan_with_assets(draft, &assets))
@@ -156,7 +164,23 @@ pub(crate) fn compose_preview_plan(draft: &PostDraft) -> Result<CardRenderPlan> 
 
 pub fn save_webp(draft: &PostDraft) -> Result<PreviewState> {
     let rendered = compose_card(draft)?;
-    let bitmap = image_bitmap_from(&rendered)?;
+    save_preview_frame_as_webp(
+        PreviewFrame {
+            width: rendered.width(),
+            height: rendered.height(),
+            pixels: rendered.into_raw(),
+        },
+        draft,
+    )
+}
+
+pub(crate) fn save_preview_frame_as_webp(
+    frame: PreviewFrame,
+    draft: &PostDraft,
+) -> Result<PreviewState> {
+    let preview = PreviewState::from_frame(frame.clone())?;
+    let image = RgbaImage::from_raw(frame.width, frame.height, frame.pixels)
+        .ok_or_else(|| anyhow!("invalid RGBA frame buffer"))?;
 
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -164,23 +188,23 @@ pub fn save_webp(draft: &PostDraft) -> Result<PreviewState> {
         fs::create_dir_all(&output_dir).context("creating output directory")?;
 
         let export_path = draft.suggested_export_path();
-        let bytes = encode_webp_bytes(&rendered)?;
+        let bytes = encode_webp_bytes(&image)?;
         fs::write(&export_path, &bytes)
             .with_context(|| format!("saving WebP to {}", export_path.display()))?;
 
         return Ok(PreviewState {
-            bitmap,
+            bitmap: preview.bitmap,
             last_saved_webp_path: Some(export_path.display().to_string()),
         });
     }
 
     #[cfg(target_arch = "wasm32")]
     {
-        let data_url = encode_webp_data_url(&rendered)?;
+        let data_url = encode_webp_data_url(&image)?;
         let filename = draft.suggested_export_filename();
         download_webp_data_url(&filename, &data_url)?;
         Ok(PreviewState {
-            bitmap,
+            bitmap: preview.bitmap,
             last_saved_webp_path: Some(filename),
         })
     }
@@ -302,6 +326,7 @@ fn build_card_render_plan_with_assets(draft: &PostDraft, assets: &AssetPack) -> 
         let code_y = runtime_y + layout.label_line_height + CODE_HEADER_TO_BODY_GAP;
 
         code_plans.push(CodeRenderPlan {
+            block_height,
             text_x,
             title_y,
             runtime_y,
@@ -335,7 +360,11 @@ fn build_card_render_plan_with_assets(draft: &PostDraft, assets: &AssetPack) -> 
 
     CardRenderPlan {
         panel,
+        panel_padding: panel_padding as u32,
         qr,
+        shared_text_width: code_group_layout.shared_text_width,
+        code_group_top_offset: code_group_layout.top_offset,
+        code_gap: code_group_layout.gap,
         code_blocks: code_plans,
         tldr: TextRenderPlan {
             x: inner_x,
@@ -672,11 +701,13 @@ fn rgba(r: u8, g: u8, b: u8, a: u8) -> Rgba<u8> {
     Rgba([r, g, b, a])
 }
 
+#[cfg(all(not(target_arch = "wasm32"), test))]
 fn image_bitmap_from(image: &RgbaImage) -> Result<ImageBitmap> {
     ImageBitmap::from_rgba8(image.width(), image.height(), image.clone().into_raw())
         .map_err(|error| anyhow!("converting preview into ImageBitmap failed: {error}"))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn image_bitmap_from_dynamic(image: &DynamicImage) -> Result<ImageBitmap> {
     let rgba = image.to_rgba8();
     ImageBitmap::from_rgba8(rgba.width(), rgba.height(), rgba.into_raw())
