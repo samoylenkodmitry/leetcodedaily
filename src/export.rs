@@ -21,8 +21,9 @@ use web_sys::{Blob, BlobPropertyBag, HtmlAnchorElement, Url};
 
 const CANVAS_WIDTH: u32 = 1600;
 const CANVAS_HEIGHT: u32 = 900;
-const CODE_FONT_SIZES: [f32; 7] = [24.0, 22.0, 20.0, 18.0, 16.0, 14.0, 12.0];
-const TLDR_FONT_SIZES: [f32; 7] = [30.0, 28.0, 26.0, 24.0, 22.0, 20.0, 18.0];
+const TEXT_SUPERSAMPLE: u32 = 3;
+const CODE_FONT_SIZES: [f32; 9] = [22.0, 20.0, 18.0, 16.0, 14.0, 13.0, 12.0, 11.0, 10.0];
+const TLDR_FONT_SIZES: [f32; 6] = [20.0, 18.0, 16.0, 14.0, 13.0, 12.0];
 
 #[derive(Clone)]
 pub struct PreviewState {
@@ -94,6 +95,10 @@ fn compose_card(draft: &PostDraft) -> Result<RgbaImage> {
             .background
             .resize_to_fill(CANVAS_WIDTH, CANVAS_HEIGHT, FilterType::Lanczos3);
     let mut canvas = canvas.to_rgba8();
+    let mut text_layer = RgbaImage::new(
+        CANVAS_WIDTH * TEXT_SUPERSAMPLE,
+        CANVAS_HEIGHT * TEXT_SUPERSAMPLE,
+    );
 
     let panel = BoxArea::new(104, 112, 1392, 660);
     let panel_padding = 56;
@@ -126,50 +131,64 @@ fn compose_card(draft: &PostDraft) -> Result<RgbaImage> {
         let block_height = code_region_height.min(320).max(220);
         let offset = code_region_height.saturating_sub(block_height) / 2;
         let block = &code_blocks[0];
+        let layout =
+            fit_code_group_layout(&assets.mono_font, &code_blocks, inner_width, block_height)
+                .into_iter()
+                .next()
+                .expect("single code layout");
         draw_code_panel(
-            &mut canvas,
+            &mut text_layer,
             &assets,
             BoxArea::new(inner_x, code_top + offset as i32, inner_width, block_height),
             block.language,
             block.runtime_ms,
-            block.code,
+            &layout,
         );
     } else {
         let block_height = code_region_height.saturating_sub(code_gap) / 2;
-        for (index, block) in code_blocks.iter().enumerate() {
+        let layouts =
+            fit_code_group_layout(&assets.mono_font, &code_blocks, inner_width, block_height);
+        for ((index, block), layout) in code_blocks.iter().enumerate().zip(layouts.iter()) {
             let y = code_top + index as i32 * (block_height as i32 + code_gap as i32);
             draw_code_panel(
-                &mut canvas,
+                &mut text_layer,
                 &assets,
                 BoxArea::new(inner_x, y, inner_width, block_height),
                 block.language,
                 block.runtime_ms,
-                block.code,
+                layout,
             );
         }
     }
 
-    let tldr_y = panel.y + panel.height as i32 - panel_padding - tldr_height as i32;
     let body_color = rgba(170, 176, 187, 255);
+    let tldr_area_top = panel.y + panel.height as i32 - panel_padding - tldr_height as i32;
+    let tldr_area_bottom = panel.y + panel.height as i32 - panel_padding;
     let tldr_layout = fit_paragraph_layout(
         &assets.sans_font,
         &draft.preview_tldr(),
         inner_width,
         tldr_height,
         &TLDR_FONT_SIZES,
-        1.28,
+        1.18,
     );
+    let tldr_text_height = tldr_layout.line_height * tldr_layout.lines.len() as i32;
+    let tldr_y = (tldr_area_bottom - tldr_text_height).max(tldr_area_top);
     draw_wrapped_lines(
-        &mut canvas,
+        &mut text_layer,
         body_color,
         inner_x,
         tldr_y,
-        inner_width,
         tldr_layout.scale,
         &assets.sans_font,
         &tldr_layout.lines,
         tldr_layout.line_height,
     );
+
+    let text_overlay = DynamicImage::ImageRgba8(text_layer)
+        .resize_exact(CANVAS_WIDTH, CANVAS_HEIGHT, FilterType::Lanczos3)
+        .to_rgba8();
+    overlay(&mut canvas, &text_overlay, 0, 0);
 
     Ok(canvas)
 }
@@ -206,45 +225,42 @@ fn draw_code_panel(
     area: BoxArea,
     language: &str,
     runtime_ms: &str,
-    code: &str,
+    layout: &FittedCodeLayout,
 ) {
     let label_color = rgba(148, 229, 255, 255);
     let runtime_color = rgba(255, 180, 78, 255);
     let code_color = rgba(242, 246, 250, 255);
-    let content_width = area.width.saturating_sub(56);
-    let layout = fit_code_layout(code, content_width, area.height);
 
     let title = format!("// {language}");
     let runtime = format!("// {}", runtime_label(runtime_ms));
-    let title_y = area.y + 22;
-    let runtime_y = title_y + layout.label_line_height + 6;
+    let title_y = area.y + 18;
+    let runtime_y = title_y + layout.label_line_height + 4;
 
-    draw_text_mut(
+    draw_text_supersampled(
         canvas,
         label_color,
         area.x + 28,
         title_y,
         layout.label_scale,
-        &assets.sans_font,
+        &assets.mono_font,
         &title,
     );
-    draw_text_mut(
+    draw_text_supersampled(
         canvas,
         runtime_color,
         area.x + 28,
         runtime_y,
         layout.label_scale,
-        &assets.sans_font,
+        &assets.mono_font,
         &runtime,
     );
 
-    let code_y = runtime_y + layout.label_line_height + 22;
+    let code_y = runtime_y + layout.label_line_height + 18;
     draw_wrapped_lines(
         canvas,
         code_color,
         area.x + 28,
         code_y,
-        content_width,
         layout.code_scale,
         &assets.mono_font,
         &layout.lines,
@@ -257,14 +273,13 @@ fn draw_wrapped_lines(
     color: Rgba<u8>,
     x: i32,
     y: i32,
-    _max_width: u32,
     scale: PxScale,
     font: &FontArc,
     lines: &[String],
     line_height: i32,
 ) {
     for (index, line) in lines.iter().enumerate() {
-        draw_text_mut(
+        draw_text_supersampled(
             canvas,
             color,
             x,
@@ -354,38 +369,64 @@ fn wrap_code(code: &str, max_chars: usize) -> Vec<String> {
     out
 }
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
 fn fit_code_layout(code: &str, width: u32, height: u32) -> FittedCodeLayout {
+    let block = [CodeBlock {
+        language: "kotlin",
+        runtime_ms: "",
+        code,
+    }];
+    fit_code_group_layout(preview_mono_font(), &block, width, height)
+        .into_iter()
+        .next()
+        .expect("single layout")
+}
+
+fn fit_code_group_layout(
+    font: &FontArc,
+    blocks: &[CodeBlock<'_>],
+    width: u32,
+    height: u32,
+) -> Vec<FittedCodeLayout> {
     let mut last = None;
 
     for &font_size in &CODE_FONT_SIZES {
         let code_scale = PxScale::from(font_size);
-        let label_size = (font_size + 4.0).max(16.0);
+        let label_size = (font_size + 2.0).max(13.0);
         let label_scale = PxScale::from(label_size);
-        let label_line_height = (label_size * 1.08).ceil() as i32;
-        let code_line_height = (font_size * 1.36).ceil() as i32;
-        let max_chars = estimate_monospace_chars(width, font_size);
-        let lines = wrap_code(code, max_chars);
-        let header_height = 50 + label_line_height * 2;
+        let label_line_height = (label_size * 1.05).ceil() as i32;
+        let code_line_height = (font_size * 1.32).ceil() as i32;
+        let header_height = 42 + label_line_height * 2;
         let available_height = (height as i32 - header_height).max(code_line_height);
-        let total_height = lines.len() as i32 * code_line_height;
-        let layout = FittedCodeLayout {
-            code_scale,
-            label_scale,
-            label_line_height,
-            code_line_height,
-            lines,
-        };
+        let max_chars = estimate_monospace_chars(font, width, code_scale);
 
-        if total_height <= available_height {
-            return layout;
+        let layouts = blocks
+            .iter()
+            .map(|block| FittedCodeLayout {
+                code_scale,
+                label_scale,
+                label_line_height,
+                code_line_height,
+                lines: wrap_code(block.code, max_chars),
+            })
+            .collect::<Vec<_>>();
+
+        if layouts
+            .iter()
+            .all(|layout| layout.lines.len() as i32 * layout.code_line_height <= available_height)
+        {
+            return layouts;
         }
-        last = Some((layout, available_height));
+
+        last = Some((layouts, available_height));
     }
 
-    let (mut layout, available_height) = last.expect("code sizes must not be empty");
-    let max_lines = (available_height / layout.code_line_height).max(1) as usize;
-    layout.lines = truncate_lines(layout.lines, max_lines);
-    layout
+    let (mut layouts, available_height) = last.expect("code sizes must not be empty");
+    for layout in &mut layouts {
+        let max_lines = (available_height / layout.code_line_height).max(1) as usize;
+        layout.lines = truncate_lines(layout.lines.clone(), max_lines);
+    }
+    layouts
 }
 
 fn fit_paragraph_layout(
@@ -438,8 +479,10 @@ fn truncate_lines(mut lines: Vec<String>, max_lines: usize) -> Vec<String> {
     lines
 }
 
-fn estimate_monospace_chars(width: u32, font_size: f32) -> usize {
-    let avg_char_width = (font_size * 0.60).max(1.0);
+fn estimate_monospace_chars(font: &FontArc, width: u32, scale: PxScale) -> usize {
+    let sample = "mmmmmmmmmmmm";
+    let (sample_width, _) = text_size(scale, font, sample);
+    let avg_char_width = ((sample_width as f32) / sample.len() as f32).max(1.0);
     ((width as f32) / avg_char_width).floor().max(8.0) as usize
 }
 
@@ -485,6 +528,37 @@ fn rgba(r: u8, g: u8, b: u8, a: u8) -> Rgba<u8> {
 fn image_bitmap_from(image: &RgbaImage) -> Result<ImageBitmap> {
     ImageBitmap::from_rgba8(image.width(), image.height(), image.clone().into_raw())
         .map_err(|error| anyhow!("converting preview into ImageBitmap failed: {error}"))
+}
+
+fn draw_text_supersampled(
+    canvas: &mut RgbaImage,
+    color: Rgba<u8>,
+    x: i32,
+    y: i32,
+    scale: PxScale,
+    font: &FontArc,
+    text: &str,
+) {
+    draw_text_mut(
+        canvas,
+        color,
+        superscaled_i32(x),
+        superscaled_i32(y),
+        superscaled_scale(scale),
+        font,
+        text,
+    );
+}
+
+fn superscaled_i32(value: i32) -> i32 {
+    value * TEXT_SUPERSAMPLE as i32
+}
+
+fn superscaled_scale(scale: PxScale) -> PxScale {
+    PxScale {
+        x: scale.x * TEXT_SUPERSAMPLE as f32,
+        y: scale.y * TEXT_SUPERSAMPLE as f32,
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -627,7 +701,7 @@ impl AssetPack {
                         .context("loading QR image from embedded bytes")
                         .map_err(|error| error.to_string())?,
                 ),
-                mono_font: load_font(assets::DEJAVU_SANS_MONO_TTF)
+                mono_font: load_font(assets::MONASPACE_KRYPTON_TTF)
                     .context("loading embedded monospace font")
                     .map_err(|error| error.to_string())?,
                 sans_font: load_font(assets::DEJAVU_SANS_TTF)
@@ -643,6 +717,12 @@ impl AssetPack {
 
 fn load_font(bytes: &[u8]) -> Result<FontArc> {
     FontArc::try_from_vec(bytes.to_vec()).map_err(|_| anyhow!("invalid font data"))
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn preview_mono_font() -> &'static FontArc {
+    static FONT: OnceLock<FontArc> = OnceLock::new();
+    FONT.get_or_init(|| load_font(assets::MONASPACE_KRYPTON_TTF).expect("preview mono font"))
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

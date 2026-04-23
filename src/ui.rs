@@ -29,7 +29,7 @@ const WEB_SURFACE_MAX_DIM: u32 = 1900;
 #[cfg(target_arch = "wasm32")]
 const WEB_CANVAS_MARGIN: f64 = 48.0;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum EditorTab {
     Output,
     Meta,
@@ -110,41 +110,29 @@ fn clamp_web_dimension(target: u32, viewport: f64, device_pixel_ratio: f64) -> u
 fn App() {
     let scroll_state = remember(|| ScrollState::new(0.0)).with(|state| state.clone());
     let fields = remember(EditorFields::default).with(|fields| fields.clone());
-    let active_tab = useState(|| EditorTab::Output);
-    let boot = remember({
-        let fields = fields.clone();
-        move || match generate_preview(&PostDraft::from_fields(&fields)) {
-            Ok(preview) => BootState {
-                preview,
-                status: "Preview updates as you type. Copy markdown or rich text, or save a WebP."
-                    .to_string(),
-            },
-            Err(error) => BootState {
-                preview: PreviewState::placeholder(),
-                status: format!("Preview generation failed on startup: {error}"),
-            },
-        }
-    })
-    .with(|state| state.clone());
-    let preview_state = useState({
-        let boot = boot.clone();
-        move || boot.preview
-    });
-    let status = useState({
-        let boot = boot.clone();
-        move || boot.status
-    });
+    let active_tab = useState(|| EditorTab::Meta);
+    let preview_state = useState(PreviewState::placeholder);
+    let status = useState(|| "Preview refreshes when you open the Output tab.".to_string());
     let current_draft = PostDraft::from_fields(&fields);
     let markdown_preview = current_draft.markdown();
     let current_tab = active_tab.value();
 
-    cranpose_core::LaunchedEffect!(current_draft.clone(), {
+    cranpose_core::LaunchedEffect!(current_tab, {
         let draft = current_draft.clone();
+        let current_tab = current_tab;
         let preview_state = preview_state.clone();
         let status = status.clone();
-        move |_| match generate_preview(&draft) {
-            Ok(preview) => preview_state.set(preview),
-            Err(error) => status.set(format!("Preview generation failed: {error}")),
+        move |_| {
+            if current_tab != EditorTab::Output {
+                return;
+            }
+            match generate_preview(&draft) {
+                Ok(preview) => {
+                    preview_state.set(preview);
+                    status.set("Preview refreshed.".to_string());
+                }
+                Err(error) => status.set(format!("Preview generation failed: {error}")),
+            }
         }
     });
 
@@ -275,7 +263,7 @@ fn ActionsCard(
                             heading_style(34.0),
                         );
                         Text(
-                            "Fill the template, copy markdown or rich text, and save the preview card as WebP from the same app.",
+                            "Fill the template, open Output when you want a fresh preview, then copy markdown or rich text or save the card as WebP.",
                             Modifier::empty(),
                             body_style(),
                         );
@@ -522,12 +510,6 @@ fn CodeCard(fields: EditorFields) {
             );
         }
     });
-}
-
-#[derive(Clone)]
-struct BootState {
-    preview: PreviewState,
-    status: String,
 }
 
 #[composable]
