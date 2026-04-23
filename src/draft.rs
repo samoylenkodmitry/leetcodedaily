@@ -1,9 +1,15 @@
+use anyhow::{Context, Result, anyhow};
 use chrono::Local;
 use cranpose_foundation::text::TextFieldState;
+#[cfg(not(target_arch = "wasm32"))]
+use std::fs;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 
 const DEFAULT_REFERENCE_URL: &str = "https://dmitrysamoylenko.com/2023/07/14/leetcode_daily.html";
+#[cfg(target_arch = "wasm32")]
+const AUTOSAVE_STORAGE_KEY: &str = "leetcodedaily.autosave.v1";
+const AUTOSAVE_FORMAT_VERSION: &str = "leetcodedaily-draft-v1";
 
 #[derive(Clone, PartialEq)]
 pub struct EditorFields {
@@ -29,35 +35,38 @@ pub struct EditorFields {
 
 impl Default for EditorFields {
     fn default() -> Self {
+        Self::from_draft(&PostDraft::default())
+    }
+}
+
+impl EditorFields {
+    pub fn from_draft(draft: &PostDraft) -> Self {
         Self {
-            date: TextFieldState::new(Local::now().format("%d.%m.%Y").to_string()),
-            problem_title: TextFieldState::new("Words Within Two Edits of Dictionary"),
-            problem_url: TextFieldState::new(
-                "https://leetcode.com/problems/words-within-two-edits-of-dictionary/description/",
-            ),
-            difficulty: TextFieldState::new("medium"),
-            blog_post_url: TextFieldState::new(""),
-            substack_url: TextFieldState::new(""),
-            youtube_url: TextFieldState::new(""),
-            reference_url: TextFieldState::new(DEFAULT_REFERENCE_URL),
-            telegram_text: TextFieldState::new(""),
-            problem_tldr: TextFieldState::new("Words in dictionary with 2 edits"),
-            intuition: TextFieldState::new(
-                "Compare every query word against the dictionary and keep it if any dictionary word differs in fewer than three positions.",
-            ),
-            approach: TextFieldState::new(
-                "Use a direct scan. For each query word, count character mismatches against every dictionary candidate and stop as soon as one candidate stays under three mismatches.",
-            ),
-            time_complexity: TextFieldState::new("n * m * k"),
-            space_complexity: TextFieldState::new("1"),
-            kotlin_runtime_ms: TextFieldState::new("28"),
-            kotlin_code: TextFieldState::new(
-                "fun twoEditWords(q: Array<String>, d: Array<String>) =\n    q.filter { q -> d.any { d -> d.indices.count { d[it] != q[it] } < 3 } }",
-            ),
-            rust_runtime_ms: TextFieldState::new("1"),
-            rust_code: TextFieldState::new(
-                "pub fn two_edit_words(mut q: Vec<String>, d: Vec<String>) -> Vec<String> {\n    q.retain(|q| d.iter().any(|d| d.bytes().zip(q.bytes()).filter(|(d, q)| d != q).count() < 3));\n    q\n}",
-            ),
+            date: TextFieldState::new(draft.date.clone()),
+            problem_title: TextFieldState::new(draft.problem_title.clone()),
+            problem_url: TextFieldState::new(draft.problem_url.clone()),
+            difficulty: TextFieldState::new(draft.difficulty.clone()),
+            blog_post_url: TextFieldState::new(draft.blog_post_url.clone()),
+            substack_url: TextFieldState::new(draft.substack_url.clone()),
+            youtube_url: TextFieldState::new(draft.youtube_url.clone()),
+            reference_url: TextFieldState::new(draft.reference_url.clone()),
+            telegram_text: TextFieldState::new(draft.telegram_text.clone()),
+            problem_tldr: TextFieldState::new(draft.problem_tldr.clone()),
+            intuition: TextFieldState::new(draft.intuition.clone()),
+            approach: TextFieldState::new(draft.approach.clone()),
+            time_complexity: TextFieldState::new(draft.time_complexity.clone()),
+            space_complexity: TextFieldState::new(draft.space_complexity.clone()),
+            kotlin_runtime_ms: TextFieldState::new(draft.kotlin_runtime_ms.clone()),
+            kotlin_code: TextFieldState::new(draft.kotlin_code.clone()),
+            rust_runtime_ms: TextFieldState::new(draft.rust_runtime_ms.clone()),
+            rust_code: TextFieldState::new(draft.rust_code.clone()),
+        }
+    }
+
+    pub fn load_initial() -> Self {
+        match load_autosave() {
+            Ok(Some(draft)) => Self::from_draft(&draft),
+            _ => Self::default(),
         }
     }
 }
@@ -82,6 +91,31 @@ pub struct PostDraft {
     pub kotlin_code: String,
     pub rust_runtime_ms: String,
     pub rust_code: String,
+}
+
+impl Default for PostDraft {
+    fn default() -> Self {
+        Self {
+            date: Local::now().format("%d.%m.%Y").to_string(),
+            problem_title: "Words Within Two Edits of Dictionary".to_string(),
+            problem_url: "https://leetcode.com/problems/words-within-two-edits-of-dictionary/description/".to_string(),
+            difficulty: "medium".to_string(),
+            blog_post_url: String::new(),
+            substack_url: String::new(),
+            youtube_url: String::new(),
+            reference_url: DEFAULT_REFERENCE_URL.to_string(),
+            telegram_text: String::new(),
+            problem_tldr: "Words in dictionary with 2 edits".to_string(),
+            intuition: "Compare every query word against the dictionary and keep it if any dictionary word differs in fewer than three positions.".to_string(),
+            approach: "Use a direct scan. For each query word, count character mismatches against every dictionary candidate and stop as soon as one candidate stays under three mismatches.".to_string(),
+            time_complexity: "n * m * k".to_string(),
+            space_complexity: "1".to_string(),
+            kotlin_runtime_ms: "28".to_string(),
+            kotlin_code: "fun twoEditWords(q: Array<String>, d: Array<String>) =\n    q.filter { q -> d.any { d -> d.indices.count { d[it] != q[it] } < 3 } }".to_string(),
+            rust_runtime_ms: "1".to_string(),
+            rust_code: "pub fn two_edit_words(mut q: Vec<String>, d: Vec<String>) -> Vec<String> {\n    q.retain(|q| d.iter().any(|d| d.bytes().zip(q.bytes()).filter(|(d, q)| d != q).count() < 3));\n    q\n}".to_string(),
+        }
+    }
 }
 
 impl PostDraft {
@@ -330,6 +364,222 @@ impl PostDraft {
     }
 }
 
+pub fn persist_autosave(draft: &PostDraft) -> Result<()> {
+    let encoded = encode_autosave(draft);
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let path = autosave_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("creating autosave directory {}", parent.display()))?;
+        }
+        let temp_path = path.with_extension("tmp");
+        fs::write(&temp_path, encoded.as_bytes())
+            .with_context(|| format!("writing autosave temp file {}", temp_path.display()))?;
+        fs::rename(&temp_path, &path)
+            .with_context(|| format!("moving autosave into place at {}", path.display()))?;
+        return Ok(());
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        let storage = local_storage()?;
+        storage
+            .set_item(AUTOSAVE_STORAGE_KEY, &encoded)
+            .map_err(|error| anyhow!("saving autosave to local storage failed: {error:?}"))?;
+        Ok(())
+    }
+}
+
+pub fn autosave_destination_label() -> String {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        return format!("Autosave: {}", autosave_path().display());
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        "Autosave: browser local storage".to_string()
+    }
+}
+
+pub fn startup_status_message() -> String {
+    match load_autosave() {
+        Ok(Some(_)) => "Restored autosaved draft.".to_string(),
+        Ok(None) => "Preview refreshes when you open the Output tab.".to_string(),
+        Err(error) => format!("Autosave restore failed: {error}"),
+    }
+}
+
+fn load_autosave() -> Result<Option<PostDraft>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let path = autosave_path();
+        if !path.exists() {
+            return Ok(None);
+        }
+        let encoded = fs::read_to_string(&path)
+            .with_context(|| format!("reading autosave file {}", path.display()))?;
+        return Ok(Some(decode_autosave(&encoded)?));
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        let storage = local_storage()?;
+        let encoded = storage
+            .get_item(AUTOSAVE_STORAGE_KEY)
+            .map_err(|error| anyhow!("reading autosave from local storage failed: {error:?}"))?;
+        match encoded {
+            Some(contents) => Ok(Some(decode_autosave(&contents)?)),
+            None => Ok(None),
+        }
+    }
+}
+
+fn encode_autosave(draft: &PostDraft) -> String {
+    let mut encoded = String::new();
+    encoded.push_str(AUTOSAVE_FORMAT_VERSION);
+    encoded.push('\n');
+
+    for (name, value) in autosave_fields(draft) {
+        encoded.push_str(name);
+        encoded.push('\n');
+        encoded.push_str(&value.len().to_string());
+        encoded.push('\n');
+        encoded.push_str(value);
+        encoded.push('\n');
+    }
+
+    encoded
+}
+
+fn decode_autosave(encoded: &str) -> Result<PostDraft> {
+    let mut cursor = 0usize;
+    let version = take_line(encoded, &mut cursor)?;
+    if version != AUTOSAVE_FORMAT_VERSION {
+        return Err(anyhow!("unsupported autosave format: {version}"));
+    }
+
+    let mut draft = PostDraft::default();
+    while cursor < encoded.len() {
+        let name = take_line(encoded, &mut cursor)?;
+        if name.is_empty() && cursor >= encoded.len() {
+            break;
+        }
+        let length = take_line(encoded, &mut cursor)?
+            .parse::<usize>()
+            .with_context(|| format!("parsing autosave field length for {name}"))?;
+        let value = take_exact(encoded, &mut cursor, length)?;
+        consume_optional_newline(encoded, &mut cursor);
+        set_autosave_field(&mut draft, name, value);
+    }
+
+    Ok(draft)
+}
+
+fn take_line<'a>(encoded: &'a str, cursor: &mut usize) -> Result<&'a str> {
+    if *cursor > encoded.len() {
+        return Err(anyhow!("autosave parse cursor moved past input"));
+    }
+    let remaining = &encoded[*cursor..];
+    let Some(line_end) = remaining.find('\n') else {
+        return Err(anyhow!("autosave input ended unexpectedly"));
+    };
+    let line = &remaining[..line_end];
+    *cursor += line_end + 1;
+    Ok(line)
+}
+
+fn take_exact<'a>(encoded: &'a str, cursor: &mut usize, length: usize) -> Result<&'a str> {
+    let end = (*cursor).saturating_add(length);
+    if end > encoded.len() {
+        return Err(anyhow!("autosave field exceeded input length"));
+    }
+    let value = &encoded[*cursor..end];
+    *cursor = end;
+    Ok(value)
+}
+
+fn consume_optional_newline(encoded: &str, cursor: &mut usize) {
+    if encoded[*cursor..].starts_with('\n') {
+        *cursor += 1;
+    }
+}
+
+fn autosave_fields(draft: &PostDraft) -> [(&'static str, &str); 18] {
+    [
+        ("date", &draft.date),
+        ("problem_title", &draft.problem_title),
+        ("problem_url", &draft.problem_url),
+        ("difficulty", &draft.difficulty),
+        ("blog_post_url", &draft.blog_post_url),
+        ("substack_url", &draft.substack_url),
+        ("youtube_url", &draft.youtube_url),
+        ("reference_url", &draft.reference_url),
+        ("telegram_text", &draft.telegram_text),
+        ("problem_tldr", &draft.problem_tldr),
+        ("intuition", &draft.intuition),
+        ("approach", &draft.approach),
+        ("time_complexity", &draft.time_complexity),
+        ("space_complexity", &draft.space_complexity),
+        ("kotlin_runtime_ms", &draft.kotlin_runtime_ms),
+        ("kotlin_code", &draft.kotlin_code),
+        ("rust_runtime_ms", &draft.rust_runtime_ms),
+        ("rust_code", &draft.rust_code),
+    ]
+}
+
+fn set_autosave_field(draft: &mut PostDraft, name: &str, value: &str) {
+    match name {
+        "date" => draft.date = value.to_string(),
+        "problem_title" => draft.problem_title = value.to_string(),
+        "problem_url" => draft.problem_url = value.to_string(),
+        "difficulty" => draft.difficulty = value.to_string(),
+        "blog_post_url" => draft.blog_post_url = value.to_string(),
+        "substack_url" => draft.substack_url = value.to_string(),
+        "youtube_url" => draft.youtube_url = value.to_string(),
+        "reference_url" => draft.reference_url = value.to_string(),
+        "telegram_text" => draft.telegram_text = value.to_string(),
+        "problem_tldr" => draft.problem_tldr = value.to_string(),
+        "intuition" => draft.intuition = value.to_string(),
+        "approach" => draft.approach = value.to_string(),
+        "time_complexity" => draft.time_complexity = value.to_string(),
+        "space_complexity" => draft.space_complexity = value.to_string(),
+        "kotlin_runtime_ms" => draft.kotlin_runtime_ms = value.to_string(),
+        "kotlin_code" => draft.kotlin_code = value.to_string(),
+        "rust_runtime_ms" => draft.rust_runtime_ms = value.to_string(),
+        "rust_code" => draft.rust_code = value.to_string(),
+        _ => {}
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn autosave_path() -> PathBuf {
+    #[cfg(test)]
+    {
+        return std::env::temp_dir()
+            .join("leetcodedaily-tests")
+            .join("autosave.draft");
+    }
+
+    #[cfg(not(test))]
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join(".leetcodedaily").join("autosave.draft"))
+        .unwrap_or_else(|| PathBuf::from(".leetcodedaily").join("autosave.draft"))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn local_storage() -> Result<web_sys::Storage> {
+    let window = web_sys::window().ok_or_else(|| anyhow!("missing window"))?;
+    let storage = window
+        .local_storage()
+        .map_err(|error| anyhow!("accessing local storage failed: {error:?}"))?
+        .ok_or_else(|| anyhow!("local storage is unavailable"))?;
+    Ok(storage)
+}
+
 fn trim_or(value: String, fallback: &str) -> String {
     let trimmed = value.trim().to_string();
     if trimmed.is_empty() {
@@ -509,7 +759,7 @@ fn escape_html(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{PostDraft, slugify};
+    use super::{PostDraft, decode_autosave, encode_autosave, slugify};
 
     #[test]
     fn slugify_keeps_only_ascii_words() {
@@ -690,5 +940,74 @@ mod tests {
         assert!(!html.contains("blog post</a>"));
         assert!(html.contains("language-kotlin"));
         assert!(html.contains("language-rust"));
+    }
+
+    #[test]
+    fn autosave_roundtrip_preserves_multiline_content() {
+        let draft = PostDraft {
+            date: "23.04.2026".to_string(),
+            problem_title: "2615. Sum of Distances".to_string(),
+            problem_url: "https://leetcode.com/problems/sum-of-distances/".to_string(),
+            difficulty: "medium".to_string(),
+            blog_post_url: "https://example.com/blog".to_string(),
+            substack_url: "https://example.com/substack".to_string(),
+            youtube_url: "https://youtu.be/demo".to_string(),
+            reference_url: "https://example.com/reference".to_string(),
+            telegram_text: "t.me/demo/1337".to_string(),
+            problem_tldr: "Sum of distances to each occurrence".to_string(),
+            intuition: "First line\nSecond line".to_string(),
+            approach: "Forward and backward".to_string(),
+            time_complexity: "n".to_string(),
+            space_complexity: "n".to_string(),
+            kotlin_runtime_ms: "65".to_string(),
+            kotlin_code: "fun demo() {\n    println(\"hi\")\n}".to_string(),
+            rust_runtime_ms: "11".to_string(),
+            rust_code: "fn demo() {\n    println!(\"hi\");\n}".to_string(),
+        };
+
+        let encoded = encode_autosave(&draft);
+        let decoded = decode_autosave(&encoded).expect("decode autosave");
+
+        assert_eq!(decoded, draft);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn desktop_autosave_persists_and_restores_from_disk() {
+        let draft = PostDraft {
+            date: "24.04.2026".to_string(),
+            problem_title: "Desktop Autosave".to_string(),
+            problem_url: "https://example.com/problem".to_string(),
+            difficulty: "easy".to_string(),
+            blog_post_url: String::new(),
+            substack_url: String::new(),
+            youtube_url: String::new(),
+            reference_url: "https://example.com/ref".to_string(),
+            telegram_text: "t.me/example/1".to_string(),
+            problem_tldr: "Restore from disk".to_string(),
+            intuition: "Smoke test".to_string(),
+            approach: "Write then read".to_string(),
+            time_complexity: "1".to_string(),
+            space_complexity: "1".to_string(),
+            kotlin_runtime_ms: "1".to_string(),
+            kotlin_code: "fun demo() = Unit".to_string(),
+            rust_runtime_ms: "1".to_string(),
+            rust_code: "fn demo() {}".to_string(),
+        };
+
+        let path = super::autosave_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::remove_file(&path);
+
+        super::persist_autosave(&draft).expect("persist autosave");
+        let restored = super::load_autosave()
+            .expect("load autosave")
+            .expect("autosave should exist");
+
+        assert_eq!(restored, draft);
+
+        let _ = std::fs::remove_file(path);
     }
 }

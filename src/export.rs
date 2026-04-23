@@ -21,7 +21,7 @@ use web_sys::{Blob, BlobPropertyBag, HtmlAnchorElement, Url};
 
 const CANVAS_WIDTH: u32 = 1600;
 const CANVAS_HEIGHT: u32 = 900;
-const TEXT_SUPERSAMPLE: u32 = 3;
+const TEXT_SUPERSAMPLE: u32 = 4;
 const CODE_FONT_SIZES: [f32; 25] = [
     84.0, 80.0, 76.0, 72.0, 68.0, 64.0, 60.0, 56.0, 52.0, 48.0, 44.0, 40.0, 36.0, 32.0, 28.0, 24.0,
     22.0, 20.0, 18.0, 16.0, 14.0, 12.0, 10.0, 8.0, 6.0,
@@ -33,7 +33,9 @@ const CODE_LABEL_GAP: i32 = 4;
 const CODE_HEADER_TO_BODY_GAP: i32 = 14;
 const CODE_BOTTOM_PADDING: i32 = 10;
 const MIN_CODE_GAP: u32 = 20;
-const TEXT_EMBOLDEN_X_OFFSETS: [i32; 2] = [0, 1];
+const TEXT_SHADOW_OFFSET: (i32, i32) = (0, 2);
+const TEXT_SHADOW_ALPHA: u8 = 112;
+const TEXT_EMBOLDEN_OFFSETS: [(i32, i32); 4] = [(0, 0), (1, 0), (0, 1), (1, 1)];
 const TEXT_WIDTH_SAFETY: u32 = 10;
 
 #[derive(Clone)]
@@ -47,6 +49,43 @@ pub struct PreviewFrame {
 pub struct PreviewState {
     pub bitmap: ImageBitmap,
     pub last_saved_webp_path: Option<String>,
+}
+
+#[derive(Clone, PartialEq)]
+pub(crate) struct ComposePreviewAssets {
+    pub background: ImageBitmap,
+    pub qr: ImageBitmap,
+}
+
+#[derive(Clone, PartialEq)]
+pub(crate) struct CardRenderPlan {
+    pub panel: BoxArea,
+    pub qr: BoxArea,
+    pub code_blocks: Vec<CodeRenderPlan>,
+    pub tldr: TextRenderPlan,
+}
+
+#[derive(Clone, PartialEq)]
+pub(crate) struct CodeRenderPlan {
+    pub text_x: i32,
+    pub title_y: i32,
+    pub runtime_y: i32,
+    pub code_y: i32,
+    pub label_font_size: f32,
+    pub code_font_size: f32,
+    pub code_line_height: i32,
+    pub language: String,
+    pub runtime: String,
+    pub lines: Vec<String>,
+}
+
+#[derive(Clone, PartialEq)]
+pub(crate) struct TextRenderPlan {
+    pub x: i32,
+    pub y: i32,
+    pub font_size: f32,
+    pub line_height: i32,
+    pub lines: Vec<String>,
 }
 
 impl PreviewState {
@@ -83,6 +122,27 @@ pub fn render_preview_frame(draft: &PostDraft) -> std::result::Result<PreviewFra
         .map_err(|error| error.to_string())
 }
 
+pub(crate) fn compose_preview_assets() -> Result<ComposePreviewAssets> {
+    static CACHE: OnceLock<std::result::Result<ComposePreviewAssets, String>> = OnceLock::new();
+
+    match CACHE.get_or_init(|| {
+        let assets = AssetPack::load().map_err(|error| error.to_string())?;
+        Ok(ComposePreviewAssets {
+            background: image_bitmap_from_dynamic(&assets.background)
+                .map_err(|error| error.to_string())?,
+            qr: image_bitmap_from_dynamic(&assets.qr).map_err(|error| error.to_string())?,
+        })
+    }) {
+        Ok(assets) => Ok(assets.clone()),
+        Err(message) => Err(anyhow!(message.clone())),
+    }
+}
+
+pub(crate) fn compose_preview_plan(draft: &PostDraft) -> Result<CardRenderPlan> {
+    let assets = AssetPack::load()?;
+    Ok(build_card_render_plan_with_assets(draft, &assets))
+}
+
 pub fn save_webp(draft: &PostDraft) -> Result<PreviewState> {
     let rendered = compose_card(draft)?;
     let bitmap = image_bitmap_from(&rendered)?;
@@ -117,6 +177,7 @@ pub fn save_webp(draft: &PostDraft) -> Result<PreviewState> {
 
 fn compose_card(draft: &PostDraft) -> Result<RgbaImage> {
     let assets = AssetPack::load()?;
+    let plan = build_card_render_plan_with_assets(draft, &assets);
     let canvas =
         assets
             .background
@@ -127,85 +188,37 @@ fn compose_card(draft: &PostDraft) -> Result<RgbaImage> {
         CANVAS_HEIGHT * TEXT_SUPERSAMPLE,
     );
 
-    let panel = BoxArea::new(86, 94, 1428, 710);
-    let panel_padding = 38;
-    let tldr_height = 84u32;
-    let tldr_gap = 18u32;
-
     let mut overlay_layer = RgbaImage::new(CANVAS_WIDTH, CANVAS_HEIGHT);
-    fill_rounded_box(&mut overlay_layer, panel, 46, rgba(5, 8, 14, 210));
+    fill_rounded_box(&mut overlay_layer, plan.panel, 46, rgba(5, 8, 14, 210));
     overlay(&mut canvas, &overlay_layer, 0, 0);
 
     let qr = tint_alpha(
         &assets
             .qr
-            .resize_exact(170, 170, FilterType::Lanczos3)
+            .resize_exact(plan.qr.width, plan.qr.height, FilterType::Lanczos3)
             .to_rgba8(),
         0.72,
     );
-    overlay(&mut canvas, &qr, 26, 26);
+    overlay(&mut canvas, &qr, plan.qr.x as i64, plan.qr.y as i64);
 
-    let inner_x = panel.x + panel_padding;
-    let inner_width = panel.width.saturating_sub((panel_padding * 2) as u32);
-    let code_top = panel.y + panel_padding;
-    let code_region_height = panel
-        .height
-        .saturating_sub((panel_padding * 2) as u32 + tldr_height + tldr_gap);
-    let code_blocks = visible_code_blocks(draft);
-    let code_group_layout = fit_code_group_layout(
-        &assets.mono_font,
-        &code_blocks,
-        inner_width,
-        code_region_height,
-    );
-    let mut current_y = code_top + code_group_layout.top_offset as i32;
-    for (index, (block, layout)) in code_blocks
-        .iter()
-        .zip(code_group_layout.blocks.iter())
-        .enumerate()
-    {
-        let block_height = code_block_height(layout);
-        draw_code_panel(
-            &mut text_layer,
-            &assets,
-            BoxArea::new(inner_x, current_y, inner_width, block_height),
-            block.language,
-            block.runtime_ms,
-            layout,
-            code_group_layout.shared_text_width,
-        );
-        current_y += block_height as i32;
-        if index + 1 < code_group_layout.blocks.len() {
-            current_y += code_group_layout.gap as i32;
-        }
+    for code_plan in &plan.code_blocks {
+        draw_code_panel(&mut text_layer, &assets, code_plan);
     }
 
     let body_color = rgba(170, 176, 187, 255);
-    let tldr_area_top = panel.y + panel.height as i32 - panel_padding - tldr_height as i32;
-    let tldr_area_bottom = panel.y + panel.height as i32 - panel_padding;
-    let tldr_layout = fit_paragraph_layout(
-        &assets.sans_font,
-        &draft.preview_tldr(),
-        inner_width,
-        tldr_height,
-        &TLDR_FONT_SIZES,
-        1.16,
-    );
-    let tldr_text_height = tldr_layout.line_height * tldr_layout.lines.len() as i32;
-    let tldr_y = (tldr_area_bottom - tldr_text_height).max(tldr_area_top);
     draw_wrapped_lines(
         &mut text_layer,
         body_color,
-        inner_x,
-        tldr_y,
-        tldr_layout.scale,
+        plan.tldr.x,
+        plan.tldr.y,
+        PxScale::from(plan.tldr.font_size),
         &assets.sans_font,
-        &tldr_layout.lines,
-        tldr_layout.line_height,
+        &plan.tldr.lines,
+        plan.tldr.line_height,
     );
 
     let text_overlay = DynamicImage::ImageRgba8(text_layer)
-        .resize_exact(CANVAS_WIDTH, CANVAS_HEIGHT, FilterType::CatmullRom)
+        .resize_exact(CANVAS_WIDTH, CANVAS_HEIGHT, FilterType::Lanczos3)
         .to_rgba8();
     overlay(&mut canvas, &text_overlay, 0, 0);
 
@@ -238,55 +251,123 @@ fn visible_code_blocks<'a>(draft: &'a PostDraft) -> Vec<CodeBlock<'a>> {
     blocks
 }
 
-fn draw_code_panel(
-    canvas: &mut RgbaImage,
-    assets: &AssetPack,
-    area: BoxArea,
-    language: &str,
-    runtime_ms: &str,
-    layout: &FittedCodeLayout,
-    shared_text_width: u32,
-) {
+fn build_card_render_plan_with_assets(draft: &PostDraft, assets: &AssetPack) -> CardRenderPlan {
+    let panel = BoxArea::new(86, 94, 1428, 710);
+    let panel_padding = 38;
+    let tldr_height = 84u32;
+    let tldr_gap = 18u32;
+    let qr = BoxArea::new(26, 26, 170, 170);
+
+    let inner_x = panel.x + panel_padding;
+    let inner_width = panel.width.saturating_sub((panel_padding * 2) as u32);
+    let code_top = panel.y + panel_padding;
+    let code_region_height = panel
+        .height
+        .saturating_sub((panel_padding * 2) as u32 + tldr_height + tldr_gap);
+    let code_blocks = visible_code_blocks(draft);
+    let code_group_layout = fit_code_group_layout(
+        &assets.mono_font,
+        &code_blocks,
+        inner_width,
+        code_region_height,
+    );
+
+    let mut current_y = code_top + code_group_layout.top_offset as i32;
+    let mut code_plans = Vec::with_capacity(code_blocks.len());
+    for (index, (block, layout)) in code_blocks
+        .iter()
+        .zip(code_group_layout.blocks.iter())
+        .enumerate()
+    {
+        let block_height = code_block_height(layout);
+        let area = BoxArea::new(inner_x, current_y, inner_width, block_height);
+        let centered_offset = ((area
+            .width
+            .saturating_sub(code_group_layout.shared_text_width))
+            / 2) as i32;
+        let text_x = area.x + centered_offset.max(CODE_SIDE_PADDING as i32);
+        let title_y = area.y + CODE_LABEL_TOP_PADDING;
+        let runtime_y = title_y + layout.label_line_height + CODE_LABEL_GAP;
+        let code_y = runtime_y + layout.label_line_height + CODE_HEADER_TO_BODY_GAP;
+
+        code_plans.push(CodeRenderPlan {
+            text_x,
+            title_y,
+            runtime_y,
+            code_y,
+            label_font_size: layout.label_scale.y,
+            code_font_size: layout.code_scale.y,
+            code_line_height: layout.code_line_height,
+            language: block.language.to_string(),
+            runtime: runtime_label(block.runtime_ms),
+            lines: layout.lines.clone(),
+        });
+
+        current_y += block_height as i32;
+        if index + 1 < code_group_layout.blocks.len() {
+            current_y += code_group_layout.gap as i32;
+        }
+    }
+
+    let tldr_layout = fit_paragraph_layout(
+        &assets.sans_font,
+        &draft.preview_tldr(),
+        inner_width,
+        tldr_height,
+        &TLDR_FONT_SIZES,
+        1.16,
+    );
+    let tldr_area_top = panel.y + panel.height as i32 - panel_padding - tldr_height as i32;
+    let tldr_area_bottom = panel.y + panel.height as i32 - panel_padding;
+    let tldr_text_height = tldr_layout.line_height * tldr_layout.lines.len() as i32;
+    let tldr_y = (tldr_area_bottom - tldr_text_height).max(tldr_area_top);
+
+    CardRenderPlan {
+        panel,
+        qr,
+        code_blocks: code_plans,
+        tldr: TextRenderPlan {
+            x: inner_x,
+            y: tldr_y,
+            font_size: tldr_layout.scale.y,
+            line_height: tldr_layout.line_height,
+            lines: tldr_layout.lines,
+        },
+    }
+}
+
+fn draw_code_panel(canvas: &mut RgbaImage, assets: &AssetPack, plan: &CodeRenderPlan) {
     let label_color = rgba(148, 229, 255, 255);
     let runtime_color = rgba(255, 180, 78, 255);
     let code_color = rgba(242, 246, 250, 255);
 
-    let title = format!("// {language}");
-    let runtime = format!("// {}", runtime_label(runtime_ms));
-    let centered_offset = ((area.width.saturating_sub(shared_text_width)) / 2) as i32;
-    let text_x = area.x + centered_offset.max(CODE_SIDE_PADDING as i32);
-    let title_y = area.y + CODE_LABEL_TOP_PADDING;
-    let runtime_y = title_y + layout.label_line_height + CODE_LABEL_GAP;
-
     draw_text_supersampled(
         canvas,
         label_color,
-        text_x,
-        title_y,
-        layout.label_scale,
+        plan.text_x,
+        plan.title_y,
+        PxScale::from(plan.label_font_size),
         &assets.mono_font,
-        &title,
+        &format!("// {}", plan.language),
     );
     draw_text_supersampled(
         canvas,
         runtime_color,
-        text_x,
-        runtime_y,
-        layout.label_scale,
+        plan.text_x,
+        plan.runtime_y,
+        PxScale::from(plan.label_font_size),
         &assets.mono_font,
-        &runtime,
+        &format!("// {}", plan.runtime),
     );
-
-    let code_y = runtime_y + layout.label_line_height + CODE_HEADER_TO_BODY_GAP;
     draw_wrapped_lines(
         canvas,
         code_color,
-        text_x,
-        code_y,
-        layout.code_scale,
+        plan.text_x,
+        plan.code_y,
+        PxScale::from(plan.code_font_size),
         &assets.mono_font,
-        &layout.lines,
-        layout.code_line_height,
+        &plan.lines,
+        plan.code_line_height,
     );
 }
 
@@ -530,9 +611,9 @@ fn max_line_width(font: &FontArc, scale: PxScale, lines: &[String]) -> u32 {
 }
 
 fn measured_code_text_width(font: &FontArc, scale: PxScale, text: &str) -> u32 {
-    let embolden_extra = TEXT_EMBOLDEN_X_OFFSETS
+    let embolden_extra = TEXT_EMBOLDEN_OFFSETS
         .iter()
-        .copied()
+        .map(|(x, _)| *x)
         .max()
         .unwrap_or(0)
         .max(0) as u32;
@@ -585,6 +666,12 @@ fn image_bitmap_from(image: &RgbaImage) -> Result<ImageBitmap> {
         .map_err(|error| anyhow!("converting preview into ImageBitmap failed: {error}"))
 }
 
+fn image_bitmap_from_dynamic(image: &DynamicImage) -> Result<ImageBitmap> {
+    let rgba = image.to_rgba8();
+    ImageBitmap::from_rgba8(rgba.width(), rgba.height(), rgba.into_raw())
+        .map_err(|error| anyhow!("converting asset into ImageBitmap failed: {error}"))
+}
+
 fn placeholder_frame() -> Result<PreviewFrame> {
     static CACHE: OnceLock<std::result::Result<PreviewFrame, String>> = OnceLock::new();
 
@@ -617,8 +704,26 @@ fn draw_text_supersampled(
     let base_x = superscaled_i32(x);
     let base_y = superscaled_i32(y);
     let scale = superscaled_scale(scale);
-    for x_offset in TEXT_EMBOLDEN_X_OFFSETS {
-        draw_text_mut(canvas, color, base_x + x_offset, base_y, scale, font, text);
+    let shadow = rgba(0, 0, 0, TEXT_SHADOW_ALPHA);
+    draw_text_mut(
+        canvas,
+        shadow,
+        base_x + superscaled_i32(TEXT_SHADOW_OFFSET.0),
+        base_y + superscaled_i32(TEXT_SHADOW_OFFSET.1),
+        scale,
+        font,
+        text,
+    );
+    for (x_offset, y_offset) in TEXT_EMBOLDEN_OFFSETS {
+        draw_text_mut(
+            canvas,
+            color,
+            base_x + x_offset,
+            base_y + y_offset,
+            scale,
+            font,
+            text,
+        );
     }
 }
 
@@ -736,12 +841,12 @@ fn download_webp_bytes(filename: &str, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Copy)]
-struct BoxArea {
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) struct BoxArea {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
 }
 
 impl BoxArea {

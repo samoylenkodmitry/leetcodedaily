@@ -1,7 +1,12 @@
 #![allow(non_snake_case)]
 
-use crate::draft::{EditorFields, PostDraft};
-use crate::export::{PreviewState, render_preview_frame, save_webp};
+use crate::draft::{
+    EditorFields, PostDraft, autosave_destination_label, persist_autosave, startup_status_message,
+};
+use crate::export::{
+    CardRenderPlan, ComposePreviewAssets, PreviewState, compose_preview_assets,
+    compose_preview_plan, render_preview_frame, save_webp,
+};
 use anyhow::Result;
 #[cfg(target_arch = "wasm32")]
 use anyhow::anyhow;
@@ -32,6 +37,7 @@ const WEB_CANVAS_MARGIN: f64 = 48.0;
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum EditorTab {
     Output,
+    Compose,
     Meta,
     Writeup,
     Code,
@@ -109,14 +115,28 @@ fn clamp_web_dimension(target: u32, viewport: f64, device_pixel_ratio: f64) -> u
 #[composable]
 fn App() {
     let scroll_state = remember(|| ScrollState::new(0.0)).with(|state| state.clone());
-    let fields = remember(EditorFields::default).with(|fields| fields.clone());
+    let fields = remember(EditorFields::load_initial).with(|fields| fields.clone());
+    let autosave_destination = remember(autosave_destination_label).with(|label| label.clone());
+    let compose_assets = remember(|| compose_preview_assets().ok()).with(|assets| assets.clone());
     let active_tab = useState(|| EditorTab::Meta);
     let preview_state = useState(PreviewState::placeholder);
     let preview_loading = useState(|| false);
-    let status = useState(|| "Preview refreshes when you open the Output tab.".to_string());
+    let compose_plan = useState(|| None::<CardRenderPlan>);
+    let compose_loading = useState(|| false);
+    let status = useState(startup_status_message);
     let current_draft = PostDraft::from_fields(&fields);
     let markdown_preview = current_draft.blog_template();
     let current_tab = active_tab.value();
+
+    cranpose_core::LaunchedEffect!(current_draft.clone(), {
+        let draft = current_draft.clone();
+        let status = status.clone();
+        move |_scope| {
+            if let Err(error) = persist_autosave(&draft) {
+                status.set(format!("Autosave failed: {error}"));
+            }
+        }
+    });
 
     cranpose_core::LaunchedEffect!(current_tab, {
         let draft = current_draft.clone();
@@ -156,6 +176,35 @@ fn App() {
         }
     });
 
+    cranpose_core::LaunchedEffect!((current_tab, current_draft.clone()), {
+        let draft = current_draft.clone();
+        let current_tab = current_tab;
+        let compose_loading = compose_loading.clone();
+        let compose_plan = compose_plan.clone();
+        let status = status.clone();
+        move |scope| {
+            if current_tab != EditorTab::Compose {
+                return;
+            }
+            compose_loading.set(true);
+            compose_plan.set(None);
+
+            let compose_loading = compose_loading.clone();
+            let compose_plan = compose_plan.clone();
+            let status = status.clone();
+            scope.launch_background(
+                move |_| async move { compose_preview_plan(&draft) },
+                move |result| {
+                    compose_loading.set(false);
+                    match result {
+                        Ok(plan) => compose_plan.set(Some(plan)),
+                        Err(error) => status.set(format!("Cranpose preview failed: {error}")),
+                    }
+                },
+            );
+        }
+    });
+
     Column(
         Modifier::empty()
             .fill_max_size()
@@ -168,11 +217,20 @@ fn App() {
             let status = status.clone();
             let preview_state = preview_state.clone();
             let preview_loading = preview_loading.clone();
+            let compose_plan = compose_plan.clone();
+            let compose_loading = compose_loading.clone();
             let markdown_preview = markdown_preview.clone();
             let active_tab = active_tab.clone();
             let scroll_state = scroll_state.clone();
+            let autosave_destination = autosave_destination.clone();
+            let compose_assets = compose_assets.clone();
             move || {
-                ActionsCard(fields.clone(), status.clone(), preview_state.clone());
+                ActionsCard(
+                    fields.clone(),
+                    status.clone(),
+                    preview_state.clone(),
+                    autosave_destination.clone(),
+                );
                 section_card({
                     let active_tab = active_tab.clone();
                     let scroll_state = scroll_state.clone();
@@ -193,6 +251,18 @@ fn App() {
                                             let scroll_state = scroll_state.clone();
                                             move || {
                                                 active_tab.set(EditorTab::Output);
+                                                scroll_state.scroll_to(0.0);
+                                            }
+                                        },
+                                    );
+                                    tab_button(
+                                        "Cranpose",
+                                        active_tab.value() == EditorTab::Compose,
+                                        {
+                                            let active_tab = active_tab.clone();
+                                            let scroll_state = scroll_state.clone();
+                                            move || {
+                                                active_tab.set(EditorTab::Compose);
                                                 scroll_state.scroll_to(0.0);
                                             }
                                         },
@@ -232,9 +302,13 @@ fn App() {
                 });
                 ActiveTabContent(
                     current_tab,
+                    current_draft.clone(),
                     fields.clone(),
                     preview_state.clone(),
                     preview_loading.clone(),
+                    compose_assets.clone(),
+                    compose_plan.clone(),
+                    compose_loading.clone(),
                     markdown_preview.clone(),
                     status.clone(),
                 );
@@ -246,9 +320,13 @@ fn App() {
 #[composable]
 fn ActiveTabContent(
     active_tab: EditorTab,
+    draft: PostDraft,
     fields: EditorFields,
     preview_state: MutableState<PreviewState>,
     preview_loading: MutableState<bool>,
+    compose_assets: Option<ComposePreviewAssets>,
+    compose_plan: MutableState<Option<CardRenderPlan>>,
+    compose_loading: MutableState<bool>,
     markdown_preview: String,
     status: MutableState<String>,
 ) {
@@ -256,6 +334,9 @@ fn ActiveTabContent(
         EditorTab::Output => {
             PreviewCard(preview_state, preview_loading);
             MarkdownCard(markdown_preview);
+        }
+        EditorTab::Compose => {
+            ComposePreviewCard(draft, compose_assets, compose_plan, compose_loading)
         }
         EditorTab::Meta => ProblemMetaCard(fields, status),
         EditorTab::Writeup => WriteupCard(fields, status),
@@ -268,6 +349,7 @@ fn ActionsCard(
     fields: EditorFields,
     status: MutableState<String>,
     preview_state: MutableState<PreviewState>,
+    autosave_destination: String,
 ) {
     section_card({
         let fields = fields.clone();
@@ -281,6 +363,7 @@ fn ActionsCard(
                     let fields = fields.clone();
                     let status = status.clone();
                     let preview_state = preview_state.clone();
+                    let autosave_destination = autosave_destination.clone();
                     move || {
                         Text(
                             "LeetCode Daily Composer",
@@ -288,9 +371,14 @@ fn ActionsCard(
                             heading_style(34.0),
                         );
                         Text(
-                            "Fill the template, open Output when you want a fresh preview, then copy the platform-specific template you need or save the card as WebP.",
+                            "Fill the template, open Output for the raster export or Cranpose for the live text-rendered comparison, then copy the platform-specific template you need or save the card as WebP.",
                             Modifier::empty(),
                             body_style(),
+                        );
+                        Text(
+                            autosave_destination.clone(),
+                            Modifier::empty(),
+                            muted_style(),
                         );
 
                         let action_fields = fields.clone();
@@ -460,6 +548,192 @@ fn PreviewCard(preview_state: MutableState<PreviewState>, preview_loading: Mutab
             );
         }
     });
+}
+
+#[composable]
+fn ComposePreviewCard(
+    draft: PostDraft,
+    compose_assets: Option<ComposePreviewAssets>,
+    compose_plan: MutableState<Option<CardRenderPlan>>,
+    compose_loading: MutableState<bool>,
+) {
+    section_card({
+        let compose_assets = compose_assets.clone();
+        let compose_plan = compose_plan.clone();
+        let compose_loading = compose_loading.clone();
+        let draft = draft.clone();
+        move || {
+            Column(
+                Modifier::empty().fill_max_width(),
+                ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(14.0)),
+                {
+                    let compose_assets = compose_assets.clone();
+                    let compose_plan = compose_plan.clone();
+                    let compose_loading = compose_loading.clone();
+                    let draft = draft.clone();
+                    move || {
+                        Text("Cranpose Preview", Modifier::empty(), heading_style(28.0));
+                        Text(
+                            "This tab uses Cranpose text rendering directly so you can compare it against the raster export.",
+                            Modifier::empty(),
+                            body_style(),
+                        );
+                        if compose_loading.value() {
+                            Text(
+                                "Preparing Cranpose preview in the background...",
+                                Modifier::empty(),
+                                accent_style(),
+                            );
+                        }
+
+                        let plan = compose_plan.value();
+                        let preview_draft = draft.clone();
+                        let preview_assets = compose_assets.clone();
+                        ComposeBox(
+                            Modifier::empty()
+                                .size(Size {
+                                    width: 1200.0,
+                                    height: 675.0,
+                                })
+                                .background(panel_surface())
+                                .rounded_corners(24.0)
+                                .padding(18.0),
+                            BoxSpec::default().content_alignment(Alignment::CENTER),
+                            move || {
+                                CranposeCardSurface(
+                                    preview_draft.clone(),
+                                    preview_assets.clone(),
+                                    plan.clone(),
+                                );
+                            },
+                        );
+                    }
+                },
+            );
+        }
+    });
+}
+
+#[composable]
+fn CranposeCardSurface(
+    draft: PostDraft,
+    compose_assets: Option<ComposePreviewAssets>,
+    compose_plan: Option<CardRenderPlan>,
+) {
+    let scale = 1200.0 / 1600.0;
+    let background = compose_assets
+        .as_ref()
+        .map(|assets| assets.background.clone());
+    let qr = compose_assets.as_ref().map(|assets| assets.qr.clone());
+
+    ComposeBox(
+        Modifier::empty().fill_max_size(),
+        BoxSpec::default(),
+        move || {
+            if let Some(background) = background.clone() {
+                Image(
+                    BitmapPainter(background),
+                    Some("Cranpose card background".to_string()),
+                    Modifier::empty().fill_max_size().rounded_corners(18.0),
+                    Alignment::CENTER,
+                    ContentScale::Crop,
+                    DEFAULT_ALPHA,
+                    None,
+                );
+            }
+
+            if let Some(plan) = compose_plan.clone() {
+                ComposeBox(
+                    Modifier::empty()
+                        .absolute_offset(scale_x(plan.panel.x, scale), scale_y(plan.panel.y, scale))
+                        .size(scaled_size(plan.panel.width, plan.panel.height, scale))
+                        .background(Color::from_rgba_u8(5, 8, 14, 210))
+                        .rounded_corners(34.0),
+                    BoxSpec::default(),
+                    || {},
+                );
+
+                if let Some(qr) = qr.clone() {
+                    Image(
+                        BitmapPainter(qr),
+                        Some("QR overlay".to_string()),
+                        Modifier::empty()
+                            .absolute_offset(scale_x(plan.qr.x, scale), scale_y(plan.qr.y, scale))
+                            .size(scaled_size(plan.qr.width, plan.qr.height, scale))
+                            .rounded_corners(18.0),
+                        Alignment::CENTER,
+                        ContentScale::Fit,
+                        DEFAULT_ALPHA * 0.72,
+                        None,
+                    );
+                }
+
+                for code_block in plan.code_blocks.clone() {
+                    BasicText(
+                        format!("// {}", code_block.language),
+                        Modifier::empty().absolute_offset(
+                            scale_x(code_block.text_x, scale),
+                            scale_y(code_block.title_y, scale),
+                        ),
+                        preview_code_label_style(code_block.label_font_size * scale),
+                        cranpose::text::TextOverflow::Visible,
+                        false,
+                        1,
+                        1,
+                    );
+                    BasicText(
+                        format!("// {}", code_block.runtime),
+                        Modifier::empty().absolute_offset(
+                            scale_x(code_block.text_x, scale),
+                            scale_y(code_block.runtime_y, scale),
+                        ),
+                        preview_runtime_style(code_block.label_font_size * scale),
+                        cranpose::text::TextOverflow::Visible,
+                        false,
+                        1,
+                        1,
+                    );
+                    BasicText(
+                        code_block.lines.join("\n"),
+                        Modifier::empty().absolute_offset(
+                            scale_x(code_block.text_x, scale),
+                            scale_y(code_block.code_y, scale),
+                        ),
+                        preview_code_style(
+                            code_block.code_font_size * scale,
+                            code_block.code_line_height as f32 * scale,
+                        ),
+                        cranpose::text::TextOverflow::Visible,
+                        false,
+                        usize::MAX,
+                        1,
+                    );
+                }
+
+                BasicText(
+                    plan.tldr.lines.join("\n"),
+                    Modifier::empty()
+                        .absolute_offset(scale_x(plan.tldr.x, scale), scale_y(plan.tldr.y, scale)),
+                    preview_tldr_style(
+                        plan.tldr.font_size * scale,
+                        plan.tldr.line_height as f32 * scale,
+                    ),
+                    cranpose::text::TextOverflow::Visible,
+                    false,
+                    usize::MAX,
+                    1,
+                );
+            } else {
+                Text(
+                    draft.preview_tldr(),
+                    Modifier::empty()
+                        .absolute_offset(54.0, 572.0)
+                        .fill_max_width(),
+                    preview_tldr_style(16.0, 22.0),
+                );
+            }
+        },
+    );
 }
 
 #[composable]
@@ -996,12 +1270,38 @@ fn track_web_promise(
     });
 }
 
+fn scale_x(value: i32, scale: f32) -> f32 {
+    value as f32 * scale
+}
+
+fn scale_y(value: i32, scale: f32) -> f32 {
+    value as f32 * scale
+}
+
+fn scaled_size(width: u32, height: u32, scale: f32) -> Size {
+    Size {
+        width: width as f32 * scale,
+        height: height as f32 * scale,
+    }
+}
+
 fn heading_style(size: f32) -> TextStyle {
     TextStyle {
         span_style: SpanStyle {
             color: Some(Color::from_rgb_u8(244, 247, 250)),
             font_size: cranpose::text::TextUnit::Sp(size),
             font_weight: Some(cranpose::text::FontWeight::BOLD),
+            ..SpanStyle::default()
+        },
+        paragraph_style: ParagraphStyle::default(),
+    }
+}
+
+fn muted_style() -> TextStyle {
+    TextStyle {
+        span_style: SpanStyle {
+            color: Some(Color::from_rgb_u8(126, 142, 158)),
+            font_size: cranpose::text::TextUnit::Sp(15.0),
             ..SpanStyle::default()
         },
         paragraph_style: ParagraphStyle::default(),
@@ -1106,6 +1406,69 @@ fn tab_text_style(selected: bool) -> TextStyle {
             ..SpanStyle::default()
         },
         paragraph_style: ParagraphStyle::default(),
+    }
+}
+
+fn preview_code_label_style(size: f32) -> TextStyle {
+    TextStyle {
+        span_style: SpanStyle {
+            color: Some(Color::from_rgb_u8(148, 229, 255)),
+            font_size: cranpose::text::TextUnit::Sp(size.max(10.0)),
+            font_weight: Some(cranpose::text::FontWeight::BOLD),
+            font_family: Some(cranpose::text::FontFamily::Monospace),
+            ..SpanStyle::default()
+        },
+        paragraph_style: ParagraphStyle {
+            line_height: cranpose::text::TextUnit::Sp((size * 1.04).max(size)),
+            ..ParagraphStyle::default()
+        },
+    }
+}
+
+fn preview_runtime_style(size: f32) -> TextStyle {
+    TextStyle {
+        span_style: SpanStyle {
+            color: Some(Color::from_rgb_u8(255, 180, 78)),
+            font_size: cranpose::text::TextUnit::Sp(size.max(10.0)),
+            font_weight: Some(cranpose::text::FontWeight::SEMI_BOLD),
+            font_family: Some(cranpose::text::FontFamily::Monospace),
+            ..SpanStyle::default()
+        },
+        paragraph_style: ParagraphStyle {
+            line_height: cranpose::text::TextUnit::Sp((size * 1.04).max(size)),
+            ..ParagraphStyle::default()
+        },
+    }
+}
+
+fn preview_code_style(size: f32, line_height: f32) -> TextStyle {
+    TextStyle {
+        span_style: SpanStyle {
+            color: Some(Color::from_rgb_u8(242, 246, 250)),
+            font_size: cranpose::text::TextUnit::Sp(size.max(8.0)),
+            font_weight: Some(cranpose::text::FontWeight::MEDIUM),
+            font_family: Some(cranpose::text::FontFamily::Monospace),
+            ..SpanStyle::default()
+        },
+        paragraph_style: ParagraphStyle {
+            line_height: cranpose::text::TextUnit::Sp(line_height.max(size)),
+            ..ParagraphStyle::default()
+        },
+    }
+}
+
+fn preview_tldr_style(size: f32, line_height: f32) -> TextStyle {
+    TextStyle {
+        span_style: SpanStyle {
+            color: Some(Color::from_rgb_u8(170, 176, 187)),
+            font_size: cranpose::text::TextUnit::Sp(size.max(10.0)),
+            font_weight: Some(cranpose::text::FontWeight::MEDIUM),
+            ..SpanStyle::default()
+        },
+        paragraph_style: ParagraphStyle {
+            line_height: cranpose::text::TextUnit::Sp(line_height.max(size)),
+            ..ParagraphStyle::default()
+        },
     }
 }
 
