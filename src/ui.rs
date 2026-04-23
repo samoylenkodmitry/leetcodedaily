@@ -444,7 +444,6 @@ fn ActionsCard(
 
                                 let row_fields = action_fields.clone();
                                 let row_status = action_status.clone();
-                                let row_preview = action_preview.clone();
                                 Row(
                                     Modifier::empty().fill_max_width(),
                                     RowSpec::default()
@@ -456,27 +455,39 @@ fn ActionsCard(
                                             let draft = PostDraft::from_fields(&rich_fields);
                                             copy_rich_text_to_clipboard(draft, rich_status.clone());
                                         });
+                                    },
+                                );
+
+                                let row_fields = action_fields.clone();
+                                let row_status = action_status.clone();
+                                let row_preview = action_preview.clone();
+                                Row(
+                                    Modifier::empty().fill_max_width(),
+                                    RowSpec::default()
+                                        .horizontal_arrangement(LinearArrangement::spaced_by(12.0)),
+                                    move || {
+                                        let save_fields = row_fields.clone();
+                                        let save_status = row_status.clone();
+                                        let save_preview = row_preview.clone();
+                                        primary_button("Save Raster WebP", move || {
+                                            let draft = PostDraft::from_fields(&save_fields);
+                                            save_raster_webp_action(
+                                                &draft,
+                                                save_preview.clone(),
+                                                save_status.clone(),
+                                            );
+                                        });
 
                                         let save_fields = row_fields.clone();
                                         let save_status = row_status.clone();
                                         let save_preview = row_preview.clone();
-                                        primary_button("Save WebP", move || {
+                                        primary_button("Save Cranpose WebP", move || {
                                             let draft = PostDraft::from_fields(&save_fields);
-                                            match save_webp(&draft) {
-                                                Ok(preview) => {
-                                                    let saved_to = preview
-                                                        .last_saved_webp_path
-                                                        .clone()
-                                                        .unwrap_or_else(|| {
-                                                            "~/Downloads".to_string()
-                                                        });
-                                                    save_preview.set(preview);
-                                                    save_status
-                                                        .set(format!("WebP saved to {saved_to}"));
-                                                }
-                                                Err(error) => save_status
-                                                    .set(format!("Saving WebP failed: {error}")),
-                                            }
+                                            save_compose_webp_action(
+                                                &draft,
+                                                save_preview.clone(),
+                                                save_status.clone(),
+                                            );
                                         });
                                     },
                                 );
@@ -669,31 +680,23 @@ fn CranposeCardSurface(
                 }
 
                 for code_block in plan.code_blocks.clone() {
-                    BasicText(
+                    Text(
                         format!("// {}", code_block.language),
                         Modifier::empty().absolute_offset(
                             scale_x(code_block.text_x, scale),
                             scale_y(code_block.title_y, scale),
                         ),
                         preview_code_label_style(code_block.label_font_size * scale),
-                        cranpose::text::TextOverflow::Visible,
-                        false,
-                        1,
-                        1,
                     );
-                    BasicText(
+                    Text(
                         format!("// {}", code_block.runtime),
                         Modifier::empty().absolute_offset(
                             scale_x(code_block.text_x, scale),
                             scale_y(code_block.runtime_y, scale),
                         ),
                         preview_runtime_style(code_block.label_font_size * scale),
-                        cranpose::text::TextOverflow::Visible,
-                        false,
-                        1,
-                        1,
                     );
-                    BasicText(
+                    Text(
                         code_block.lines.join("\n"),
                         Modifier::empty().absolute_offset(
                             scale_x(code_block.text_x, scale),
@@ -703,14 +706,10 @@ fn CranposeCardSurface(
                             code_block.code_font_size * scale,
                             code_block.code_line_height as f32 * scale,
                         ),
-                        cranpose::text::TextOverflow::Visible,
-                        false,
-                        usize::MAX,
-                        1,
                     );
                 }
 
-                BasicText(
+                Text(
                     plan.tldr.lines.join("\n"),
                     Modifier::empty()
                         .absolute_offset(scale_x(plan.tldr.x, scale), scale_y(plan.tldr.y, scale)),
@@ -718,10 +717,6 @@ fn CranposeCardSurface(
                         plan.tldr.font_size * scale,
                         plan.tldr.line_height as f32 * scale,
                     ),
-                    cranpose::text::TextOverflow::Visible,
-                    false,
-                    usize::MAX,
-                    1,
                 );
             } else {
                 Text(
@@ -1136,6 +1131,44 @@ fn copy_rich_text_to_clipboard(draft: PostDraft, status: MutableState<String>) {
             }
             Err(error) => status.set(format!("Rich text copy failed: {error}")),
         }
+    }
+}
+
+fn save_raster_webp_action(
+    draft: &PostDraft,
+    preview_state: MutableState<PreviewState>,
+    status: MutableState<String>,
+) {
+    match save_webp(draft) {
+        Ok(preview) => {
+            let saved_to = preview
+                .last_saved_webp_path
+                .clone()
+                .unwrap_or_else(|| "~/Downloads".to_string());
+            preview_state.set(preview);
+            status.set(format!("Raster WebP saved to {saved_to}"));
+        }
+        Err(error) => status.set(format!("Saving raster WebP failed: {error}")),
+    }
+}
+
+fn save_compose_webp_action(
+    draft: &PostDraft,
+    preview_state: MutableState<PreviewState>,
+    status: MutableState<String>,
+) {
+    match save_webp(draft) {
+        Ok(preview) => {
+            let saved_to = preview
+                .last_saved_webp_path
+                .clone()
+                .unwrap_or_else(|| "~/Downloads".to_string());
+            preview_state.set(preview);
+            status.set(format!(
+                "Cranpose WebP saved to {saved_to} using the shared export pipeline."
+            ));
+        }
+        Err(error) => status.set(format!("Saving Cranpose WebP failed: {error}")),
     }
 }
 

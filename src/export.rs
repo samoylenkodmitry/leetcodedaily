@@ -127,10 +127,20 @@ pub(crate) fn compose_preview_assets() -> Result<ComposePreviewAssets> {
 
     match CACHE.get_or_init(|| {
         let assets = AssetPack::load().map_err(|error| error.to_string())?;
+        let background = assets
+            .background
+            .resize_to_fill(CANVAS_WIDTH, CANVAS_HEIGHT, FilterType::Lanczos3);
+        let qr = DynamicImage::ImageRgba8(tint_alpha(
+            &assets
+                .qr
+                .resize_exact(170, 170, FilterType::Lanczos3)
+                .to_rgba8(),
+            0.72,
+        ));
         Ok(ComposePreviewAssets {
-            background: image_bitmap_from_dynamic(&assets.background)
+            background: image_bitmap_from_dynamic(&background)
                 .map_err(|error| error.to_string())?,
-            qr: image_bitmap_from_dynamic(&assets.qr).map_err(|error| error.to_string())?,
+            qr: image_bitmap_from_dynamic(&qr).map_err(|error| error.to_string())?,
         })
     }) {
         Ok(assets) => Ok(assets.clone()),
