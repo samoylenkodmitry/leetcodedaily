@@ -1,7 +1,7 @@
 #![allow(non_snake_case)]
 
 use crate::draft::{EditorFields, PostDraft};
-use crate::export::{PreviewState, generate_preview, save_webp};
+use crate::export::{PreviewState, render_preview_frame, save_webp};
 use anyhow::Result;
 #[cfg(target_arch = "wasm32")]
 use anyhow::anyhow;
@@ -112,6 +112,7 @@ fn App() {
     let fields = remember(EditorFields::default).with(|fields| fields.clone());
     let active_tab = useState(|| EditorTab::Meta);
     let preview_state = useState(PreviewState::placeholder);
+    let preview_loading = useState(|| false);
     let status = useState(|| "Preview refreshes when you open the Output tab.".to_string());
     let current_draft = PostDraft::from_fields(&fields);
     let markdown_preview = current_draft.blog_template();
@@ -121,18 +122,37 @@ fn App() {
         let draft = current_draft.clone();
         let current_tab = current_tab;
         let preview_state = preview_state.clone();
+        let preview_loading = preview_loading.clone();
         let status = status.clone();
-        move |_| {
+        move |scope| {
             if current_tab != EditorTab::Output {
                 return;
             }
-            match generate_preview(&draft) {
-                Ok(preview) => {
-                    preview_state.set(preview);
-                    status.set("Preview refreshed.".to_string());
-                }
-                Err(error) => status.set(format!("Preview generation failed: {error}")),
-            }
+            preview_loading.set(true);
+            preview_state.set(PreviewState::placeholder());
+            status.set("Generating preview...".to_string());
+
+            let preview_state = preview_state.clone();
+            let preview_loading = preview_loading.clone();
+            let status = status.clone();
+            scope.launch_background(
+                move |_| async move { render_preview_frame(&draft) },
+                move |result| {
+                    preview_loading.set(false);
+                    match result {
+                        Ok(frame) => match PreviewState::from_frame(frame) {
+                            Ok(preview) => {
+                                preview_state.set(preview);
+                                status.set("Preview refreshed.".to_string());
+                            }
+                            Err(error) => {
+                                status.set(format!("Preview generation failed: {error}"));
+                            }
+                        },
+                        Err(error) => status.set(format!("Preview generation failed: {error}")),
+                    }
+                },
+            );
         }
     });
 
@@ -147,6 +167,7 @@ fn App() {
             let fields = fields.clone();
             let status = status.clone();
             let preview_state = preview_state.clone();
+            let preview_loading = preview_loading.clone();
             let markdown_preview = markdown_preview.clone();
             let active_tab = active_tab.clone();
             let scroll_state = scroll_state.clone();
@@ -213,6 +234,7 @@ fn App() {
                     current_tab,
                     fields.clone(),
                     preview_state.clone(),
+                    preview_loading.clone(),
                     markdown_preview.clone(),
                     status.clone(),
                 );
@@ -226,12 +248,13 @@ fn ActiveTabContent(
     active_tab: EditorTab,
     fields: EditorFields,
     preview_state: MutableState<PreviewState>,
+    preview_loading: MutableState<bool>,
     markdown_preview: String,
     status: MutableState<String>,
 ) {
     match active_tab {
         EditorTab::Output => {
-            PreviewCard(preview_state);
+            PreviewCard(preview_state, preview_loading);
             MarkdownCard(markdown_preview);
         }
         EditorTab::Meta => ProblemMetaCard(fields, status),
@@ -389,18 +412,27 @@ fn ActionsCard(
 }
 
 #[composable]
-fn PreviewCard(preview_state: MutableState<PreviewState>) {
+fn PreviewCard(preview_state: MutableState<PreviewState>, preview_loading: MutableState<bool>) {
     section_card({
         let preview_state = preview_state.clone();
+        let preview_loading = preview_loading.clone();
         move || {
             Column(
                 Modifier::empty().fill_max_width(),
                 ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(14.0)),
                 {
                     let preview_state = preview_state.clone();
+                    let preview_loading = preview_loading.clone();
                     move || {
                         let preview = preview_state.value();
                         Text("Card Preview", Modifier::empty(), heading_style(28.0));
+                        if preview_loading.value() {
+                            Text(
+                                "Rendering preview in the background...",
+                                Modifier::empty(),
+                                accent_style(),
+                            );
+                        }
                         ComposeBox(
                             Modifier::empty()
                                 .size(Size {
@@ -493,14 +525,14 @@ fn ProblemMetaCard(fields: EditorFields, status: MutableState<String>) {
                         let telegram_text = fields.telegram_text.clone();
 
                         Text("Problem Meta", Modifier::empty(), heading_style(28.0));
-                        labeled_field("Date", date, 1, 1, status.clone(), false);
-                        labeled_field("Problem Title", problem_title, 1, 2, status.clone(), false);
-                        labeled_field("Problem URL", problem_url, 1, 2, status.clone(), false);
-                        labeled_field("Difficulty", difficulty, 1, 1, status.clone(), false);
-                        labeled_field("Blog Post URL", blog_post_url, 1, 2, status.clone(), false);
-                        labeled_field("Substack URL", substack_url, 1, 2, status.clone(), false);
-                        labeled_field("YouTube URL", youtube_url, 1, 2, status.clone(), false);
-                        labeled_field("Reference URL", reference_url, 1, 2, status.clone(), false);
+                        labeled_field("Date", date, 1, 1, status.clone(), true);
+                        labeled_field("Problem Title", problem_title, 1, 2, status.clone(), true);
+                        labeled_field("Problem URL", problem_url, 1, 2, status.clone(), true);
+                        labeled_field("Difficulty", difficulty, 1, 1, status.clone(), true);
+                        labeled_field("Blog Post URL", blog_post_url, 1, 2, status.clone(), true);
+                        labeled_field("Substack URL", substack_url, 1, 2, status.clone(), true);
+                        labeled_field("YouTube URL", youtube_url, 1, 2, status.clone(), true);
+                        labeled_field("Reference URL", reference_url, 1, 2, status.clone(), true);
                         labeled_field(
                             "Telegram CTA Text",
                             telegram_text,

@@ -22,11 +22,12 @@ use web_sys::{Blob, BlobPropertyBag, HtmlAnchorElement, Url};
 const CANVAS_WIDTH: u32 = 1600;
 const CANVAS_HEIGHT: u32 = 900;
 const TEXT_SUPERSAMPLE: u32 = 3;
-const CODE_FONT_SIZES: [f32; 16] = [
-    72.0, 68.0, 64.0, 60.0, 56.0, 52.0, 48.0, 44.0, 40.0, 36.0, 32.0, 28.0, 24.0, 22.0, 20.0, 18.0,
+const CODE_FONT_SIZES: [f32; 25] = [
+    84.0, 80.0, 76.0, 72.0, 68.0, 64.0, 60.0, 56.0, 52.0, 48.0, 44.0, 40.0, 36.0, 32.0, 28.0, 24.0,
+    22.0, 20.0, 18.0, 16.0, 14.0, 12.0, 10.0, 8.0, 6.0,
 ];
 const TLDR_FONT_SIZES: [f32; 6] = [22.0, 20.0, 18.0, 16.0, 14.0, 12.0];
-const CODE_SIDE_PADDING: u32 = 22;
+const CODE_SIDE_PADDING: u32 = 16;
 const CODE_LABEL_TOP_PADDING: i32 = 14;
 const CODE_LABEL_GAP: i32 = 4;
 const CODE_HEADER_TO_BODY_GAP: i32 = 14;
@@ -34,6 +35,14 @@ const CODE_BOTTOM_PADDING: i32 = 10;
 const MIN_CODE_GAP: u32 = 20;
 const MAX_EXTRA_CODE_GAP: u32 = 68;
 const TEXT_EMBOLDEN_X_OFFSETS: [i32; 2] = [0, 1];
+const TEXT_WIDTH_SAFETY: u32 = 10;
+
+#[derive(Clone)]
+pub struct PreviewFrame {
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Vec<u8>,
+}
 
 #[derive(Clone)]
 pub struct PreviewState {
@@ -43,21 +52,36 @@ pub struct PreviewState {
 
 impl PreviewState {
     pub fn placeholder() -> Self {
-        let bitmap = ImageBitmap::from_rgba8(1, 1, vec![8, 12, 18, 255]).expect("placeholder");
-        Self {
+        placeholder_frame()
+            .and_then(Self::from_frame)
+            .unwrap_or_else(|_| {
+                let bitmap =
+                    ImageBitmap::from_rgba8(1, 1, vec![8, 12, 18, 255]).expect("placeholder");
+                Self {
+                    bitmap,
+                    last_saved_webp_path: None,
+                }
+            })
+    }
+
+    pub fn from_frame(frame: PreviewFrame) -> Result<Self> {
+        let bitmap = ImageBitmap::from_rgba8(frame.width, frame.height, frame.pixels)
+            .map_err(|error| anyhow!("converting preview into ImageBitmap failed: {error}"))?;
+        Ok(Self {
             bitmap,
             last_saved_webp_path: None,
-        }
+        })
     }
 }
 
-pub fn generate_preview(draft: &PostDraft) -> Result<PreviewState> {
-    let rendered = compose_card(draft)?;
-    let bitmap = image_bitmap_from(&rendered)?;
-    Ok(PreviewState {
-        bitmap,
-        last_saved_webp_path: None,
-    })
+pub fn render_preview_frame(draft: &PostDraft) -> std::result::Result<PreviewFrame, String> {
+    compose_card(draft)
+        .map(|rendered| PreviewFrame {
+            width: rendered.width(),
+            height: rendered.height(),
+            pixels: rendered.into_raw(),
+        })
+        .map_err(|error| error.to_string())
 }
 
 pub fn save_webp(draft: &PostDraft) -> Result<PreviewState> {
@@ -328,49 +352,11 @@ fn wrap_paragraph(text: &str, font: &FontArc, scale: PxScale, max_width: u32) ->
     }
 }
 
-fn wrap_code(code: &str, font: &FontArc, scale: PxScale, max_width: u32) -> Vec<String> {
+fn code_lines(code: &str) -> Vec<String> {
     if code.trim().is_empty() {
         return vec!["// paste code here".to_string()];
     }
-
-    let mut out = Vec::new();
-    for raw_line in code.lines() {
-        if raw_line.is_empty() {
-            out.push(String::new());
-            continue;
-        }
-
-        let prefix = raw_line
-            .chars()
-            .take_while(|ch| ch.is_whitespace())
-            .collect::<String>();
-        let trimmed = raw_line.trim_start();
-
-        if text_size(scale, font, raw_line).0 <= max_width {
-            out.push(raw_line.to_string());
-            continue;
-        }
-
-        let mut current = prefix.clone();
-        let mut wrote_code = false;
-        for ch in trimmed.chars() {
-            let mut candidate = current.clone();
-            candidate.push(ch);
-            if wrote_code && text_size(scale, font, &candidate).0 > max_width {
-                out.push(current);
-                current = prefix.clone();
-                current.push(ch);
-            } else {
-                current = candidate;
-            }
-            wrote_code = true;
-        }
-
-        if !current.trim().is_empty() {
-            out.push(current);
-        }
-    }
-    out
+    code.lines().map(|line| line.to_string()).collect()
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -410,7 +396,7 @@ fn fit_code_group_layout(
                 label_scale,
                 label_line_height,
                 code_line_height,
-                lines: wrap_code(block.code, font, code_scale, content_width),
+                lines: code_lines(block.code),
             })
             .collect::<Vec<_>>();
 
@@ -514,25 +500,37 @@ fn code_layout_fits(
     layout: &FittedCodeLayout,
     available_width: u32,
 ) -> bool {
-    let title_width = text_size(layout.label_scale, font, &format!("// {}", block.language)).0;
-    let runtime_width = text_size(
-        layout.label_scale,
+    let title_width =
+        measured_code_text_width(font, layout.label_scale, &format!("// {}", block.language));
+    let runtime_width = measured_code_text_width(
         font,
+        layout.label_scale,
         &format!("// {}", runtime_label(block.runtime_ms)),
-    )
-    .0;
+    );
     let content_width = max_line_width(font, layout.code_scale, &layout.lines)
         .max(title_width)
         .max(runtime_width);
-    content_width <= available_width
+    content_width <= available_width.saturating_sub(TEXT_WIDTH_SAFETY)
 }
 
 fn max_line_width(font: &FontArc, scale: PxScale, lines: &[String]) -> u32 {
     lines
         .iter()
-        .map(|line| text_size(scale, font, line).0)
+        .map(|line| measured_code_text_width(font, scale, line))
         .max()
         .unwrap_or(0)
+}
+
+fn measured_code_text_width(font: &FontArc, scale: PxScale, text: &str) -> u32 {
+    let embolden_extra = TEXT_EMBOLDEN_X_OFFSETS
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(0)
+        .max(0) as u32;
+    text_size(scale, font, text)
+        .0
+        .saturating_add(embolden_extra)
 }
 
 fn fill_rounded_box(image: &mut RgbaImage, area: BoxArea, radius: i32, color: Rgba<u8>) {
@@ -577,6 +575,26 @@ fn rgba(r: u8, g: u8, b: u8, a: u8) -> Rgba<u8> {
 fn image_bitmap_from(image: &RgbaImage) -> Result<ImageBitmap> {
     ImageBitmap::from_rgba8(image.width(), image.height(), image.clone().into_raw())
         .map_err(|error| anyhow!("converting preview into ImageBitmap failed: {error}"))
+}
+
+fn placeholder_frame() -> Result<PreviewFrame> {
+    static CACHE: OnceLock<std::result::Result<PreviewFrame, String>> = OnceLock::new();
+
+    match CACHE.get_or_init(|| {
+        let assets = AssetPack::load().map_err(|error| error.to_string())?;
+        let image = assets
+            .background
+            .resize_to_fill(CANVAS_WIDTH, CANVAS_HEIGHT, FilterType::Lanczos3)
+            .to_rgba8();
+        Ok(PreviewFrame {
+            width: image.width(),
+            height: image.height(),
+            pixels: image.into_raw(),
+        })
+    }) {
+        Ok(frame) => Ok(frame.clone()),
+        Err(message) => Err(anyhow!(message.clone())),
+    }
 }
 
 fn draw_text_supersampled(
@@ -838,7 +856,10 @@ fn preview_mono_font() -> &'static FontArc {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
-    use super::{compose_card, fit_code_layout, generate_preview, image_bitmap_from, save_webp};
+    use super::{
+        PreviewState, compose_card, fit_code_layout, image_bitmap_from, render_preview_frame,
+        save_webp,
+    };
     use crate::draft::PostDraft;
     use std::fs;
     use std::path::Path;
@@ -873,7 +894,9 @@ mod tests {
         assert!(bitmap.width() > 0);
         assert!(bitmap.height() > 0);
 
-        let preview = generate_preview(&draft).expect("preview generation");
+        let preview =
+            PreviewState::from_frame(render_preview_frame(&draft).expect("preview frame"))
+                .expect("preview generation");
         assert!(preview.bitmap.width() > 0);
         assert!(preview.bitmap.height() > 0);
 
@@ -895,5 +918,15 @@ mod tests {
 
         assert!(layout.code_scale.x <= 18.0);
         assert!(!layout.lines.is_empty());
+    }
+
+    #[test]
+    fn fit_code_layout_keeps_long_line_unwrapped() {
+        let code = "let hyper_verbose_variable_name = call_super_long_method_name(with_many_arguments, more_arguments, even_more_arguments);";
+
+        let layout = fit_code_layout(code, 520, 180);
+
+        assert_eq!(layout.lines, vec![code.to_string()]);
+        assert!(layout.code_scale.x < 24.0);
     }
 }
