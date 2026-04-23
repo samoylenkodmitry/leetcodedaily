@@ -27,7 +27,7 @@ jobs:
             artifact_name: leetcodedaily-${{ github.ref_name }}-macos-aarch64.tar.gz
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -58,7 +58,7 @@ jobs:
           cp README.md release-root/
           tar -czf ${{ matrix.artifact_name }} -C release-root .
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.label }}
           path: ${{ matrix.artifact_name }}
@@ -68,7 +68,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -93,7 +93,7 @@ jobs:
         run: |
           tar -czf leetcodedaily-${{ github.ref_name }}-web.tar.gz -C dist/web .
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: web
           path: leetcodedaily-${{ github.ref_name }}-web.tar.gz
@@ -107,12 +107,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: release-assets
           merge-multiple: true
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: release-assets/*
           generate_release_notes: true

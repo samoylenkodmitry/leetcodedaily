@@ -214,6 +214,7 @@ fn App() {
                     fields.clone(),
                     preview_state.clone(),
                     markdown_preview.clone(),
+                    status.clone(),
                 );
             }
         },
@@ -226,15 +227,16 @@ fn ActiveTabContent(
     fields: EditorFields,
     preview_state: MutableState<PreviewState>,
     markdown_preview: String,
+    status: MutableState<String>,
 ) {
     match active_tab {
         EditorTab::Output => {
             PreviewCard(preview_state);
             MarkdownCard(markdown_preview);
         }
-        EditorTab::Meta => ProblemMetaCard(fields),
-        EditorTab::Writeup => WriteupCard(fields),
-        EditorTab::Code => CodeCard(fields),
+        EditorTab::Meta => ProblemMetaCard(fields, status),
+        EditorTab::Writeup => WriteupCard(fields, status),
+        EditorTab::Code => CodeCard(fields, status),
     }
 }
 
@@ -372,15 +374,7 @@ fn ActionsCard(
 
                         Text(status.clone(), Modifier::empty(), accent_style());
 
-                        let preview = preview_state.value();
-                        if !preview.preview_png_path.is_empty() {
-                            Text(
-                                format!("Latest preview PNG: {}", preview.preview_png_path),
-                                Modifier::empty(),
-                                body_style(),
-                            );
-                        }
-                        if let Some(saved_webp) = preview.last_saved_webp_path {
+                        if let Some(saved_webp) = preview_state.value().last_saved_webp_path {
                             Text(
                                 format!("Latest WebP: {saved_webp}"),
                                 Modifier::empty(),
@@ -476,15 +470,17 @@ fn MarkdownCard(markdown_preview: String) {
 }
 
 #[composable]
-fn ProblemMetaCard(fields: EditorFields) {
+fn ProblemMetaCard(fields: EditorFields, status: MutableState<String>) {
     section_card({
         let fields = fields.clone();
+        let status = status.clone();
         move || {
             Column(
                 Modifier::empty().fill_max_width(),
                 ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(14.0)),
                 {
                     let fields = fields.clone();
+                    let status = status.clone();
                     move || {
                         let date = fields.date.clone();
                         let problem_title = fields.problem_title.clone();
@@ -497,15 +493,22 @@ fn ProblemMetaCard(fields: EditorFields) {
                         let telegram_text = fields.telegram_text.clone();
 
                         Text("Problem Meta", Modifier::empty(), heading_style(28.0));
-                        labeled_field("Date", date, 1, 1);
-                        labeled_field("Problem Title", problem_title, 1, 2);
-                        labeled_field("Problem URL", problem_url, 1, 2);
-                        labeled_field("Difficulty", difficulty, 1, 1);
-                        labeled_field("Blog Post URL", blog_post_url, 1, 2);
-                        labeled_field("Substack URL", substack_url, 1, 2);
-                        labeled_field("YouTube URL", youtube_url, 1, 2);
-                        labeled_field("Reference URL", reference_url, 1, 2);
-                        labeled_field("Telegram CTA Text", telegram_text, 3, 5);
+                        labeled_field("Date", date, 1, 1, status.clone(), false);
+                        labeled_field("Problem Title", problem_title, 1, 2, status.clone(), false);
+                        labeled_field("Problem URL", problem_url, 1, 2, status.clone(), false);
+                        labeled_field("Difficulty", difficulty, 1, 1, status.clone(), false);
+                        labeled_field("Blog Post URL", blog_post_url, 1, 2, status.clone(), false);
+                        labeled_field("Substack URL", substack_url, 1, 2, status.clone(), false);
+                        labeled_field("YouTube URL", youtube_url, 1, 2, status.clone(), false);
+                        labeled_field("Reference URL", reference_url, 1, 2, status.clone(), false);
+                        labeled_field(
+                            "Telegram CTA Text",
+                            telegram_text,
+                            3,
+                            5,
+                            status.clone(),
+                            true,
+                        );
                     }
                 },
             );
@@ -514,15 +517,17 @@ fn ProblemMetaCard(fields: EditorFields) {
 }
 
 #[composable]
-fn WriteupCard(fields: EditorFields) {
+fn WriteupCard(fields: EditorFields, status: MutableState<String>) {
     section_card({
         let fields = fields.clone();
+        let status = status.clone();
         move || {
             Column(
                 Modifier::empty().fill_max_width(),
                 ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(14.0)),
                 {
                     let fields = fields.clone();
+                    let status = status.clone();
                     move || {
                         let problem_tldr = fields.problem_tldr.clone();
                         let intuition = fields.intuition.clone();
@@ -531,11 +536,25 @@ fn WriteupCard(fields: EditorFields) {
                         let space_complexity = fields.space_complexity.clone();
 
                         Text("Writeup", Modifier::empty(), heading_style(28.0));
-                        labeled_field("Problem TLDR", problem_tldr, 3, 6);
-                        labeled_field("Intuition", intuition, 6, 14);
-                        labeled_field("Approach", approach, 6, 14);
-                        labeled_field("Time Complexity Inner Value", time_complexity, 1, 2);
-                        labeled_field("Space Complexity Inner Value", space_complexity, 1, 2);
+                        labeled_field("Problem TLDR", problem_tldr, 3, 6, status.clone(), true);
+                        labeled_field("Intuition", intuition, 6, 14, status.clone(), true);
+                        labeled_field("Approach", approach, 6, 14, status.clone(), true);
+                        labeled_field(
+                            "Time Complexity Inner Value",
+                            time_complexity,
+                            1,
+                            2,
+                            status.clone(),
+                            false,
+                        );
+                        labeled_field(
+                            "Space Complexity Inner Value",
+                            space_complexity,
+                            1,
+                            2,
+                            status.clone(),
+                            false,
+                        );
                     }
                 },
             );
@@ -544,15 +563,17 @@ fn WriteupCard(fields: EditorFields) {
 }
 
 #[composable]
-fn CodeCard(fields: EditorFields) {
+fn CodeCard(fields: EditorFields, status: MutableState<String>) {
     section_card({
         let fields = fields.clone();
+        let status = status.clone();
         move || {
             Column(
                 Modifier::empty().fill_max_width(),
                 ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(14.0)),
                 {
                     let fields = fields.clone();
+                    let status = status.clone();
                     move || {
                         let kotlin_runtime_ms = fields.kotlin_runtime_ms.clone();
                         let kotlin_code = fields.kotlin_code.clone();
@@ -560,10 +581,24 @@ fn CodeCard(fields: EditorFields) {
                         let rust_code = fields.rust_code.clone();
 
                         Text("Code Blocks", Modifier::empty(), heading_style(28.0));
-                        labeled_field("Kotlin Runtime (ms)", kotlin_runtime_ms, 1, 1);
-                        labeled_code_field("Kotlin Code", kotlin_code, 10, 18);
-                        labeled_field("Rust Runtime (ms)", rust_runtime_ms, 1, 1);
-                        labeled_code_field("Rust Code", rust_code, 10, 18);
+                        labeled_field(
+                            "Kotlin Runtime (ms)",
+                            kotlin_runtime_ms,
+                            1,
+                            1,
+                            status.clone(),
+                            false,
+                        );
+                        labeled_code_field("Kotlin Code", kotlin_code, 10, 18, status.clone());
+                        labeled_field(
+                            "Rust Runtime (ms)",
+                            rust_runtime_ms,
+                            1,
+                            1,
+                            status.clone(),
+                            false,
+                        );
+                        labeled_code_field("Rust Code", rust_code, 10, 18, status.clone());
                     }
                 },
             );
@@ -599,6 +634,20 @@ fn primary_button(label: &'static str, on_click: impl FnMut() + 'static) {
 }
 
 #[composable]
+fn subtle_button(label: &'static str, on_click: impl FnMut() + 'static) {
+    Button(
+        Modifier::empty()
+            .background(panel_surface())
+            .rounded_corners(14.0)
+            .padding_symmetric(14.0, 10.0),
+        on_click,
+        move || {
+            Text(label, Modifier::empty(), subtle_button_text_style());
+        },
+    );
+}
+
+#[composable]
 fn tab_button(label: &'static str, selected: bool, on_click: impl FnMut() + 'static) {
     let background = if selected {
         button_surface()
@@ -618,12 +667,19 @@ fn tab_button(label: &'static str, selected: bool, on_click: impl FnMut() + 'sta
 }
 
 #[composable]
-fn labeled_field(label: &'static str, state: TextFieldState, min_lines: usize, max_lines: usize) {
+fn labeled_field(
+    label: &'static str,
+    state: TextFieldState,
+    min_lines: usize,
+    max_lines: usize,
+    status: MutableState<String>,
+    allow_paste: bool,
+) {
     Column(
         Modifier::empty().fill_max_width(),
         ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(8.0)),
         move || {
-            Text(label, Modifier::empty(), label_style());
+            field_header(label, state.clone(), status.clone(), allow_paste);
 
             let field_state = state.clone();
             ComposeBox(
@@ -662,12 +718,13 @@ fn labeled_code_field(
     state: TextFieldState,
     min_lines: usize,
     max_lines: usize,
+    status: MutableState<String>,
 ) {
     Column(
         Modifier::empty().fill_max_width(),
         ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(8.0)),
         move || {
-            Text(label, Modifier::empty(), label_style());
+            field_header(label, state.clone(), status.clone(), true);
 
             let field_state = state.clone();
             ComposeBox(
@@ -696,6 +753,29 @@ fn labeled_code_field(
                     );
                 },
             );
+        },
+    );
+}
+
+#[composable]
+fn field_header(
+    label: &'static str,
+    state: TextFieldState,
+    status: MutableState<String>,
+    allow_paste: bool,
+) {
+    Row(
+        Modifier::empty().fill_max_width(),
+        RowSpec::default().horizontal_arrangement(LinearArrangement::SpaceBetween),
+        move || {
+            Text(label, Modifier::empty(), label_style());
+            if allow_paste {
+                let paste_state = state.clone();
+                let paste_status = status.clone();
+                subtle_button("Paste", move || {
+                    paste_text_from_clipboard(paste_state.clone(), paste_status.clone(), label);
+                });
+            }
         },
     );
 }
@@ -753,6 +833,49 @@ fn copy_rich_text_to_clipboard(draft: PostDraft, status: MutableState<String>) {
     }
 }
 
+fn paste_text_from_clipboard(
+    state: TextFieldState,
+    status: MutableState<String>,
+    label: &'static str,
+) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        match read_text_from_clipboard() {
+            Ok(text) => {
+                state.set_text(text);
+                status.set(format!("{label} replaced from clipboard."));
+            }
+            Err(error) => status.set(format!("Clipboard paste failed: {error}")),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        match web_read_text_promise() {
+            Ok(promise) => {
+                spawn_local(async move {
+                    match JsFuture::from(promise).await {
+                        Ok(value) => match value.as_string() {
+                            Some(text) => {
+                                state.set_text(text);
+                                status.set(format!("{label} replaced from clipboard."));
+                            }
+                            None => status.set(
+                                "Clipboard paste failed: browser returned non-text data."
+                                    .to_string(),
+                            ),
+                        },
+                        Err(error) => {
+                            status.set(format!("Clipboard paste failed: {error:?}"));
+                        }
+                    }
+                });
+            }
+            Err(error) => status.set(format!("Clipboard paste failed: {error}")),
+        }
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn copy_text(markdown: &str) -> Result<()> {
     let mut clipboard = Clipboard::new()?;
@@ -767,10 +890,22 @@ fn copy_rich_text(html: &str, fallback: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn read_text_from_clipboard() -> Result<String> {
+    let mut clipboard = Clipboard::new()?;
+    clipboard.get_text().map_err(Into::into)
+}
+
 #[cfg(target_arch = "wasm32")]
 fn web_write_text_promise(markdown: &str) -> Result<js_sys::Promise> {
     let window = web_sys::window().ok_or_else(|| anyhow!("missing window"))?;
     Ok(window.navigator().clipboard().write_text(markdown))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn web_read_text_promise() -> Result<js_sys::Promise> {
+    let window = web_sys::window().ok_or_else(|| anyhow!("missing window"))?;
+    Ok(window.navigator().clipboard().read_text())
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -908,6 +1043,18 @@ fn button_text_style() -> TextStyle {
             color: Some(Color::from_rgb_u8(14, 18, 24)),
             font_size: cranpose::text::TextUnit::Sp(17.0),
             font_weight: Some(cranpose::text::FontWeight::BOLD),
+            ..SpanStyle::default()
+        },
+        paragraph_style: ParagraphStyle::default(),
+    }
+}
+
+fn subtle_button_text_style() -> TextStyle {
+    TextStyle {
+        span_style: SpanStyle {
+            color: Some(Color::from_rgb_u8(132, 226, 255)),
+            font_size: cranpose::text::TextUnit::Sp(15.0),
+            font_weight: Some(cranpose::text::FontWeight::SEMI_BOLD),
             ..SpanStyle::default()
         },
         paragraph_style: ParagraphStyle::default(),

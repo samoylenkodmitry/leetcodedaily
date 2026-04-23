@@ -22,15 +22,22 @@ use web_sys::{Blob, BlobPropertyBag, HtmlAnchorElement, Url};
 const CANVAS_WIDTH: u32 = 1600;
 const CANVAS_HEIGHT: u32 = 900;
 const TEXT_SUPERSAMPLE: u32 = 3;
-const CODE_FONT_SIZES: [f32; 12] = [
-    46.0, 42.0, 38.0, 34.0, 30.0, 28.0, 26.0, 24.0, 22.0, 20.0, 18.0, 16.0,
+const CODE_FONT_SIZES: [f32; 16] = [
+    72.0, 68.0, 64.0, 60.0, 56.0, 52.0, 48.0, 44.0, 40.0, 36.0, 32.0, 28.0, 24.0, 22.0, 20.0, 18.0,
 ];
 const TLDR_FONT_SIZES: [f32; 6] = [22.0, 20.0, 18.0, 16.0, 14.0, 12.0];
+const CODE_SIDE_PADDING: u32 = 22;
+const CODE_LABEL_TOP_PADDING: i32 = 14;
+const CODE_LABEL_GAP: i32 = 4;
+const CODE_HEADER_TO_BODY_GAP: i32 = 14;
+const CODE_BOTTOM_PADDING: i32 = 10;
+const MIN_CODE_GAP: u32 = 20;
+const MAX_EXTRA_CODE_GAP: u32 = 68;
+const TEXT_EMBOLDEN_X_OFFSETS: [i32; 2] = [0, 1];
 
 #[derive(Clone)]
 pub struct PreviewState {
     pub bitmap: ImageBitmap,
-    pub preview_png_path: String,
     pub last_saved_webp_path: Option<String>,
 }
 
@@ -39,7 +46,6 @@ impl PreviewState {
         let bitmap = ImageBitmap::from_rgba8(1, 1, vec![8, 12, 18, 255]).expect("placeholder");
         Self {
             bitmap,
-            preview_png_path: String::new(),
             last_saved_webp_path: None,
         }
     }
@@ -50,7 +56,6 @@ pub fn generate_preview(draft: &PostDraft) -> Result<PreviewState> {
     let bitmap = image_bitmap_from(&rendered)?;
     Ok(PreviewState {
         bitmap,
-        preview_png_path: String::new(),
         last_saved_webp_path: None,
     })
 }
@@ -64,7 +69,6 @@ pub fn save_webp(draft: &PostDraft) -> Result<PreviewState> {
         let output_dir = output_dir();
         fs::create_dir_all(&output_dir).context("creating output directory")?;
 
-        let preview_png_path = save_preview_png(&rendered)?;
         let export_path = draft.suggested_export_path();
         DynamicImage::ImageRgba8(rendered)
             .save_with_format(&export_path, ImageFormat::WebP)
@@ -72,7 +76,6 @@ pub fn save_webp(draft: &PostDraft) -> Result<PreviewState> {
 
         return Ok(PreviewState {
             bitmap,
-            preview_png_path: preview_png_path.display().to_string(),
             last_saved_webp_path: Some(export_path.display().to_string()),
         });
     }
@@ -84,7 +87,6 @@ pub fn save_webp(draft: &PostDraft) -> Result<PreviewState> {
         download_webp_bytes(&filename, &bytes)?;
         Ok(PreviewState {
             bitmap,
-            preview_png_path: String::new(),
             last_saved_webp_path: Some(filename),
         })
     }
@@ -104,7 +106,6 @@ fn compose_card(draft: &PostDraft) -> Result<RgbaImage> {
 
     let panel = BoxArea::new(86, 94, 1428, 710);
     let panel_padding = 38;
-    let code_gap = 20u32;
     let tldr_height = 84u32;
     let tldr_gap = 18u32;
 
@@ -128,38 +129,31 @@ fn compose_card(draft: &PostDraft) -> Result<RgbaImage> {
         .height
         .saturating_sub((panel_padding * 2) as u32 + tldr_height + tldr_gap);
     let code_blocks = visible_code_blocks(draft);
-
-    if code_blocks.len() == 1 {
-        let block_height = ((code_region_height as f32) * 0.92).round() as u32;
-        let offset = code_region_height.saturating_sub(block_height) / 2;
-        let block = &code_blocks[0];
-        let layout =
-            fit_code_group_layout(&assets.mono_font, &code_blocks, inner_width, block_height)
-                .into_iter()
-                .next()
-                .expect("single code layout");
+    let code_group_layout = fit_code_group_layout(
+        &assets.mono_font,
+        &code_blocks,
+        inner_width,
+        code_region_height,
+    );
+    let stack_offset = code_region_height.saturating_sub(code_group_layout.stack_height) / 2;
+    let mut current_y = code_top + stack_offset as i32;
+    for (index, (block, layout)) in code_blocks
+        .iter()
+        .zip(code_group_layout.blocks.iter())
+        .enumerate()
+    {
+        let block_height = code_block_height(layout);
         draw_code_panel(
             &mut text_layer,
             &assets,
-            BoxArea::new(inner_x, code_top + offset as i32, inner_width, block_height),
+            BoxArea::new(inner_x, current_y, inner_width, block_height),
             block.language,
             block.runtime_ms,
-            &layout,
+            layout,
         );
-    } else {
-        let block_height = code_region_height.saturating_sub(code_gap) / 2;
-        let layouts =
-            fit_code_group_layout(&assets.mono_font, &code_blocks, inner_width, block_height);
-        for ((index, block), layout) in code_blocks.iter().enumerate().zip(layouts.iter()) {
-            let y = code_top + index as i32 * (block_height as i32 + code_gap as i32);
-            draw_code_panel(
-                &mut text_layer,
-                &assets,
-                BoxArea::new(inner_x, y, inner_width, block_height),
-                block.language,
-                block.runtime_ms,
-                layout,
-            );
+        current_y += block_height as i32;
+        if index + 1 < code_group_layout.blocks.len() {
+            current_y += code_group_layout.gap as i32;
         }
     }
 
@@ -235,13 +229,14 @@ fn draw_code_panel(
 
     let title = format!("// {language}");
     let runtime = format!("// {}", runtime_label(runtime_ms));
-    let title_y = area.y + 12;
-    let runtime_y = title_y + layout.label_line_height + 2;
+    let text_x = area.x + CODE_SIDE_PADDING as i32;
+    let title_y = area.y + CODE_LABEL_TOP_PADDING;
+    let runtime_y = title_y + layout.label_line_height + CODE_LABEL_GAP;
 
     draw_text_supersampled(
         canvas,
         label_color,
-        area.x + 20,
+        text_x,
         title_y,
         layout.label_scale,
         &assets.mono_font,
@@ -250,18 +245,18 @@ fn draw_code_panel(
     draw_text_supersampled(
         canvas,
         runtime_color,
-        area.x + 20,
+        text_x,
         runtime_y,
         layout.label_scale,
         &assets.mono_font,
         &runtime,
     );
 
-    let code_y = runtime_y + layout.label_line_height + 12;
+    let code_y = runtime_y + layout.label_line_height + CODE_HEADER_TO_BODY_GAP;
     draw_wrapped_lines(
         canvas,
         code_color,
-        area.x + 20,
+        text_x,
         code_y,
         layout.code_scale,
         &assets.mono_font,
@@ -386,6 +381,7 @@ fn fit_code_layout(code: &str, width: u32, height: u32) -> FittedCodeLayout {
         code,
     }];
     fit_code_group_layout(preview_mono_font(), &block, width, height)
+        .blocks
         .into_iter()
         .next()
         .expect("single layout")
@@ -396,9 +392,9 @@ fn fit_code_group_layout(
     blocks: &[CodeBlock<'_>],
     width: u32,
     height: u32,
-) -> Vec<FittedCodeLayout> {
+) -> FittedCodeGroupLayout {
     let mut last = None;
-    let content_width = width.saturating_sub(40);
+    let content_width = width.saturating_sub(CODE_SIDE_PADDING * 2);
 
     for &font_size in &CODE_FONT_SIZES {
         let code_scale = PxScale::from(font_size);
@@ -406,8 +402,6 @@ fn fit_code_group_layout(
         let label_scale = PxScale::from(label_size);
         let label_line_height = (label_size * 1.05).ceil() as i32;
         let code_line_height = (font_size * 1.24).ceil() as i32;
-        let header_height = 30 + label_line_height * 2;
-        let available_height = (height as i32 - header_height - 16).max(code_line_height);
 
         let layouts = blocks
             .iter()
@@ -420,19 +414,34 @@ fn fit_code_group_layout(
             })
             .collect::<Vec<_>>();
 
-        if layouts.iter().zip(blocks.iter()).all(|(layout, block)| {
-            code_layout_fits(font, block, layout, content_width, available_height)
-        }) {
-            return layouts;
+        if layouts
+            .iter()
+            .zip(blocks.iter())
+            .all(|(layout, block)| code_layout_fits(font, block, layout, content_width))
+        {
+            let stack_height = code_stack_height(&layouts, height);
+            if stack_height <= height {
+                return FittedCodeGroupLayout {
+                    gap: code_group_gap(&layouts, height),
+                    stack_height,
+                    blocks: layouts,
+                };
+            }
         }
 
-        last = Some((layouts, content_width, available_height));
+        last = Some((layouts, content_width, height));
     }
 
     let (mut layouts, content_width, available_height) =
         last.expect("code sizes must not be empty");
+    let gap = min_code_gap(layouts.len());
+    let total_gap = gap.saturating_mul(layouts.len().saturating_sub(1) as u32) as i32;
+    let shared_height =
+        ((available_height as i32 - total_gap).max(1) / layouts.len() as i32).max(1);
     for layout in &mut layouts {
-        let max_lines = (available_height / layout.code_line_height).max(1) as usize;
+        let available_code_height =
+            (shared_height - code_header_height(layout) as i32).max(layout.code_line_height);
+        let max_lines = (available_code_height / layout.code_line_height).max(1) as usize;
         layout.lines = truncate_lines(layout.lines.clone(), max_lines);
         while max_line_width(font, layout.code_scale, &layout.lines) > content_width
             && layout.lines.len() > 1
@@ -441,7 +450,12 @@ fn fit_code_group_layout(
             layout.lines = truncate_lines(layout.lines.clone(), new_len);
         }
     }
-    layouts
+    let stack_height = code_stack_height(&layouts, height);
+    FittedCodeGroupLayout {
+        gap,
+        stack_height,
+        blocks: layouts,
+    }
 }
 
 fn fit_paragraph_layout(
@@ -499,7 +513,6 @@ fn code_layout_fits(
     block: &CodeBlock<'_>,
     layout: &FittedCodeLayout,
     available_width: u32,
-    available_height: i32,
 ) -> bool {
     let title_width = text_size(layout.label_scale, font, &format!("// {}", block.language)).0;
     let runtime_width = text_size(
@@ -511,8 +524,7 @@ fn code_layout_fits(
     let content_width = max_line_width(font, layout.code_scale, &layout.lines)
         .max(title_width)
         .max(runtime_width);
-    let content_height = layout.lines.len() as i32 * layout.code_line_height;
-    content_width <= available_width && content_height <= available_height
+    content_width <= available_width
 }
 
 fn max_line_width(font: &FontArc, scale: PxScale, lines: &[String]) -> u32 {
@@ -576,15 +588,12 @@ fn draw_text_supersampled(
     font: &FontArc,
     text: &str,
 ) {
-    draw_text_mut(
-        canvas,
-        color,
-        superscaled_i32(x),
-        superscaled_i32(y),
-        superscaled_scale(scale),
-        font,
-        text,
-    );
+    let base_x = superscaled_i32(x);
+    let base_y = superscaled_i32(y);
+    let scale = superscaled_scale(scale);
+    for x_offset in TEXT_EMBOLDEN_X_OFFSETS {
+        draw_text_mut(canvas, color, base_x + x_offset, base_y, scale, font, text);
+    }
 }
 
 fn superscaled_i32(value: i32) -> i32 {
@@ -632,6 +641,12 @@ struct FittedCodeLayout {
     lines: Vec<String>,
 }
 
+struct FittedCodeGroupLayout {
+    gap: u32,
+    stack_height: u32,
+    blocks: Vec<FittedCodeLayout>,
+}
+
 struct FittedTextLayout {
     scale: PxScale,
     line_height: i32,
@@ -649,15 +664,6 @@ fn output_dir() -> PathBuf {
         .map(PathBuf::from)
         .map(|home| home.join("Downloads"))
         .unwrap_or_else(|| PathBuf::from("."))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn save_preview_png(rendered: &RgbaImage) -> Result<PathBuf> {
-    let preview_png_path = output_dir().join("preview-latest.png");
-    rendered
-        .save(&preview_png_path)
-        .with_context(|| format!("saving preview to {}", preview_png_path.display()))?;
-    Ok(preview_png_path)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -719,6 +725,66 @@ impl BoxArea {
             width,
             height,
         }
+    }
+}
+
+fn code_header_height(layout: &FittedCodeLayout) -> u32 {
+    (CODE_LABEL_TOP_PADDING
+        + layout.label_line_height
+        + CODE_LABEL_GAP
+        + layout.label_line_height
+        + CODE_HEADER_TO_BODY_GAP) as u32
+}
+
+fn code_block_height(layout: &FittedCodeLayout) -> u32 {
+    code_header_height(layout)
+        .saturating_add((layout.lines.len() as i32 * layout.code_line_height) as u32)
+        .saturating_add(CODE_BOTTOM_PADDING as u32)
+}
+
+fn min_code_gap(block_count: usize) -> u32 {
+    if block_count > 1 { MIN_CODE_GAP } else { 0 }
+}
+
+fn preferred_code_gap(
+    available_height: u32,
+    baseline_stack_height: u32,
+    block_count: usize,
+) -> u32 {
+    if block_count <= 1 {
+        return 0;
+    }
+
+    let extra_gap =
+        (available_height.saturating_sub(baseline_stack_height) / 4).min(MAX_EXTRA_CODE_GAP);
+    MIN_CODE_GAP + extra_gap
+}
+
+fn code_group_gap(layouts: &[FittedCodeLayout], available_height: u32) -> u32 {
+    let baseline_gap = min_code_gap(layouts.len());
+    if baseline_gap == 0 {
+        return 0;
+    }
+
+    let block_height_sum = layouts.iter().map(code_block_height).sum::<u32>();
+    let baseline_stack_height =
+        block_height_sum + baseline_gap.saturating_mul(layouts.len().saturating_sub(1) as u32);
+    if baseline_stack_height > available_height {
+        baseline_gap
+    } else {
+        preferred_code_gap(available_height, baseline_stack_height, layouts.len())
+    }
+}
+
+fn code_stack_height(layouts: &[FittedCodeLayout], available_height: u32) -> u32 {
+    let block_height_sum = layouts.iter().map(code_block_height).sum::<u32>();
+    let gap = code_group_gap(layouts, available_height);
+    let baseline_stack_height =
+        block_height_sum + gap.saturating_mul(layouts.len().saturating_sub(1) as u32);
+    if baseline_stack_height > available_height {
+        baseline_stack_height
+    } else {
+        baseline_stack_height
     }
 }
 
@@ -808,16 +874,13 @@ mod tests {
         assert!(bitmap.height() > 0);
 
         let preview = generate_preview(&draft).expect("preview generation");
-        assert!(preview.preview_png_path.is_empty());
         assert!(preview.bitmap.width() > 0);
         assert!(preview.bitmap.height() > 0);
 
         let saved = save_webp(&draft).expect("webp save");
-        assert!(Path::new(&saved.preview_png_path).exists());
         let webp_path = saved.last_saved_webp_path.clone().expect("saved webp path");
         assert!(Path::new(&webp_path).exists());
 
-        let _ = fs::remove_file(saved.preview_png_path);
         let _ = fs::remove_file(webp_path);
     }
 
