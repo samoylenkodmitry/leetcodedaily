@@ -479,6 +479,28 @@ fn ActionsCard(
                                     RowSpec::default()
                                         .horizontal_arrangement(LinearArrangement::spaced_by(12.0)),
                                     move || {
+                                        let title_fields = row_fields.clone();
+                                        let title_status = row_status.clone();
+                                        primary_button("Copy Title", move || {
+                                            let draft = PostDraft::from_fields(&title_fields);
+                                            copy_text_to_clipboard(
+                                                draft.title_text(),
+                                                "Title copied.".to_string(),
+                                                title_status.clone(),
+                                            );
+                                        });
+
+                                        let subtitle_fields = row_fields.clone();
+                                        let subtitle_status = row_status.clone();
+                                        primary_button("Copy Subtitle", move || {
+                                            let draft = PostDraft::from_fields(&subtitle_fields);
+                                            copy_text_to_clipboard(
+                                                draft.subtitle_text(),
+                                                "Subtitle copied.".to_string(),
+                                                subtitle_status.clone(),
+                                            );
+                                        });
+
                                         let rich_fields = row_fields.clone();
                                         let rich_status = row_status.clone();
                                         primary_button("Copy Rich Text", move || {

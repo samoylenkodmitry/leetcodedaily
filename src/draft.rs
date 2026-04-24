@@ -42,7 +42,7 @@ impl Default for EditorFields {
 impl EditorFields {
     pub fn from_draft(draft: &PostDraft) -> Self {
         Self {
-            date: TextFieldState::new(draft.date.clone()),
+            date: TextFieldState::new(today_date()),
             problem_title: TextFieldState::new(draft.problem_title.clone()),
             problem_url: TextFieldState::new(draft.problem_url.clone()),
             difficulty: TextFieldState::new(draft.difficulty.clone()),
@@ -96,7 +96,7 @@ pub struct PostDraft {
 impl Default for PostDraft {
     fn default() -> Self {
         Self {
-            date: Local::now().format("%d.%m.%Y").to_string(),
+            date: today_date(),
             problem_title: "Words Within Two Edits of Dictionary".to_string(),
             problem_url: "https://leetcode.com/problems/words-within-two-edits-of-dictionary/description/".to_string(),
             difficulty: "medium".to_string(),
@@ -121,10 +121,7 @@ impl Default for PostDraft {
 impl PostDraft {
     pub fn from_fields(fields: &EditorFields) -> Self {
         Self {
-            date: trim_or(
-                fields.date.text(),
-                &Local::now().format("%d.%m.%Y").to_string(),
-            ),
+            date: today_date(),
             problem_title: trim_or(fields.problem_title.text(), ""),
             problem_url: trim_or(fields.problem_url.text(), ""),
             difficulty: trim_or(fields.difficulty.text(), "medium"),
@@ -143,6 +140,11 @@ impl PostDraft {
             rust_runtime_ms: trim_or(fields.rust_runtime_ms.text(), ""),
             rust_code: normalize_code(fields.rust_code.text()),
         }
+    }
+
+    fn with_today_date(mut self) -> Self {
+        self.date = today_date();
+        self
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -248,6 +250,19 @@ impl PostDraft {
         finalize_markdown(lines)
     }
 
+    pub fn title_text(&self) -> String {
+        let title = self.problem_title.trim();
+        if title.is_empty() {
+            format!("# {}", self.date_or_placeholder())
+        } else {
+            format!("# {} [{}]", self.date_or_placeholder(), title)
+        }
+    }
+
+    pub fn subtitle_text(&self) -> String {
+        self.problem_tldr.trim().to_string()
+    }
+
     pub fn rich_html(&self) -> String {
         let mut html = String::from("<article>");
         html.push_str(&format!(
@@ -313,7 +328,7 @@ impl PostDraft {
 
     pub fn date_or_placeholder(&self) -> String {
         if self.date.is_empty() {
-            Local::now().format("%d.%m.%Y").to_string()
+            today_date()
         } else {
             self.date.clone()
         }
@@ -435,7 +450,7 @@ fn load_autosave() -> Result<Option<PostDraft>> {
         }
         let encoded = fs::read_to_string(&path)
             .with_context(|| format!("reading autosave file {}", path.display()))?;
-        return Ok(Some(decode_autosave(&encoded)?));
+        return Ok(Some(decode_autosave(&encoded)?.with_today_date()));
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -445,7 +460,7 @@ fn load_autosave() -> Result<Option<PostDraft>> {
             .get_item(AUTOSAVE_STORAGE_KEY)
             .map_err(|error| anyhow!("reading autosave from local storage failed: {error:?}"))?;
         match encoded {
-            Some(contents) => Ok(Some(decode_autosave(&contents)?)),
+            Some(contents) => Ok(Some(decode_autosave(&contents)?.with_today_date())),
             None => Ok(None),
         }
     }
@@ -601,6 +616,10 @@ fn trim_or(value: String, fallback: &str) -> String {
     } else {
         trimmed
     }
+}
+
+fn today_date() -> String {
+    Local::now().format("%d.%m.%Y").to_string()
 }
 
 fn normalize_block(value: String) -> String {
@@ -774,7 +793,7 @@ fn escape_html(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{PostDraft, decode_autosave, encode_autosave, slugify};
+    use super::{PostDraft, decode_autosave, encode_autosave, slugify, today_date};
 
     #[test]
     fn slugify_keeps_only_ascii_words() {
@@ -877,6 +896,22 @@ mod tests {
         };
 
         assert_eq!(draft.suggested_export_filename(), "23.04.2026.webp");
+    }
+
+    #[test]
+    fn title_and_subtitle_copy_text_match_expected_shape() {
+        let draft = PostDraft {
+            date: "24.04.2026".to_string(),
+            problem_title: "2833. Furthest Point From Origin".to_string(),
+            problem_tldr: "Max dist when replace _ with L or R".to_string(),
+            ..PostDraft::default()
+        };
+
+        assert_eq!(
+            draft.title_text(),
+            "# 24.04.2026 [2833. Furthest Point From Origin]"
+        );
+        assert_eq!(draft.subtitle_text(), "Max dist when replace _ with L or R");
     }
 
     #[test]
@@ -990,7 +1025,7 @@ mod tests {
     #[test]
     fn desktop_autosave_persists_and_restores_from_disk() {
         let draft = PostDraft {
-            date: "24.04.2026".to_string(),
+            date: "01.01.2000".to_string(),
             problem_title: "Desktop Autosave".to_string(),
             problem_url: "https://example.com/problem".to_string(),
             difficulty: "easy".to_string(),
@@ -1021,7 +1056,11 @@ mod tests {
             .expect("load autosave")
             .expect("autosave should exist");
 
-        assert_eq!(restored, draft);
+        let expected = PostDraft {
+            date: today_date(),
+            ..draft
+        };
+        assert_eq!(restored, expected);
 
         let _ = std::fs::remove_file(path);
     }
