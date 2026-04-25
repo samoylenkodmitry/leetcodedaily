@@ -23,9 +23,10 @@ const WEBP_TARGET_BYTES: usize = 220 * 1024;
 const WEBP_QUALITY_STEPS: [f32; 12] = [
     84.0, 80.0, 76.0, 72.0, 68.0, 64.0, 60.0, 56.0, 52.0, 48.0, 44.0, 40.0,
 ];
-const CODE_FONT_SIZES: [f32; 25] = [
-    84.0, 80.0, 76.0, 72.0, 68.0, 64.0, 60.0, 56.0, 52.0, 48.0, 44.0, 40.0, 36.0, 32.0, 28.0, 24.0,
-    22.0, 20.0, 18.0, 16.0, 14.0, 12.0, 10.0, 8.0, 6.0,
+const CODE_FONT_SIZES: &[f32] = &[
+    84.0, 80.0, 76.0, 72.0, 68.0, 64.0, 60.0, 56.0, 52.0, 48.0, 44.0, 40.0, 38.0, 36.0, 35.0, 34.0,
+    33.0, 32.0, 31.0, 30.0, 29.0, 28.0, 27.0, 26.0, 25.0, 24.0, 23.0, 22.0, 21.0, 20.0, 19.0, 18.0,
+    17.0, 16.0, 15.0, 14.0, 13.0, 12.0, 11.0, 10.0, 9.0, 8.0, 7.0, 6.0,
 ];
 const TLDR_FONT_SIZES: [f32; 6] = [22.0, 20.0, 18.0, 16.0, 14.0, 12.0];
 const CODE_SIDE_PADDING: u32 = 16;
@@ -90,6 +91,7 @@ pub(crate) struct CodeRenderPlan {
 pub(crate) struct TextRenderPlan {
     pub x: i32,
     pub y: i32,
+    pub width: u32,
     pub font_size: f32,
     pub line_height: i32,
     pub lines: Vec<String>,
@@ -135,9 +137,10 @@ pub(crate) fn compose_preview_assets() -> Result<ComposePreviewAssets> {
 
     match CACHE.get_or_init(|| {
         let assets = AssetPack::load().map_err(|error| error.to_string())?;
-        let background = assets
-            .background
-            .resize_to_fill(CANVAS_WIDTH, CANVAS_HEIGHT, FilterType::Lanczos3);
+        let background =
+            assets
+                .background
+                .resize_to_fill(CANVAS_WIDTH, CANVAS_HEIGHT, FilterType::Lanczos3);
         let qr = DynamicImage::ImageRgba8(tint_alpha(
             &assets
                 .qr
@@ -241,11 +244,12 @@ fn compose_card(draft: &PostDraft) -> Result<RgbaImage> {
     }
 
     let body_color = rgba(170, 176, 187, 255);
-    draw_wrapped_lines(
+    draw_centered_lines(
         &mut text_layer,
         body_color,
         plan.tldr.x,
         plan.tldr.y,
+        plan.tldr.width,
         PxScale::from(plan.tldr.font_size),
         &assets.sans_font,
         &plan.tldr.lines,
@@ -289,16 +293,27 @@ fn visible_code_blocks<'a>(draft: &'a PostDraft) -> Vec<CodeBlock<'a>> {
 fn build_card_render_plan_with_assets(draft: &PostDraft, assets: &AssetPack) -> CardRenderPlan {
     let panel = BoxArea::new(86, 94, 1428, 710);
     let panel_padding = 38;
-    let tldr_height = 84u32;
+    let max_tldr_height = 84u32;
     let tldr_gap = 18u32;
     let qr = BoxArea::new(26, 26, 170, 170);
 
     let inner_x = panel.x + panel_padding;
     let inner_width = panel.width.saturating_sub((panel_padding * 2) as u32);
+    let tldr_layout = fit_paragraph_layout(
+        &assets.sans_font,
+        &draft.preview_tldr(),
+        inner_width,
+        max_tldr_height,
+        &TLDR_FONT_SIZES,
+        1.16,
+    );
+    let tldr_text_height = text_layout_height(&tldr_layout);
     let code_top = panel.y + panel_padding;
     let code_region_height = panel
         .height
-        .saturating_sub((panel_padding * 2) as u32 + tldr_height + tldr_gap);
+        .saturating_sub((panel_padding * 2) as u32)
+        .saturating_sub(tldr_text_height)
+        .saturating_sub(tldr_gap);
     let code_blocks = visible_code_blocks(draft);
     let code_group_layout = fit_code_group_layout(
         &assets.mono_font,
@@ -345,18 +360,8 @@ fn build_card_render_plan_with_assets(draft: &PostDraft, assets: &AssetPack) -> 
         }
     }
 
-    let tldr_layout = fit_paragraph_layout(
-        &assets.sans_font,
-        &draft.preview_tldr(),
-        inner_width,
-        tldr_height,
-        &TLDR_FONT_SIZES,
-        1.16,
-    );
-    let tldr_area_top = panel.y + panel.height as i32 - panel_padding - tldr_height as i32;
     let tldr_area_bottom = panel.y + panel.height as i32 - panel_padding;
-    let tldr_text_height = tldr_layout.line_height * tldr_layout.lines.len() as i32;
-    let tldr_y = (tldr_area_bottom - tldr_text_height).max(tldr_area_top);
+    let tldr_y = tldr_area_bottom - tldr_text_height as i32;
 
     CardRenderPlan {
         panel,
@@ -369,6 +374,7 @@ fn build_card_render_plan_with_assets(draft: &PostDraft, assets: &AssetPack) -> 
         tldr: TextRenderPlan {
             x: inner_x,
             y: tldr_y,
+            width: inner_width,
             font_size: tldr_layout.scale.y,
             line_height: tldr_layout.line_height,
             lines: tldr_layout.lines,
@@ -411,6 +417,32 @@ fn draw_code_panel(canvas: &mut RgbaImage, assets: &AssetPack, plan: &CodeRender
     );
 }
 
+fn draw_centered_lines(
+    canvas: &mut RgbaImage,
+    color: Rgba<u8>,
+    x: i32,
+    y: i32,
+    width: u32,
+    scale: PxScale,
+    font: &FontArc,
+    lines: &[String],
+    line_height: i32,
+) {
+    for (index, line) in lines.iter().enumerate() {
+        let line_width = measured_text_width(font, scale, line);
+        let line_x = x + (width.saturating_sub(line_width) / 2) as i32;
+        draw_text_supersampled(
+            canvas,
+            color,
+            line_x,
+            y + line_height * index as i32,
+            scale,
+            font,
+            line,
+        );
+    }
+}
+
 fn draw_wrapped_lines(
     canvas: &mut RgbaImage,
     color: Rgba<u8>,
@@ -432,6 +464,10 @@ fn draw_wrapped_lines(
             line,
         );
     }
+}
+
+fn text_layout_height(layout: &FittedTextLayout) -> u32 {
+    (layout.line_height.max(0) as u32).saturating_mul(layout.lines.len() as u32)
 }
 
 fn wrap_paragraph(text: &str, font: &FontArc, scale: PxScale, max_width: u32) -> Vec<String> {
@@ -504,7 +540,7 @@ fn fit_code_group_layout(
     let mut last = None;
     let content_width = width.saturating_sub(CODE_SIDE_PADDING * 2);
 
-    for &font_size in &CODE_FONT_SIZES {
+    for &font_size in CODE_FONT_SIZES {
         let code_scale = PxScale::from(font_size);
         let label_size = (font_size + 2.0).max(14.0);
         let label_scale = PxScale::from(label_size);
@@ -645,12 +681,16 @@ fn code_group_shared_width(
 fn max_line_width(font: &FontArc, scale: PxScale, lines: &[String]) -> u32 {
     lines
         .iter()
-        .map(|line| measured_code_text_width(font, scale, line))
+        .map(|line| measured_text_width(font, scale, line))
         .max()
         .unwrap_or(0)
 }
 
 fn measured_code_text_width(font: &FontArc, scale: PxScale, text: &str) -> u32 {
+    measured_text_width(font, scale, text)
+}
+
+fn measured_text_width(font: &FontArc, scale: PxScale, text: &str) -> u32 {
     let embolden_extra = TEXT_EMBOLDEN_OFFSETS
         .iter()
         .map(|(x, _)| *x)

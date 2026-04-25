@@ -5,14 +5,16 @@ use crate::draft::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::draft::{read_draft_snapshot, write_draft_snapshot};
-use crate::export::{
-    PreviewFrame, PreviewState, render_preview_frame, save_preview_frame_as_webp, save_webp,
-};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::export::{
     CardRenderPlan, CodeRenderPlan, ComposePreviewAssets, compose_preview_assets,
     compose_preview_plan,
 };
+use crate::export::{
+    PreviewFrame, PreviewState, render_preview_frame, save_preview_frame_as_webp, save_webp,
+};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::publish::{ArchiveEdit, publish_blog_post};
 #[cfg(not(target_arch = "wasm32"))]
 use anyhow::Context;
 use anyhow::Result;
@@ -20,22 +22,26 @@ use anyhow::Result;
 use anyhow::anyhow;
 #[cfg(not(target_arch = "wasm32"))]
 use arboard::Clipboard;
-#[cfg(not(target_arch = "wasm32"))]
-use image::{ImageFormat, RgbaImage};
-#[cfg(not(target_arch = "wasm32"))]
-use std::sync::mpsc;
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-#[cfg(not(target_arch = "wasm32"))]
-use std::{fs, path::{Path, PathBuf}, process::Command};
 use cranpose::Box as ComposeBox;
 use cranpose::DEFAULT_ALPHA;
 use cranpose::prelude::*;
 use cranpose::widgets::BasicTextFieldWithOptions;
 use cranpose_core::MutableState;
 use cranpose_foundation::text::{TextFieldLineLimits, TextFieldState};
+#[cfg(not(target_arch = "wasm32"))]
+use image::{ImageFormat, RgbaImage};
 #[cfg(target_arch = "wasm32")]
 use js_sys::{Array, Object, Promise, Reflect};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::mpsc;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+#[cfg(not(target_arch = "wasm32"))]
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsValue;
 #[cfg(target_arch = "wasm32")]
@@ -139,6 +145,7 @@ fn App() {
     let compose_preview_state = useState(PreviewState::placeholder);
     let compose_loading = useState(|| false);
     let compose_error = useState(String::new);
+    let telegram_post_link = useState(String::new);
     let status = useState(startup_status_message);
     let current_draft = PostDraft::from_fields(&fields);
     let markdown_preview = current_draft.blog_template();
@@ -252,6 +259,7 @@ fn App() {
             let compose_preview_state = compose_preview_state.clone();
             let compose_loading = compose_loading.clone();
             let compose_error = compose_error.clone();
+            let telegram_post_link = telegram_post_link.clone();
             let markdown_preview = markdown_preview.clone();
             let active_tab = active_tab.clone();
             let scroll_state = scroll_state.clone();
@@ -262,6 +270,7 @@ fn App() {
                     status.clone(),
                     preview_state.clone(),
                     autosave_destination.clone(),
+                    telegram_post_link.clone(),
                 );
                 section_card({
                     let active_tab = active_tab.clone();
@@ -380,11 +389,13 @@ fn ActionsCard(
     status: MutableState<String>,
     preview_state: MutableState<PreviewState>,
     autosave_destination: String,
+    telegram_post_link: MutableState<String>,
 ) {
     section_card({
         let fields = fields.clone();
         let status = status.clone();
         let preview_state = preview_state.clone();
+        let telegram_post_link = telegram_post_link.clone();
         move || {
             Column(
                 Modifier::empty().fill_max_width(),
@@ -393,6 +404,7 @@ fn ActionsCard(
                     let fields = fields.clone();
                     let status = status.clone();
                     let preview_state = preview_state.clone();
+                    let telegram_post_link = telegram_post_link.clone();
                     let autosave_destination = autosave_destination.clone();
                     move || {
                         Text(
@@ -543,6 +555,55 @@ fn ActionsCard(
                                         });
                                     },
                                 );
+
+                                let row_fields = action_fields.clone();
+                                let row_status = action_status.clone();
+                                let row_preview = action_preview.clone();
+                                let row_telegram_post_link = telegram_post_link.clone();
+                                Row(
+                                    Modifier::empty().fill_max_width(),
+                                    RowSpec::default()
+                                        .horizontal_arrangement(LinearArrangement::spaced_by(12.0)),
+                                    move || {
+                                        let publish_fields = row_fields.clone();
+                                        let publish_status = row_status.clone();
+                                        let publish_preview = row_preview.clone();
+                                        primary_button("Publish Blog", move || {
+                                            let draft = PostDraft::from_fields(&publish_fields);
+                                            publish_blog_action(
+                                                &draft,
+                                                publish_preview.clone(),
+                                                publish_status.clone(),
+                                            );
+                                        });
+
+                                        let telegram_fields = row_fields.clone();
+                                        let telegram_status = row_status.clone();
+                                        let telegram_preview = row_preview.clone();
+                                        let telegram_link = row_telegram_post_link.clone();
+                                        primary_button("Post Telegram", move || {
+                                            let draft = PostDraft::from_fields(&telegram_fields);
+                                            post_telegram_channel_action(
+                                                &draft,
+                                                telegram_preview.clone(),
+                                                telegram_status.clone(),
+                                                telegram_link.clone(),
+                                            );
+                                        });
+
+                                        let comment_fields = row_fields.clone();
+                                        let comment_status = row_status.clone();
+                                        let comment_link = row_telegram_post_link.clone();
+                                        primary_button("Post TG Comment", move || {
+                                            let draft = PostDraft::from_fields(&comment_fields);
+                                            post_telegram_comment_action(
+                                                &draft,
+                                                comment_status.clone(),
+                                                comment_link.clone(),
+                                            );
+                                        });
+                                    },
+                                );
                             },
                         );
 
@@ -551,6 +612,14 @@ fn ActionsCard(
                         if let Some(saved_webp) = preview_state.value().last_saved_webp_path {
                             Text(
                                 format!("Latest WebP: {saved_webp}"),
+                                Modifier::empty(),
+                                body_style(),
+                            );
+                        }
+                        let latest_telegram_link = telegram_post_link.value();
+                        if !latest_telegram_link.is_empty() {
+                            Text(
+                                format!("Latest Telegram post: {latest_telegram_link}"),
                                 Modifier::empty(),
                                 body_style(),
                             );
@@ -693,16 +762,13 @@ fn CranposeCaptureSurface(
     compose_plan: CardRenderPlan,
     scale: f32,
 ) {
-    ComposeBox(
-        Modifier::empty().fill_max_size(),
-        BoxSpec::default(),
-        {
-            let compose_assets = compose_assets.clone();
+    ComposeBox(Modifier::empty().fill_max_size(), BoxSpec::default(), {
+        let compose_assets = compose_assets.clone();
+        let compose_plan = compose_plan.clone();
+        move || {
+            let background = compose_assets.background.clone();
+            let qr = compose_assets.qr.clone();
             let compose_plan = compose_plan.clone();
-            move || {
-                let background = compose_assets.background.clone();
-                let qr = compose_assets.qr.clone();
-                let compose_plan = compose_plan.clone();
             Image(
                 BitmapPainter(background),
                 Some("Cranpose card background".to_string()),
@@ -721,7 +787,11 @@ fn CranposeCaptureSurface(
                         scale_x(compose_plan.qr.x, scale),
                         scale_y(compose_plan.qr.y, scale),
                     )
-                    .size(scaled_size(compose_plan.qr.width, compose_plan.qr.height, scale))
+                    .size(scaled_size(
+                        compose_plan.qr.width,
+                        compose_plan.qr.height,
+                        scale,
+                    ))
                     .rounded_corners(18.0 * scale),
                 Alignment::CENTER,
                 ContentScale::Fit,
@@ -735,7 +805,11 @@ fn CranposeCaptureSurface(
                         scale_x(compose_plan.panel.x, scale),
                         scale_y(compose_plan.panel.y, scale),
                     )
-                    .size(scaled_size(compose_plan.panel.width, compose_plan.panel.height, scale))
+                    .size(scaled_size(
+                        compose_plan.panel.width,
+                        compose_plan.panel.height,
+                        scale,
+                    ))
                     .background(Color::from_rgba_u8(5, 8, 14, 210))
                     .rounded_corners(46.0 * scale)
                     .padding(compose_plan.panel_padding as f32 * scale),
@@ -747,145 +821,127 @@ fn CranposeCaptureSurface(
                     }
                 },
             );
-            }
-        },
-    );
+        }
+    });
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[composable]
 fn CranposePanelContent(compose_plan: CardRenderPlan, scale: f32) {
-    Column(
-        Modifier::empty().fill_max_size(),
-        ColumnSpec::default(),
-        {
-            let compose_plan = compose_plan.clone();
-            move || {
-                Spacer(Size::new(
-                    0.0,
-                    compose_plan.code_group_top_offset as f32 * scale,
-                ));
-                ComposeBox(
-                    Modifier::empty().fill_max_width(),
-                    BoxSpec::default().content_alignment(Alignment::CENTER),
-                    {
-                        let compose_plan = compose_plan.clone();
-                        move || {
-                            Column(
-                                Modifier::empty()
-                                    .width(compose_plan.shared_text_width as f32 * scale),
-                                ColumnSpec::default().vertical_arrangement(
-                                    LinearArrangement::spaced_by(
-                                        compose_plan.code_gap as f32 * scale,
-                                    ),
-                                ),
-                                {
-                                    let code_blocks = compose_plan.code_blocks.clone();
-                                    move || {
-                                        for code_block in code_blocks.clone() {
-                                            CranposeCodeBlockCard(code_block, scale);
-                                        }
+    Column(Modifier::empty().fill_max_size(), ColumnSpec::default(), {
+        let compose_plan = compose_plan.clone();
+        move || {
+            Spacer(Size::new(
+                0.0,
+                compose_plan.code_group_top_offset as f32 * scale,
+            ));
+            ComposeBox(
+                Modifier::empty().fill_max_width(),
+                BoxSpec::default().content_alignment(Alignment::CENTER),
+                {
+                    let compose_plan = compose_plan.clone();
+                    move || {
+                        Column(
+                            Modifier::empty().width(compose_plan.shared_text_width as f32 * scale),
+                            ColumnSpec::default().vertical_arrangement(
+                                LinearArrangement::spaced_by(compose_plan.code_gap as f32 * scale),
+                            ),
+                            {
+                                let code_blocks = compose_plan.code_blocks.clone();
+                                move || {
+                                    for code_block in code_blocks.clone() {
+                                        CranposeCodeBlockCard(code_block, scale);
                                     }
-                                },
-                            );
-                        }
-                    },
-                );
-                ComposeBox(
-                    Modifier::empty().fill_max_width().weight(1.0),
-                    BoxSpec::default(),
-                    || {},
-                );
-                ComposeBox(
-                    Modifier::empty().fill_max_width(),
-                    BoxSpec::default().content_alignment(Alignment::CENTER),
-                    {
-                        let compose_plan = compose_plan.clone();
-                        move || {
-                            ComposeBox(
-                                Modifier::empty()
-                                    .width(compose_plan.shared_text_width as f32 * scale),
-                                BoxSpec::default(),
-                                {
-                                    let tldr = compose_plan.tldr.clone();
-                                    move || {
-                                        CranposeTldrBlock(tldr.clone(), scale);
-                                    }
-                                },
-                            );
-                        }
-                    },
-                );
-            }
-        },
-    );
+                                }
+                            },
+                        );
+                    }
+                },
+            );
+            ComposeBox(
+                Modifier::empty().fill_max_width().weight(1.0),
+                BoxSpec::default(),
+                || {},
+            );
+            ComposeBox(
+                Modifier::empty().fill_max_width(),
+                BoxSpec::default().content_alignment(Alignment::CENTER),
+                {
+                    let compose_plan = compose_plan.clone();
+                    move || {
+                        ComposeBox(
+                            Modifier::empty().width(compose_plan.tldr.width as f32 * scale),
+                            BoxSpec::default(),
+                            {
+                                let tldr = compose_plan.tldr.clone();
+                                move || {
+                                    CranposeTldrBlock(tldr.clone(), scale);
+                                }
+                            },
+                        );
+                    }
+                },
+            );
+        }
+    });
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[composable]
 fn CranposeCodeBlockCard(code_block: CodeRenderPlan, scale: f32) {
-    Column(
-        Modifier::empty().fill_max_width(),
-        ColumnSpec::default(),
-        {
-            let code_block = code_block.clone();
-            move || {
+    Column(Modifier::empty().fill_max_width(), ColumnSpec::default(), {
+        let code_block = code_block.clone();
+        move || {
+            Text(
+                format!("// {}", code_block.language),
+                Modifier::empty(),
+                preview_code_label_style(code_block.label_font_size * scale),
+            );
+            Spacer(Size::new(0.0, 4.0 * scale));
+            Text(
+                format!("// {}", code_block.runtime),
+                Modifier::empty(),
+                preview_runtime_style(code_block.label_font_size * scale),
+            );
+            Spacer(Size::new(0.0, 14.0 * scale));
+            let line_gap =
+                ((code_block.code_line_height as f32 - code_block.code_font_size).max(0.0)) * scale;
+            for (index, line) in code_block.lines.iter().enumerate() {
                 Text(
-                    format!("// {}", code_block.language),
+                    line.clone(),
                     Modifier::empty(),
-                    preview_code_label_style(code_block.label_font_size * scale),
+                    preview_code_style(
+                        code_block.code_font_size * scale,
+                        code_block.code_line_height as f32 * scale,
+                    ),
                 );
-                Spacer(Size::new(0.0, 4.0 * scale));
-                Text(
-                    format!("// {}", code_block.runtime),
-                    Modifier::empty(),
-                    preview_runtime_style(code_block.label_font_size * scale),
-                );
-                Spacer(Size::new(0.0, 14.0 * scale));
-                let line_gap =
-                    ((code_block.code_line_height as f32 - code_block.code_font_size).max(0.0))
-                        * scale;
-                for (index, line) in code_block.lines.iter().enumerate() {
-                    Text(
-                        line.clone(),
-                        Modifier::empty(),
-                        preview_code_style(
-                            code_block.code_font_size * scale,
-                            code_block.code_line_height as f32 * scale,
-                        ),
-                    );
-                    if index + 1 < code_block.lines.len() && line_gap > 0.0 {
-                        Spacer(Size::new(0.0, line_gap));
-                    }
+                if index + 1 < code_block.lines.len() && line_gap > 0.0 {
+                    Spacer(Size::new(0.0, line_gap));
                 }
             }
-        },
-    );
+        }
+    });
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[composable]
 fn CranposeTldrBlock(tldr: crate::export::TextRenderPlan, scale: f32) {
-    Column(
-        Modifier::empty().fill_max_width(),
-        ColumnSpec::default(),
-        {
-            let tldr = tldr.clone();
-            move || {
-                let line_gap = ((tldr.line_height as f32 - tldr.font_size).max(0.0)) * scale;
-                for (index, line) in tldr.lines.iter().enumerate() {
-                    Text(
-                        line.clone(),
-                        Modifier::empty(),
-                        preview_tldr_style(tldr.font_size * scale, tldr.line_height as f32 * scale),
-                    );
-                    if index + 1 < tldr.lines.len() && line_gap > 0.0 {
-                        Spacer(Size::new(0.0, line_gap));
-                    }
+    Column(Modifier::empty().fill_max_width(), ColumnSpec::default(), {
+        let tldr = tldr.clone();
+        move || {
+            let line_gap = ((tldr.line_height as f32 - tldr.font_size).max(0.0)) * scale;
+            for (index, line) in tldr.lines.iter().enumerate() {
+                Text(
+                    line.clone(),
+                    Modifier::empty().fill_max_width(),
+                    preview_tldr_style(tldr.font_size * scale, tldr.line_height as f32 * scale),
+                );
+                if index + 1 < tldr.lines.len() && line_gap > 0.0 {
+                    Spacer(Size::new(0.0, line_gap));
                 }
             }
-        },
-    );
+        }
+    });
 }
 
 #[composable]
@@ -1265,7 +1321,7 @@ fn copy_text_to_clipboard(text: String, success_message: String, status: Mutable
 
 fn copy_rich_text_to_clipboard(draft: PostDraft, status: MutableState<String>) {
     let html = draft.rich_html();
-    let fallback = draft.blog_template();
+    let fallback = draft.rich_text_fallback();
 
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -1440,6 +1496,251 @@ fn save_compose_webp_action(
         },
         Err(error) => status.set(format!("Saving Cranpose WebP failed: {error}")),
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn post_telegram_channel_action(
+    draft: &PostDraft,
+    preview_state: MutableState<PreviewState>,
+    status: MutableState<String>,
+    telegram_post_link: MutableState<String>,
+) {
+    match save_webp(draft) {
+        Ok(preview) => {
+            let Some(webp_path) = preview.last_saved_webp_path.clone() else {
+                status.set("Telegram post failed: WebP save returned no path.".to_string());
+                return;
+            };
+            match run_telegram_channel_script(draft, &webp_path) {
+                Ok(link) => {
+                    preview_state.set(preview);
+                    telegram_post_link.set(link.clone());
+                    status.set(format!("Telegram post published: {link}"));
+                }
+                Err(error) => status.set(format!("Telegram post failed: {error}")),
+            }
+        }
+        Err(error) => status.set(format!("Telegram post failed: WebP save failed: {error}")),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn post_telegram_channel_action(
+    _draft: &PostDraft,
+    _preview_state: MutableState<PreviewState>,
+    status: MutableState<String>,
+    _telegram_post_link: MutableState<String>,
+) {
+    status.set("Telegram posting is desktop-only.".to_string());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn post_telegram_comment_action(
+    draft: &PostDraft,
+    status: MutableState<String>,
+    telegram_post_link: MutableState<String>,
+) {
+    match run_telegram_comment_script(draft, &telegram_post_link.value()) {
+        Ok(link) => status.set(format!("Telegram comment published: {link}")),
+        Err(error) => status.set(format!("Telegram comment failed: {error}")),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn post_telegram_comment_action(
+    _draft: &PostDraft,
+    status: MutableState<String>,
+    _telegram_post_link: MutableState<String>,
+) {
+    status.set("Telegram comment posting is desktop-only.".to_string());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn publish_blog_action(
+    draft: &PostDraft,
+    preview_state: MutableState<PreviewState>,
+    status: MutableState<String>,
+) {
+    match save_webp(draft) {
+        Ok(preview) => {
+            let Some(webp_path) = preview.last_saved_webp_path.clone() else {
+                status.set("Publishing blog failed: WebP save returned no path.".to_string());
+                return;
+            };
+            match publish_blog_post(draft, &webp_path) {
+                Ok(result) => {
+                    preview_state.set(preview);
+                    let action = match result.edit {
+                        ArchiveEdit::Inserted => "inserted",
+                        ArchiveEdit::Replaced => "replaced",
+                    };
+                    match result.commit_sha {
+                        Some(sha) => status.set(format!(
+                            "Blog post {action}, image copied, committed {sha}."
+                        )),
+                        None => status.set(format!(
+                            "Blog post {action}; archive and image were already committed."
+                        )),
+                    }
+                }
+                Err(error) => status.set(format!("Publishing blog failed: {error}")),
+            }
+        }
+        Err(error) => status.set(format!("Publishing blog failed: WebP save failed: {error}")),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn publish_blog_action(
+    _draft: &PostDraft,
+    _preview_state: MutableState<PreviewState>,
+    status: MutableState<String>,
+) {
+    status.set("Blog publishing is desktop-only.".to_string());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn run_telegram_channel_script(draft: &PostDraft, webp_path: &str) -> Result<String> {
+    let script_path = telegram_script_path("telegram_post_channel.py")?;
+    let output = Command::new("python3")
+        .arg(script_path)
+        .arg("--date")
+        .arg(draft.date_or_placeholder())
+        .arg("--title")
+        .arg(draft.problem_title.trim())
+        .arg("--difficulty")
+        .arg(draft.difficulty_or_placeholder())
+        .arg("--tldr")
+        .arg(draft.problem_tldr.trim())
+        .arg("--blog-url")
+        .arg(draft.reference_url.trim())
+        .arg("--substack-url")
+        .arg(draft.substack_url.trim())
+        .arg("--youtube-url")
+        .arg(draft.youtube_url.trim())
+        .arg("--image")
+        .arg(webp_path)
+        .output()
+        .context("launching Telegram channel script")?;
+    script_json_link(output)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn run_telegram_comment_script(draft: &PostDraft, post_link: &str) -> Result<String> {
+    let script_path = telegram_script_path("telegram_post_comment.py")?;
+    let body_path = telegram_temp_path("comment.md");
+    fs::write(&body_path, draft.rich_text_fallback())
+        .with_context(|| format!("writing Telegram comment body {}", body_path.display()))?;
+
+    let result = (|| {
+        let mut command = Command::new("python3");
+        command.arg(script_path).arg("--body-file").arg(&body_path);
+        if !post_link.trim().is_empty() {
+            command.arg("--post-link").arg(post_link.trim());
+        }
+        let output = command
+            .output()
+            .context("launching Telegram comment script")?;
+        script_json_link(output)
+    })();
+
+    let _ = fs::remove_file(&body_path);
+    result
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn telegram_script_path(name: &str) -> Result<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(dir) = std::env::var_os("LEETCODE_DAILY_TELEGRAM_SCRIPTS_DIR") {
+        candidates.push(PathBuf::from(dir).join(name));
+    }
+    if let Some(dir) = std::env::var_os("XDG_CONFIG_HOME") {
+        candidates.push(PathBuf::from(dir).join("leetcodedaily/scripts").join(name));
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        candidates.push(
+            PathBuf::from(home)
+                .join(".config/leetcodedaily/scripts")
+                .join(name),
+        );
+    }
+    if let Ok(exe_path) = std::env::current_exe()
+        && let Some(exe_dir) = exe_path.parent()
+    {
+        candidates.push(exe_dir.join("scripts").join(name));
+    }
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("scripts")
+            .join(name),
+    );
+
+    for candidate in &candidates {
+        if candidate.exists() {
+            return Ok(candidate.clone());
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "Telegram script {name} not found; set LEETCODE_DAILY_TELEGRAM_SCRIPTS_DIR or install scripts next to the app"
+    ))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn telegram_temp_path(extension: &str) -> PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "leetcodedaily-telegram-{}-{nonce}.{extension}",
+        std::process::id()
+    ))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn script_json_link(output: std::process::Output) -> Result<String> {
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let message = if stderr.trim().is_empty() {
+            stdout.trim()
+        } else {
+            stderr.trim()
+        };
+        return Err(anyhow::anyhow!(message.to_string()));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    extract_json_string(&stdout, "link")
+        .ok_or_else(|| anyhow::anyhow!("Telegram script did not return a link: {}", stdout.trim()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn extract_json_string(json: &str, field: &str) -> Option<String> {
+    let needle = format!("\"{field}\"");
+    let start = json.find(&needle)?;
+    let after_field = &json[start + needle.len()..];
+    let colon = after_field.find(':')?;
+    let after_colon = after_field[colon + 1..].trim_start();
+    if !after_colon.starts_with('"') {
+        return None;
+    }
+    let mut escaped = false;
+    let mut value = String::new();
+    for character in after_colon[1..].chars() {
+        if escaped {
+            value.push(character);
+            escaped = false;
+        } else if character == '\\' {
+            escaped = true;
+        } else if character == '"' {
+            return Some(value);
+        } else {
+            value.push(character);
+        }
+    }
+    None
 }
 
 fn paste_text_from_clipboard(
@@ -1776,6 +2077,7 @@ fn preview_tldr_style(size: f32, line_height: f32) -> TextStyle {
             ..SpanStyle::default()
         },
         paragraph_style: ParagraphStyle {
+            text_align: cranpose::text::TextAlign::Center,
             line_height: cranpose::text::TextUnit::Sp(line_height.max(size)),
             ..ParagraphStyle::default()
         },

@@ -56,6 +56,7 @@ jobs:
           mkdir -p release-root
           cp target/release/${{ matrix.bin_name }} release-root/
           cp README.md release-root/
+          cp -R scripts release-root/
           tar -czf ${{ matrix.artifact_name }} -C release-root .
 
       - uses: actions/upload-artifact@v7

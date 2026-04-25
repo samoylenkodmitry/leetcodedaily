@@ -1,5 +1,6 @@
 /target
 .codex
+__pycache__/
 dist
 output/*.png
 output/*.webp

@@ -6,6 +6,8 @@ use std::path::Path;
 mod assets;
 mod draft;
 mod export;
+#[cfg(not(target_arch = "wasm32"))]
+mod publish;
 mod ui;
 
 #[cfg(target_arch = "wasm32")]
@@ -30,7 +32,9 @@ pub fn run_cli() -> Result<()> {
                 .next()
                 .ok_or_else(|| anyhow!("missing output image path"))?;
             if args.next().is_some() {
-                return Err(anyhow!("unexpected extra arguments for compose capture mode"));
+                return Err(anyhow!(
+                    "unexpected extra arguments for compose capture mode"
+                ));
             }
             ui::run_compose_capture_cli(Path::new(&draft_path), Path::new(&output_path))
         }

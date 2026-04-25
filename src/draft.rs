@@ -235,6 +235,41 @@ impl PostDraft {
         finalize_markdown(lines)
     }
 
+    pub fn rich_text_fallback(&self) -> String {
+        let mut lines = vec![format!("# {}", self.date_or_placeholder())];
+
+        let problem_line = self.problem_header_line();
+        if !problem_line.is_empty() {
+            lines.push(problem_line);
+        }
+
+        push_optional_link(&mut lines, "blog post", &self.blog_post_url);
+        push_optional_link(&mut lines, "substack", &self.substack_url);
+        lines.push(String::new());
+
+        push_optional_plain_line(&mut lines, &self.reference_url);
+        if !self.reference_url.trim().is_empty() {
+            lines.push(String::new());
+        }
+        lines.push(self.image_markdown_line());
+
+        push_optional_plain_line(&mut lines, &self.youtube_url);
+        if !self.youtube_url.trim().is_empty() {
+            lines.push(String::new());
+        }
+
+        push_markdown_section(&mut lines, "#### Join me on Telegram", &self.telegram_text);
+        push_markdown_section(&mut lines, "#### Problem TLDR", &self.problem_tldr);
+        push_markdown_section(&mut lines, "#### Intuition", &self.intuition);
+        push_markdown_section(&mut lines, "#### Approach", &self.approach);
+        push_math_complexity_section(&mut lines, &self.time_complexity, &self.space_complexity);
+        push_markdown_heading(&mut lines, "#### Code");
+        push_code_block(&mut lines, "kotlin", &self.kotlin_code);
+        push_code_block(&mut lines, "rust", &self.rust_code);
+
+        finalize_markdown(lines)
+    }
+
     pub fn telegram_template(&self) -> String {
         let mut lines = vec![format!("# {}", self.date_or_placeholder())];
 
@@ -277,13 +312,13 @@ impl PostDraft {
 
         push_optional_html_link(&mut html, "blog post", &self.blog_post_url);
         push_optional_html_link(&mut html, "substack", &self.substack_url);
-        push_optional_html_link(&mut html, "youtube", &self.youtube_url);
 
         if !self.reference_url.trim().is_empty() {
             let safe_url = escape_html(&self.reference_url);
             html.push_str(&format!("<p><a href=\"{safe_url}\">{safe_url}</a></p>"));
         }
 
+        push_optional_html_plain_link(&mut html, &self.youtube_url);
         push_html_section(&mut html, "Join me on Telegram", &self.telegram_text);
         push_html_section(&mut html, "Problem TLDR", &self.problem_tldr);
         push_html_section(&mut html, "Intuition", &self.intuition);
@@ -725,6 +760,13 @@ fn push_optional_html_link(html: &mut String, label: &str, url: &str) {
     }
 }
 
+fn push_optional_html_plain_link(html: &mut String, url: &str) {
+    let safe_url = url.trim();
+    if !safe_url.is_empty() {
+        html.push_str(&format!("<p>{}</p>", html_link(safe_url, safe_url)));
+    }
+}
+
 fn push_html_section(html: &mut String, title: &str, body: &str) {
     html.push_str(&format!("<h4>{}</h4>", escape_html(title)));
     if !body.trim().is_empty() {
@@ -990,6 +1032,40 @@ mod tests {
         assert!(!html.contains("blog post</a>"));
         assert!(html.contains("language-kotlin"));
         assert!(html.contains("language-rust"));
+    }
+
+    #[test]
+    fn rich_text_copy_uses_visible_plain_youtube_url() {
+        let draft = PostDraft {
+            date: "05.10.2025".to_string(),
+            problem_title: "Words Within Two Edits of Dictionary".to_string(),
+            problem_url: String::new(),
+            difficulty: "medium".to_string(),
+            blog_post_url: String::new(),
+            substack_url: String::new(),
+            youtube_url: "https://youtu.be/demo".to_string(),
+            reference_url: String::new(),
+            telegram_text: "Join".to_string(),
+            problem_tldr: "TLDR".to_string(),
+            intuition: "Think".to_string(),
+            approach: "Do".to_string(),
+            time_complexity: "n".to_string(),
+            space_complexity: "1".to_string(),
+            kotlin_runtime_ms: "28".to_string(),
+            kotlin_code: "fun demo() {}".to_string(),
+            rust_runtime_ms: "1".to_string(),
+            rust_code: "fn demo() {}".to_string(),
+        };
+
+        let html = draft.rich_html();
+        let fallback = draft.rich_text_fallback();
+
+        assert!(html.contains(
+            "<p><a href=\"https://youtu.be/demo\">https://youtu.be/demo</a></p><h4>Join me on Telegram</h4>"
+        ));
+        assert!(!html.contains(">youtube</a>"));
+        assert!(fallback.contains("https://youtu.be/demo\n\n#### Join me on Telegram"));
+        assert!(!fallback.contains("[youtube](https://youtu.be/demo)"));
     }
 
     #[test]
