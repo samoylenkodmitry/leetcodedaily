@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use chrono::Local;
 use cranpose_foundation::text::TextFieldState;
+use std::collections::BTreeMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::fs;
 #[cfg(not(target_arch = "wasm32"))]
@@ -10,6 +11,9 @@ const DEFAULT_REFERENCE_URL: &str = "https://dmitrysamoylenko.com/2023/07/14/lee
 #[cfg(target_arch = "wasm32")]
 const AUTOSAVE_STORAGE_KEY: &str = "leetcodedaily.autosave.v1";
 const AUTOSAVE_FORMAT_VERSION: &str = "leetcodedaily-draft-v1";
+#[cfg(target_arch = "wasm32")]
+const UI_PREFERENCES_STORAGE_KEY: &str = "leetcodedaily.ui-preferences.v1";
+const UI_PREFERENCES_FORMAT_VERSION: &str = "leetcodedaily-ui-preferences-v1";
 
 #[derive(Clone, PartialEq)]
 pub struct EditorFields {
@@ -62,12 +66,73 @@ impl EditorFields {
             rust_code: TextFieldState::new(draft.rust_code.clone()),
         }
     }
+}
 
-    pub fn load_initial() -> Self {
-        match load_autosave() {
-            Ok(Some(draft)) => Self::from_draft(&draft),
-            _ => Self::default(),
+pub fn load_initial_draft() -> PostDraft {
+    match load_autosave() {
+        Ok(Some(draft)) => draft,
+        _ => PostDraft::default(),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ThemeMode {
+    Dark,
+    Light,
+}
+
+impl Default for ThemeMode {
+    fn default() -> Self {
+        Self::Dark
+    }
+}
+
+impl ThemeMode {
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::Dark => Self::Light,
+            Self::Light => Self::Dark,
         }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Dark => "Dark",
+            Self::Light => "Light",
+        }
+    }
+
+    fn from_storage(value: &str) -> Option<Self> {
+        match value {
+            "dark" => Some(Self::Dark),
+            "light" => Some(Self::Light),
+            _ => None,
+        }
+    }
+
+    fn as_storage(self) -> &'static str {
+        match self {
+            Self::Dark => "dark",
+            Self::Light => "light",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct UiPreferences {
+    pub theme: ThemeMode,
+    button_counts: BTreeMap<String, u64>,
+}
+
+impl UiPreferences {
+    pub fn button_count(&self, key: &str) -> u64 {
+        self.button_counts.get(key).copied().unwrap_or(0)
+    }
+
+    pub fn increment_button_count(&mut self, key: &str) -> u64 {
+        let count = self.button_counts.entry(key.to_string()).or_default();
+        *count = count.saturating_add(1);
+        *count
     }
 }
 
@@ -443,6 +508,42 @@ pub fn persist_autosave(draft: &PostDraft) -> Result<()> {
     }
 }
 
+pub fn load_ui_preferences() -> UiPreferences {
+    match try_load_ui_preferences() {
+        Ok(Some(preferences)) => preferences,
+        _ => UiPreferences::default(),
+    }
+}
+
+pub fn persist_ui_preferences(preferences: &UiPreferences) -> Result<()> {
+    let encoded = encode_ui_preferences(preferences);
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let path = ui_preferences_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("creating UI preferences directory {}", parent.display())
+            })?;
+        }
+        let temp_path = path.with_extension("tmp");
+        fs::write(&temp_path, encoded.as_bytes())
+            .with_context(|| format!("writing UI preferences temp file {}", temp_path.display()))?;
+        fs::rename(&temp_path, &path)
+            .with_context(|| format!("moving UI preferences into place at {}", path.display()))?;
+        return Ok(());
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        let storage = local_storage()?;
+        storage
+            .set_item(UI_PREFERENCES_STORAGE_KEY, &encoded)
+            .map_err(|error| anyhow!("saving UI preferences to local storage failed: {error:?}"))?;
+        Ok(())
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn write_draft_snapshot(path: &Path, draft: &PostDraft) -> Result<()> {
     fs::write(path, encode_autosave(draft))
@@ -501,6 +602,33 @@ fn load_autosave() -> Result<Option<PostDraft>> {
     }
 }
 
+fn try_load_ui_preferences() -> Result<Option<UiPreferences>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let path = ui_preferences_path();
+        if !path.exists() {
+            return Ok(None);
+        }
+        let encoded = fs::read_to_string(&path)
+            .with_context(|| format!("reading UI preferences file {}", path.display()))?;
+        return Ok(Some(decode_ui_preferences(&encoded)?));
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        let storage = local_storage()?;
+        let encoded = storage
+            .get_item(UI_PREFERENCES_STORAGE_KEY)
+            .map_err(|error| {
+                anyhow!("reading UI preferences from local storage failed: {error:?}")
+            })?;
+        match encoded {
+            Some(contents) => Ok(Some(decode_ui_preferences(&contents)?)),
+            None => Ok(None),
+        }
+    }
+}
+
 fn encode_autosave(draft: &PostDraft) -> String {
     let mut encoded = String::new();
     encoded.push_str(AUTOSAVE_FORMAT_VERSION);
@@ -516,6 +644,32 @@ fn encode_autosave(draft: &PostDraft) -> String {
     }
 
     encoded
+}
+
+fn encode_ui_preferences(preferences: &UiPreferences) -> String {
+    let mut encoded = String::new();
+    encoded.push_str(UI_PREFERENCES_FORMAT_VERSION);
+    encoded.push('\n');
+
+    push_encoded_field(&mut encoded, "theme", preferences.theme.as_storage());
+    for (button_key, count) in &preferences.button_counts {
+        push_encoded_field(
+            &mut encoded,
+            "button_count",
+            &format!("{button_key}\t{count}"),
+        );
+    }
+
+    encoded
+}
+
+fn push_encoded_field(encoded: &mut String, name: &str, value: &str) {
+    encoded.push_str(name);
+    encoded.push('\n');
+    encoded.push_str(&value.len().to_string());
+    encoded.push('\n');
+    encoded.push_str(value);
+    encoded.push('\n');
 }
 
 fn decode_autosave(encoded: &str) -> Result<PostDraft> {
@@ -540,6 +694,48 @@ fn decode_autosave(encoded: &str) -> Result<PostDraft> {
     }
 
     Ok(draft)
+}
+
+fn decode_ui_preferences(encoded: &str) -> Result<UiPreferences> {
+    let mut cursor = 0usize;
+    let version = take_line(encoded, &mut cursor)?;
+    if version != UI_PREFERENCES_FORMAT_VERSION {
+        return Err(anyhow!("unsupported UI preferences format: {version}"));
+    }
+
+    let mut preferences = UiPreferences::default();
+    while cursor < encoded.len() {
+        let name = take_line(encoded, &mut cursor)?;
+        if name.is_empty() && cursor >= encoded.len() {
+            break;
+        }
+        let length = take_line(encoded, &mut cursor)?
+            .parse::<usize>()
+            .with_context(|| format!("parsing UI preferences field length for {name}"))?;
+        let value = take_exact(encoded, &mut cursor, length)?;
+        consume_optional_newline(encoded, &mut cursor);
+        set_ui_preference_field(&mut preferences, name, value);
+    }
+
+    Ok(preferences)
+}
+
+fn set_ui_preference_field(preferences: &mut UiPreferences, name: &str, value: &str) {
+    match name {
+        "theme" => {
+            if let Some(theme) = ThemeMode::from_storage(value) {
+                preferences.theme = theme;
+            }
+        }
+        "button_count" => {
+            if let Some((key, count)) = value.split_once('\t')
+                && let Ok(count) = count.parse::<u64>()
+            {
+                preferences.button_counts.insert(key.to_string(), count);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn take_line<'a>(encoded: &'a str, cursor: &mut usize) -> Result<&'a str> {
@@ -632,6 +828,22 @@ fn autosave_path() -> PathBuf {
         .map(PathBuf::from)
         .map(|home| home.join(".leetcodedaily").join("autosave.draft"))
         .unwrap_or_else(|| PathBuf::from(".leetcodedaily").join("autosave.draft"))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn ui_preferences_path() -> PathBuf {
+    #[cfg(test)]
+    {
+        return std::env::temp_dir()
+            .join("leetcodedaily-tests")
+            .join("ui-preferences.draft");
+    }
+
+    #[cfg(not(test))]
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join(".leetcodedaily").join("ui-preferences.draft"))
+        .unwrap_or_else(|| PathBuf::from(".leetcodedaily").join("ui-preferences.draft"))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -835,7 +1047,10 @@ fn escape_html(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{PostDraft, decode_autosave, encode_autosave, slugify, today_date};
+    use super::{
+        PostDraft, ThemeMode, UiPreferences, decode_autosave, decode_ui_preferences,
+        encode_autosave, encode_ui_preferences, slugify, today_date,
+    };
 
     #[test]
     fn slugify_keeps_only_ascii_words() {
@@ -1095,6 +1310,54 @@ mod tests {
         let decoded = decode_autosave(&encoded).expect("decode autosave");
 
         assert_eq!(decoded, draft);
+    }
+
+    #[test]
+    fn ui_preferences_roundtrip_preserves_theme_and_button_counts() {
+        let mut preferences = UiPreferences {
+            theme: ThemeMode::Light,
+            ..UiPreferences::default()
+        };
+        preferences.increment_button_count("copy.leetcode");
+        preferences.increment_button_count("copy.leetcode");
+        preferences.increment_button_count("field.problem_title.clear");
+
+        let encoded = encode_ui_preferences(&preferences);
+        let decoded = decode_ui_preferences(&encoded).expect("decode UI preferences");
+
+        assert_eq!(decoded.theme, ThemeMode::Light);
+        assert_eq!(decoded.button_count("copy.leetcode"), 2);
+        assert_eq!(decoded.button_count("field.problem_title.clear"), 1);
+        assert_eq!(decoded.button_count("missing"), 0);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn desktop_ui_preferences_persist_and_restore_from_disk() {
+        let mut preferences = UiPreferences {
+            theme: ThemeMode::Light,
+            ..UiPreferences::default()
+        };
+        preferences.increment_button_count("copy.blog");
+        preferences.increment_button_count("copy.blog");
+        preferences.increment_button_count("theme.toggle");
+
+        let path = super::ui_preferences_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::remove_file(&path);
+
+        super::persist_ui_preferences(&preferences).expect("persist UI preferences");
+        let restored = super::try_load_ui_preferences()
+            .expect("load UI preferences")
+            .expect("UI preferences should exist");
+
+        assert_eq!(restored.theme, ThemeMode::Light);
+        assert_eq!(restored.button_count("copy.blog"), 2);
+        assert_eq!(restored.button_count("theme.toggle"), 1);
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[cfg(not(target_arch = "wasm32"))]

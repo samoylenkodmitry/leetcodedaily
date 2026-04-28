@@ -1,7 +1,9 @@
 #![allow(non_snake_case)]
 
 use crate::draft::{
-    EditorFields, PostDraft, autosave_destination_label, persist_autosave, startup_status_message,
+    EditorFields, PostDraft, ThemeMode, UiPreferences, autosave_destination_label,
+    load_initial_draft, load_ui_preferences, persist_autosave, persist_ui_preferences,
+    startup_status_message,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::draft::{read_draft_snapshot, write_draft_snapshot};
@@ -137,7 +139,13 @@ fn clamp_web_dimension(target: u32, viewport: f64, device_pixel_ratio: f64) -> u
 #[composable]
 fn App() {
     let scroll_state = remember(|| ScrollState::new(0.0)).with(|state| state.clone());
-    let fields = remember(EditorFields::load_initial).with(|fields| fields.clone());
+    let saved_draft = remember(load_initial_draft).with(|draft| draft.clone());
+    let fields = remember({
+        let saved_draft = saved_draft.clone();
+        move || EditorFields::from_draft(&saved_draft)
+    })
+    .with(|fields| fields.clone());
+    let ui_preferences = useState(load_ui_preferences);
     let autosave_destination = remember(autosave_destination_label).with(|label| label.clone());
     let active_tab = useState(|| EditorTab::Meta);
     let preview_state = useState(PreviewState::placeholder);
@@ -150,6 +158,7 @@ fn App() {
     let current_draft = PostDraft::from_fields(&fields);
     let markdown_preview = current_draft.blog_template();
     let current_tab = active_tab.value();
+    let theme = ui_preferences.value().theme;
 
     cranpose_core::LaunchedEffect!(current_draft.clone(), {
         let draft = current_draft.clone();
@@ -247,7 +256,7 @@ fn App() {
     Column(
         Modifier::empty()
             .fill_max_size()
-            .background(ui_surface())
+            .background(ui_surface(theme))
             .vertical_scroll(scroll_state.clone(), false)
             .padding(28.0),
         ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(22.0)),
@@ -264,6 +273,8 @@ fn App() {
             let active_tab = active_tab.clone();
             let scroll_state = scroll_state.clone();
             let autosave_destination = autosave_destination.clone();
+            let saved_draft = saved_draft.clone();
+            let ui_preferences = ui_preferences.clone();
             move || {
                 ActionsCard(
                     fields.clone(),
@@ -271,10 +282,13 @@ fn App() {
                     preview_state.clone(),
                     autosave_destination.clone(),
                     telegram_post_link.clone(),
+                    ui_preferences.clone(),
+                    theme,
                 );
-                section_card({
+                section_card(theme, {
                     let active_tab = active_tab.clone();
                     let scroll_state = scroll_state.clone();
+                    let ui_preferences = ui_preferences.clone();
                     move || {
                         Row(
                             Modifier::empty().fill_max_width(),
@@ -283,10 +297,14 @@ fn App() {
                             {
                                 let active_tab = active_tab.clone();
                                 let scroll_state = scroll_state.clone();
+                                let ui_preferences = ui_preferences.clone();
                                 move || {
                                     tab_button(
                                         "Output",
+                                        "tab.output",
                                         active_tab.value() == EditorTab::Output,
+                                        ui_preferences.clone(),
+                                        theme,
                                         {
                                             let active_tab = active_tab.clone();
                                             let scroll_state = scroll_state.clone();
@@ -298,7 +316,10 @@ fn App() {
                                     );
                                     tab_button(
                                         "Cranpose",
+                                        "tab.compose",
                                         active_tab.value() == EditorTab::Compose,
+                                        ui_preferences.clone(),
+                                        theme,
                                         {
                                             let active_tab = active_tab.clone();
                                             let scroll_state = scroll_state.clone();
@@ -308,17 +329,27 @@ fn App() {
                                             }
                                         },
                                     );
-                                    tab_button("Meta", active_tab.value() == EditorTab::Meta, {
-                                        let active_tab = active_tab.clone();
-                                        let scroll_state = scroll_state.clone();
-                                        move || {
-                                            active_tab.set(EditorTab::Meta);
-                                            scroll_state.scroll_to(0.0);
-                                        }
-                                    });
+                                    tab_button(
+                                        "Meta",
+                                        "tab.meta",
+                                        active_tab.value() == EditorTab::Meta,
+                                        ui_preferences.clone(),
+                                        theme,
+                                        {
+                                            let active_tab = active_tab.clone();
+                                            let scroll_state = scroll_state.clone();
+                                            move || {
+                                                active_tab.set(EditorTab::Meta);
+                                                scroll_state.scroll_to(0.0);
+                                            }
+                                        },
+                                    );
                                     tab_button(
                                         "Writeup",
+                                        "tab.writeup",
                                         active_tab.value() == EditorTab::Writeup,
+                                        ui_preferences.clone(),
+                                        theme,
                                         {
                                             let active_tab = active_tab.clone();
                                             let scroll_state = scroll_state.clone();
@@ -328,14 +359,21 @@ fn App() {
                                             }
                                         },
                                     );
-                                    tab_button("Code", active_tab.value() == EditorTab::Code, {
-                                        let active_tab = active_tab.clone();
-                                        let scroll_state = scroll_state.clone();
-                                        move || {
-                                            active_tab.set(EditorTab::Code);
-                                            scroll_state.scroll_to(0.0);
-                                        }
-                                    });
+                                    tab_button(
+                                        "Code",
+                                        "tab.code",
+                                        active_tab.value() == EditorTab::Code,
+                                        ui_preferences.clone(),
+                                        theme,
+                                        {
+                                            let active_tab = active_tab.clone();
+                                            let scroll_state = scroll_state.clone();
+                                            move || {
+                                                active_tab.set(EditorTab::Code);
+                                                scroll_state.scroll_to(0.0);
+                                            }
+                                        },
+                                    );
                                 }
                             },
                         );
@@ -351,6 +389,9 @@ fn App() {
                     compose_error.clone(),
                     markdown_preview.clone(),
                     status.clone(),
+                    saved_draft.clone(),
+                    ui_preferences.clone(),
+                    theme,
                 );
             }
         },
@@ -368,18 +409,21 @@ fn ActiveTabContent(
     compose_error: MutableState<String>,
     markdown_preview: String,
     status: MutableState<String>,
+    saved_draft: PostDraft,
+    ui_preferences: MutableState<UiPreferences>,
+    theme: ThemeMode,
 ) {
     match active_tab {
         EditorTab::Output => {
-            PreviewCard(preview_state, preview_loading);
-            MarkdownCard(markdown_preview);
+            PreviewCard(preview_state, preview_loading, theme);
+            MarkdownCard(markdown_preview, theme);
         }
         EditorTab::Compose => {
-            ComposePreviewCard(compose_preview_state, compose_loading, compose_error)
+            ComposePreviewCard(compose_preview_state, compose_loading, compose_error, theme)
         }
-        EditorTab::Meta => ProblemMetaCard(fields, status),
-        EditorTab::Writeup => WriteupCard(fields, status),
-        EditorTab::Code => CodeCard(fields, status),
+        EditorTab::Meta => ProblemMetaCard(fields, status, saved_draft, ui_preferences, theme),
+        EditorTab::Writeup => WriteupCard(fields, status, saved_draft, ui_preferences, theme),
+        EditorTab::Code => CodeCard(fields, status, saved_draft, ui_preferences, theme),
     }
 }
 
@@ -390,12 +434,15 @@ fn ActionsCard(
     preview_state: MutableState<PreviewState>,
     autosave_destination: String,
     telegram_post_link: MutableState<String>,
+    ui_preferences: MutableState<UiPreferences>,
+    theme: ThemeMode,
 ) {
-    section_card({
+    section_card(theme, {
         let fields = fields.clone();
         let status = status.clone();
         let preview_state = preview_state.clone();
         let telegram_post_link = telegram_post_link.clone();
+        let ui_preferences = ui_preferences.clone();
         move || {
             Column(
                 Modifier::empty().fill_max_width(),
@@ -406,21 +453,47 @@ fn ActionsCard(
                     let preview_state = preview_state.clone();
                     let telegram_post_link = telegram_post_link.clone();
                     let autosave_destination = autosave_destination.clone();
+                    let ui_preferences = ui_preferences.clone();
                     move || {
-                        Text(
-                            "LeetCode Daily Composer",
-                            Modifier::empty(),
-                            heading_style(34.0),
+                        Row(
+                            Modifier::empty().fill_max_width(),
+                            RowSpec::default()
+                                .horizontal_arrangement(LinearArrangement::SpaceBetween),
+                            {
+                                let ui_preferences = ui_preferences.clone();
+                                let status = status.clone();
+                                move || {
+                                    Text(
+                                        "LeetCode Daily Composer",
+                                        Modifier::empty(),
+                                        heading_style(34.0, theme),
+                                    );
+                                    let next_theme = theme.toggled();
+                                    subtle_button(
+                                        format!("Theme: {}", next_theme.label()),
+                                        "theme.toggle".to_string(),
+                                        ui_preferences.clone(),
+                                        theme,
+                                        move || {
+                                            set_theme_preference(
+                                                ui_preferences.clone(),
+                                                next_theme,
+                                                status.clone(),
+                                            );
+                                        },
+                                    );
+                                }
+                            },
                         );
                         Text(
                             "Fill the template, open Output for the raster export or Cranpose for the live text-rendered comparison, then copy the platform-specific template you need or save the card as WebP.",
                             Modifier::empty(),
-                            body_style(),
+                            body_style(theme),
                         );
                         Text(
                             autosave_destination.clone(),
                             Modifier::empty(),
-                            muted_style(),
+                            muted_style(theme),
                         );
 
                         let action_fields = fields.clone();
@@ -440,47 +513,73 @@ fn ActionsCard(
                                     move || {
                                         let leetcode_fields = row_fields.clone();
                                         let leetcode_status = row_status.clone();
-                                        primary_button("Copy LeetCode", move || {
-                                            let draft = PostDraft::from_fields(&leetcode_fields);
-                                            copy_text_to_clipboard(
-                                                draft.leetcode_template(),
-                                                "LeetCode template copied.".to_string(),
-                                                leetcode_status.clone(),
-                                            );
-                                        });
+                                        primary_button(
+                                            "Copy LeetCode",
+                                            "copy.leetcode",
+                                            ui_preferences.clone(),
+                                            theme,
+                                            move || {
+                                                let draft =
+                                                    PostDraft::from_fields(&leetcode_fields);
+                                                copy_text_to_clipboard(
+                                                    draft.leetcode_template(),
+                                                    "LeetCode template copied.".to_string(),
+                                                    leetcode_status.clone(),
+                                                );
+                                            },
+                                        );
 
                                         let youtube_fields = row_fields.clone();
                                         let youtube_status = row_status.clone();
-                                        primary_button("Copy YouTube", move || {
-                                            let draft = PostDraft::from_fields(&youtube_fields);
-                                            copy_text_to_clipboard(
-                                                draft.youtube_template(),
-                                                "YouTube template copied.".to_string(),
-                                                youtube_status.clone(),
-                                            );
-                                        });
+                                        primary_button(
+                                            "Copy YouTube",
+                                            "copy.youtube",
+                                            ui_preferences.clone(),
+                                            theme,
+                                            move || {
+                                                let draft = PostDraft::from_fields(&youtube_fields);
+                                                copy_text_to_clipboard(
+                                                    draft.youtube_template(),
+                                                    "YouTube template copied.".to_string(),
+                                                    youtube_status.clone(),
+                                                );
+                                            },
+                                        );
 
                                         let blog_fields = row_fields.clone();
                                         let blog_status = row_status.clone();
-                                        primary_button("Copy Blog", move || {
-                                            let draft = PostDraft::from_fields(&blog_fields);
-                                            copy_text_to_clipboard(
-                                                draft.blog_template(),
-                                                "Blog template copied.".to_string(),
-                                                blog_status.clone(),
-                                            );
-                                        });
+                                        primary_button(
+                                            "Copy Blog",
+                                            "copy.blog",
+                                            ui_preferences.clone(),
+                                            theme,
+                                            move || {
+                                                let draft = PostDraft::from_fields(&blog_fields);
+                                                copy_text_to_clipboard(
+                                                    draft.blog_template(),
+                                                    "Blog template copied.".to_string(),
+                                                    blog_status.clone(),
+                                                );
+                                            },
+                                        );
 
                                         let telegram_fields = row_fields.clone();
                                         let telegram_status = row_status.clone();
-                                        primary_button("Copy Telegram", move || {
-                                            let draft = PostDraft::from_fields(&telegram_fields);
-                                            copy_text_to_clipboard(
-                                                draft.telegram_template(),
-                                                "Telegram template copied.".to_string(),
-                                                telegram_status.clone(),
-                                            );
-                                        });
+                                        primary_button(
+                                            "Copy Telegram",
+                                            "copy.telegram",
+                                            ui_preferences.clone(),
+                                            theme,
+                                            move || {
+                                                let draft =
+                                                    PostDraft::from_fields(&telegram_fields);
+                                                copy_text_to_clipboard(
+                                                    draft.telegram_template(),
+                                                    "Telegram template copied.".to_string(),
+                                                    telegram_status.clone(),
+                                                );
+                                            },
+                                        );
                                     },
                                 );
 
@@ -493,32 +592,54 @@ fn ActionsCard(
                                     move || {
                                         let title_fields = row_fields.clone();
                                         let title_status = row_status.clone();
-                                        primary_button("Copy Title", move || {
-                                            let draft = PostDraft::from_fields(&title_fields);
-                                            copy_text_to_clipboard(
-                                                draft.title_text(),
-                                                "Title copied.".to_string(),
-                                                title_status.clone(),
-                                            );
-                                        });
+                                        primary_button(
+                                            "Copy Title",
+                                            "copy.title",
+                                            ui_preferences.clone(),
+                                            theme,
+                                            move || {
+                                                let draft = PostDraft::from_fields(&title_fields);
+                                                copy_text_to_clipboard(
+                                                    draft.title_text(),
+                                                    "Title copied.".to_string(),
+                                                    title_status.clone(),
+                                                );
+                                            },
+                                        );
 
                                         let subtitle_fields = row_fields.clone();
                                         let subtitle_status = row_status.clone();
-                                        primary_button("Copy Subtitle", move || {
-                                            let draft = PostDraft::from_fields(&subtitle_fields);
-                                            copy_text_to_clipboard(
-                                                draft.subtitle_text(),
-                                                "Subtitle copied.".to_string(),
-                                                subtitle_status.clone(),
-                                            );
-                                        });
+                                        primary_button(
+                                            "Copy Subtitle",
+                                            "copy.subtitle",
+                                            ui_preferences.clone(),
+                                            theme,
+                                            move || {
+                                                let draft =
+                                                    PostDraft::from_fields(&subtitle_fields);
+                                                copy_text_to_clipboard(
+                                                    draft.subtitle_text(),
+                                                    "Subtitle copied.".to_string(),
+                                                    subtitle_status.clone(),
+                                                );
+                                            },
+                                        );
 
                                         let rich_fields = row_fields.clone();
                                         let rich_status = row_status.clone();
-                                        primary_button("Copy Rich Text", move || {
-                                            let draft = PostDraft::from_fields(&rich_fields);
-                                            copy_rich_text_to_clipboard(draft, rich_status.clone());
-                                        });
+                                        primary_button(
+                                            "Copy Rich Text",
+                                            "copy.rich_text",
+                                            ui_preferences.clone(),
+                                            theme,
+                                            move || {
+                                                let draft = PostDraft::from_fields(&rich_fields);
+                                                copy_rich_text_to_clipboard(
+                                                    draft,
+                                                    rich_status.clone(),
+                                                );
+                                            },
+                                        );
                                     },
                                 );
 
@@ -533,26 +654,38 @@ fn ActionsCard(
                                         let save_fields = row_fields.clone();
                                         let save_status = row_status.clone();
                                         let save_preview = row_preview.clone();
-                                        primary_button("Save Raster WebP", move || {
-                                            let draft = PostDraft::from_fields(&save_fields);
-                                            save_raster_webp_action(
-                                                &draft,
-                                                save_preview.clone(),
-                                                save_status.clone(),
-                                            );
-                                        });
+                                        primary_button(
+                                            "Save Raster WebP",
+                                            "save.raster_webp",
+                                            ui_preferences.clone(),
+                                            theme,
+                                            move || {
+                                                let draft = PostDraft::from_fields(&save_fields);
+                                                save_raster_webp_action(
+                                                    &draft,
+                                                    save_preview.clone(),
+                                                    save_status.clone(),
+                                                );
+                                            },
+                                        );
 
                                         let save_fields = row_fields.clone();
                                         let save_status = row_status.clone();
                                         let save_preview = row_preview.clone();
-                                        primary_button("Save Cranpose WebP", move || {
-                                            let draft = PostDraft::from_fields(&save_fields);
-                                            save_compose_webp_action(
-                                                &draft,
-                                                save_preview.clone(),
-                                                save_status.clone(),
-                                            );
-                                        });
+                                        primary_button(
+                                            "Save Cranpose WebP",
+                                            "save.cranpose_webp",
+                                            ui_preferences.clone(),
+                                            theme,
+                                            move || {
+                                                let draft = PostDraft::from_fields(&save_fields);
+                                                save_compose_webp_action(
+                                                    &draft,
+                                                    save_preview.clone(),
+                                                    save_status.clone(),
+                                                );
+                                            },
+                                        );
                                     },
                                 );
 
@@ -568,52 +701,71 @@ fn ActionsCard(
                                         let publish_fields = row_fields.clone();
                                         let publish_status = row_status.clone();
                                         let publish_preview = row_preview.clone();
-                                        primary_button("Publish Blog", move || {
-                                            let draft = PostDraft::from_fields(&publish_fields);
-                                            publish_blog_action(
-                                                &draft,
-                                                publish_preview.clone(),
-                                                publish_status.clone(),
-                                            );
-                                        });
+                                        primary_button(
+                                            "Publish Blog",
+                                            "publish.blog",
+                                            ui_preferences.clone(),
+                                            theme,
+                                            move || {
+                                                let draft = PostDraft::from_fields(&publish_fields);
+                                                publish_blog_action(
+                                                    &draft,
+                                                    publish_preview.clone(),
+                                                    publish_status.clone(),
+                                                );
+                                            },
+                                        );
 
                                         let telegram_fields = row_fields.clone();
                                         let telegram_status = row_status.clone();
                                         let telegram_preview = row_preview.clone();
                                         let telegram_link = row_telegram_post_link.clone();
-                                        primary_button("Post Telegram", move || {
-                                            let draft = PostDraft::from_fields(&telegram_fields);
-                                            post_telegram_channel_action(
-                                                &draft,
-                                                telegram_preview.clone(),
-                                                telegram_status.clone(),
-                                                telegram_link.clone(),
-                                            );
-                                        });
+                                        primary_button(
+                                            "Post Telegram",
+                                            "post.telegram",
+                                            ui_preferences.clone(),
+                                            theme,
+                                            move || {
+                                                let draft =
+                                                    PostDraft::from_fields(&telegram_fields);
+                                                post_telegram_channel_action(
+                                                    &draft,
+                                                    telegram_preview.clone(),
+                                                    telegram_status.clone(),
+                                                    telegram_link.clone(),
+                                                );
+                                            },
+                                        );
 
                                         let comment_fields = row_fields.clone();
                                         let comment_status = row_status.clone();
                                         let comment_link = row_telegram_post_link.clone();
-                                        primary_button("Post TG Comment", move || {
-                                            let draft = PostDraft::from_fields(&comment_fields);
-                                            post_telegram_comment_action(
-                                                &draft,
-                                                comment_status.clone(),
-                                                comment_link.clone(),
-                                            );
-                                        });
+                                        primary_button(
+                                            "Post TG Comment",
+                                            "post.telegram_comment",
+                                            ui_preferences.clone(),
+                                            theme,
+                                            move || {
+                                                let draft = PostDraft::from_fields(&comment_fields);
+                                                post_telegram_comment_action(
+                                                    &draft,
+                                                    comment_status.clone(),
+                                                    comment_link.clone(),
+                                                );
+                                            },
+                                        );
                                     },
                                 );
                             },
                         );
 
-                        Text(status.clone(), Modifier::empty(), accent_style());
+                        Text(status.clone(), Modifier::empty(), accent_style(theme));
 
                         if let Some(saved_webp) = preview_state.value().last_saved_webp_path {
                             Text(
                                 format!("Latest WebP: {saved_webp}"),
                                 Modifier::empty(),
-                                body_style(),
+                                body_style(theme),
                             );
                         }
                         let latest_telegram_link = telegram_post_link.value();
@@ -621,7 +773,7 @@ fn ActionsCard(
                             Text(
                                 format!("Latest Telegram post: {latest_telegram_link}"),
                                 Modifier::empty(),
-                                body_style(),
+                                body_style(theme),
                             );
                         }
                     }
@@ -632,8 +784,12 @@ fn ActionsCard(
 }
 
 #[composable]
-fn PreviewCard(preview_state: MutableState<PreviewState>, preview_loading: MutableState<bool>) {
-    section_card({
+fn PreviewCard(
+    preview_state: MutableState<PreviewState>,
+    preview_loading: MutableState<bool>,
+    theme: ThemeMode,
+) {
+    section_card(theme, {
         let preview_state = preview_state.clone();
         let preview_loading = preview_loading.clone();
         move || {
@@ -645,12 +801,16 @@ fn PreviewCard(preview_state: MutableState<PreviewState>, preview_loading: Mutab
                     let preview_loading = preview_loading.clone();
                     move || {
                         let preview = preview_state.value();
-                        Text("Card Preview", Modifier::empty(), heading_style(28.0));
+                        Text(
+                            "Card Preview",
+                            Modifier::empty(),
+                            heading_style(28.0, theme),
+                        );
                         if preview_loading.value() {
                             Text(
                                 "Rendering preview in the background...",
                                 Modifier::empty(),
-                                accent_style(),
+                                accent_style(theme),
                             );
                         }
                         ComposeBox(
@@ -659,7 +819,7 @@ fn PreviewCard(preview_state: MutableState<PreviewState>, preview_loading: Mutab
                                     width: 1200.0,
                                     height: 675.0,
                                 })
-                                .background(panel_surface())
+                                .background(panel_surface(theme))
                                 .rounded_corners(24.0)
                                 .padding(18.0),
                             BoxSpec::default().content_alignment(Alignment::CENTER),
@@ -687,8 +847,9 @@ fn ComposePreviewCard(
     compose_preview_state: MutableState<PreviewState>,
     compose_loading: MutableState<bool>,
     compose_error: MutableState<String>,
+    theme: ThemeMode,
 ) {
-    section_card({
+    section_card(theme, {
         let compose_preview_state = compose_preview_state.clone();
         let compose_loading = compose_loading.clone();
         let compose_error = compose_error.clone();
@@ -703,20 +864,24 @@ fn ComposePreviewCard(
                     move || {
                         let preview = compose_preview_state.value();
                         let error = compose_error.value();
-                        Text("Cranpose Preview", Modifier::empty(), heading_style(28.0));
+                        Text(
+                            "Cranpose Preview",
+                            Modifier::empty(),
+                            heading_style(28.0, theme),
+                        );
                         Text(
                             "This tab shows the Cranpose-rendered card capture so you can compare it against the raster export.",
                             Modifier::empty(),
-                            body_style(),
+                            body_style(theme),
                         );
                         if compose_loading.value() {
                             Text(
                                 "Preparing Cranpose preview in the background...",
                                 Modifier::empty(),
-                                accent_style(),
+                                accent_style(theme),
                             );
                         } else if !error.is_empty() {
-                            Text(error.clone(), Modifier::empty(), body_style());
+                            Text(error.clone(), Modifier::empty(), body_style(theme));
                         }
                         ComposeBox(
                             Modifier::empty()
@@ -724,7 +889,7 @@ fn ComposePreviewCard(
                                     width: 1200.0,
                                     height: 675.0,
                                 })
-                                .background(panel_surface())
+                                .background(panel_surface(theme))
                                 .rounded_corners(24.0)
                                 .padding(18.0),
                             BoxSpec::default().content_alignment(Alignment::CENTER),
@@ -733,7 +898,7 @@ fn ComposePreviewCard(
                                     Text(
                                         error.clone(),
                                         Modifier::empty().fill_max_width(),
-                                        body_style(),
+                                        body_style(theme),
                                     );
                                 } else {
                                     Image(
@@ -945,8 +1110,8 @@ fn CranposeTldrBlock(tldr: crate::export::TextRenderPlan, scale: f32) {
 }
 
 #[composable]
-fn MarkdownCard(markdown_preview: String) {
-    section_card({
+fn MarkdownCard(markdown_preview: String, theme: ThemeMode) {
+    section_card(theme, {
         let markdown_preview = markdown_preview.clone();
         move || {
             Column(
@@ -959,12 +1124,12 @@ fn MarkdownCard(markdown_preview: String) {
                         Text(
                             "Blog Template Preview",
                             Modifier::empty(),
-                            heading_style(28.0),
+                            heading_style(28.0, theme),
                         );
                         ComposeBox(
                             Modifier::empty()
                                 .fill_max_width()
-                                .background(panel_surface())
+                                .background(panel_surface(theme))
                                 .rounded_corners(20.0)
                                 .padding(18.0),
                             BoxSpec::default(),
@@ -972,7 +1137,7 @@ fn MarkdownCard(markdown_preview: String) {
                                 Text(
                                     markdown_content.clone(),
                                     Modifier::empty().fill_max_width(),
-                                    code_text_style(18.0),
+                                    code_text_style(18.0, theme),
                                 );
                             },
                         );
@@ -984,10 +1149,18 @@ fn MarkdownCard(markdown_preview: String) {
 }
 
 #[composable]
-fn ProblemMetaCard(fields: EditorFields, status: MutableState<String>) {
-    section_card({
+fn ProblemMetaCard(
+    fields: EditorFields,
+    status: MutableState<String>,
+    saved_draft: PostDraft,
+    ui_preferences: MutableState<UiPreferences>,
+    theme: ThemeMode,
+) {
+    section_card(theme, {
         let fields = fields.clone();
         let status = status.clone();
+        let saved_draft = saved_draft.clone();
+        let ui_preferences = ui_preferences.clone();
         move || {
             Column(
                 Modifier::empty().fill_max_width(),
@@ -995,32 +1168,120 @@ fn ProblemMetaCard(fields: EditorFields, status: MutableState<String>) {
                 {
                     let fields = fields.clone();
                     let status = status.clone();
+                    let saved_draft = saved_draft.clone();
+                    let ui_preferences = ui_preferences.clone();
                     move || {
-                        let date = fields.date.clone();
-                        let problem_title = fields.problem_title.clone();
-                        let problem_url = fields.problem_url.clone();
-                        let difficulty = fields.difficulty.clone();
-                        let blog_post_url = fields.blog_post_url.clone();
-                        let substack_url = fields.substack_url.clone();
-                        let youtube_url = fields.youtube_url.clone();
-                        let reference_url = fields.reference_url.clone();
-                        let telegram_text = fields.telegram_text.clone();
-
-                        Text("Problem Meta", Modifier::empty(), heading_style(28.0));
-                        labeled_field("Date", date, 1, 1, status.clone(), true);
-                        labeled_field("Problem Title", problem_title, 1, 2, status.clone(), true);
-                        labeled_field("Problem URL", problem_url, 1, 2, status.clone(), true);
-                        labeled_field("Difficulty", difficulty, 1, 1, status.clone(), true);
-                        labeled_field("Blog Post URL", blog_post_url, 1, 2, status.clone(), true);
-                        labeled_field("Substack URL", substack_url, 1, 2, status.clone(), true);
-                        labeled_field("YouTube URL", youtube_url, 1, 2, status.clone(), true);
-                        labeled_field("Reference URL", reference_url, 1, 2, status.clone(), true);
+                        Text(
+                            "Problem Meta",
+                            Modifier::empty(),
+                            heading_style(28.0, theme),
+                        );
+                        labeled_field(
+                            "Date",
+                            "date",
+                            fields.date.clone(),
+                            saved_draft.date.clone(),
+                            1,
+                            1,
+                            status.clone(),
+                            ui_preferences.clone(),
+                            theme,
+                            true,
+                        );
+                        labeled_field(
+                            "Problem Title",
+                            "problem_title",
+                            fields.problem_title.clone(),
+                            saved_draft.problem_title.clone(),
+                            1,
+                            2,
+                            status.clone(),
+                            ui_preferences.clone(),
+                            theme,
+                            true,
+                        );
+                        labeled_field(
+                            "Problem URL",
+                            "problem_url",
+                            fields.problem_url.clone(),
+                            saved_draft.problem_url.clone(),
+                            1,
+                            2,
+                            status.clone(),
+                            ui_preferences.clone(),
+                            theme,
+                            true,
+                        );
+                        labeled_field(
+                            "Difficulty",
+                            "difficulty",
+                            fields.difficulty.clone(),
+                            saved_draft.difficulty.clone(),
+                            1,
+                            1,
+                            status.clone(),
+                            ui_preferences.clone(),
+                            theme,
+                            true,
+                        );
+                        labeled_field(
+                            "Blog Post URL",
+                            "blog_post_url",
+                            fields.blog_post_url.clone(),
+                            saved_draft.blog_post_url.clone(),
+                            1,
+                            2,
+                            status.clone(),
+                            ui_preferences.clone(),
+                            theme,
+                            true,
+                        );
+                        labeled_field(
+                            "Substack URL",
+                            "substack_url",
+                            fields.substack_url.clone(),
+                            saved_draft.substack_url.clone(),
+                            1,
+                            2,
+                            status.clone(),
+                            ui_preferences.clone(),
+                            theme,
+                            true,
+                        );
+                        labeled_field(
+                            "YouTube URL",
+                            "youtube_url",
+                            fields.youtube_url.clone(),
+                            saved_draft.youtube_url.clone(),
+                            1,
+                            2,
+                            status.clone(),
+                            ui_preferences.clone(),
+                            theme,
+                            true,
+                        );
+                        labeled_field(
+                            "Reference URL",
+                            "reference_url",
+                            fields.reference_url.clone(),
+                            saved_draft.reference_url.clone(),
+                            1,
+                            2,
+                            status.clone(),
+                            ui_preferences.clone(),
+                            theme,
+                            true,
+                        );
                         labeled_field(
                             "Telegram CTA Text",
-                            telegram_text,
+                            "telegram_text",
+                            fields.telegram_text.clone(),
+                            saved_draft.telegram_text.clone(),
                             3,
                             5,
                             status.clone(),
+                            ui_preferences.clone(),
+                            theme,
                             true,
                         );
                     }
@@ -1031,10 +1292,18 @@ fn ProblemMetaCard(fields: EditorFields, status: MutableState<String>) {
 }
 
 #[composable]
-fn WriteupCard(fields: EditorFields, status: MutableState<String>) {
-    section_card({
+fn WriteupCard(
+    fields: EditorFields,
+    status: MutableState<String>,
+    saved_draft: PostDraft,
+    ui_preferences: MutableState<UiPreferences>,
+    theme: ThemeMode,
+) {
+    section_card(theme, {
         let fields = fields.clone();
         let status = status.clone();
+        let saved_draft = saved_draft.clone();
+        let ui_preferences = ui_preferences.clone();
         move || {
             Column(
                 Modifier::empty().fill_max_width(),
@@ -1042,31 +1311,68 @@ fn WriteupCard(fields: EditorFields, status: MutableState<String>) {
                 {
                     let fields = fields.clone();
                     let status = status.clone();
+                    let saved_draft = saved_draft.clone();
+                    let ui_preferences = ui_preferences.clone();
                     move || {
-                        let problem_tldr = fields.problem_tldr.clone();
-                        let intuition = fields.intuition.clone();
-                        let approach = fields.approach.clone();
-                        let time_complexity = fields.time_complexity.clone();
-                        let space_complexity = fields.space_complexity.clone();
-
-                        Text("Writeup", Modifier::empty(), heading_style(28.0));
-                        labeled_field("Problem TLDR", problem_tldr, 3, 6, status.clone(), true);
-                        labeled_field("Intuition", intuition, 6, 14, status.clone(), true);
-                        labeled_field("Approach", approach, 6, 14, status.clone(), true);
+                        Text("Writeup", Modifier::empty(), heading_style(28.0, theme));
+                        labeled_field(
+                            "Problem TLDR",
+                            "problem_tldr",
+                            fields.problem_tldr.clone(),
+                            saved_draft.problem_tldr.clone(),
+                            3,
+                            6,
+                            status.clone(),
+                            ui_preferences.clone(),
+                            theme,
+                            true,
+                        );
+                        labeled_field(
+                            "Intuition",
+                            "intuition",
+                            fields.intuition.clone(),
+                            saved_draft.intuition.clone(),
+                            6,
+                            14,
+                            status.clone(),
+                            ui_preferences.clone(),
+                            theme,
+                            true,
+                        );
+                        labeled_field(
+                            "Approach",
+                            "approach",
+                            fields.approach.clone(),
+                            saved_draft.approach.clone(),
+                            6,
+                            14,
+                            status.clone(),
+                            ui_preferences.clone(),
+                            theme,
+                            true,
+                        );
                         labeled_field(
                             "Time Complexity Inner Value",
-                            time_complexity,
+                            "time_complexity",
+                            fields.time_complexity.clone(),
+                            saved_draft.time_complexity.clone(),
                             1,
                             2,
                             status.clone(),
+                            ui_preferences.clone(),
+                            theme,
                             false,
                         );
                         labeled_field(
                             "Space Complexity Inner Value",
-                            space_complexity,
+                            "space_complexity",
+                            fields.space_complexity.clone(),
+                            saved_draft.space_complexity.clone(),
                             1,
                             2,
                             status.clone(),
+                            ui_preferences.clone(),
+                            theme,
                             false,
                         );
                     }
@@ -1077,10 +1383,18 @@ fn WriteupCard(fields: EditorFields, status: MutableState<String>) {
 }
 
 #[composable]
-fn CodeCard(fields: EditorFields, status: MutableState<String>) {
-    section_card({
+fn CodeCard(
+    fields: EditorFields,
+    status: MutableState<String>,
+    saved_draft: PostDraft,
+    ui_preferences: MutableState<UiPreferences>,
+    theme: ThemeMode,
+) {
+    section_card(theme, {
         let fields = fields.clone();
         let status = status.clone();
+        let saved_draft = saved_draft.clone();
+        let ui_preferences = ui_preferences.clone();
         move || {
             Column(
                 Modifier::empty().fill_max_width(),
@@ -1088,31 +1402,56 @@ fn CodeCard(fields: EditorFields, status: MutableState<String>) {
                 {
                     let fields = fields.clone();
                     let status = status.clone();
+                    let saved_draft = saved_draft.clone();
+                    let ui_preferences = ui_preferences.clone();
                     move || {
-                        let kotlin_runtime_ms = fields.kotlin_runtime_ms.clone();
-                        let kotlin_code = fields.kotlin_code.clone();
-                        let rust_runtime_ms = fields.rust_runtime_ms.clone();
-                        let rust_code = fields.rust_code.clone();
-
-                        Text("Code Blocks", Modifier::empty(), heading_style(28.0));
+                        Text("Code Blocks", Modifier::empty(), heading_style(28.0, theme));
                         labeled_field(
                             "Kotlin Runtime (ms)",
-                            kotlin_runtime_ms,
+                            "kotlin_runtime_ms",
+                            fields.kotlin_runtime_ms.clone(),
+                            saved_draft.kotlin_runtime_ms.clone(),
                             1,
                             1,
                             status.clone(),
+                            ui_preferences.clone(),
+                            theme,
                             false,
                         );
-                        labeled_code_field("Kotlin Code", kotlin_code, 10, 18, status.clone());
+                        labeled_code_field(
+                            "Kotlin Code",
+                            "kotlin_code",
+                            fields.kotlin_code.clone(),
+                            saved_draft.kotlin_code.clone(),
+                            10,
+                            18,
+                            status.clone(),
+                            ui_preferences.clone(),
+                            theme,
+                        );
                         labeled_field(
                             "Rust Runtime (ms)",
-                            rust_runtime_ms,
+                            "rust_runtime_ms",
+                            fields.rust_runtime_ms.clone(),
+                            saved_draft.rust_runtime_ms.clone(),
                             1,
                             1,
                             status.clone(),
+                            ui_preferences.clone(),
+                            theme,
                             false,
                         );
-                        labeled_code_field("Rust Code", rust_code, 10, 18, status.clone());
+                        labeled_code_field(
+                            "Rust Code",
+                            "rust_code",
+                            fields.rust_code.clone(),
+                            saved_draft.rust_code.clone(),
+                            10,
+                            18,
+                            status.clone(),
+                            ui_preferences.clone(),
+                            theme,
+                        );
                     }
                 },
             );
@@ -1121,11 +1460,11 @@ fn CodeCard(fields: EditorFields, status: MutableState<String>) {
 }
 
 #[composable]
-fn section_card(content: impl FnMut() + 'static) {
+fn section_card(theme: ThemeMode, content: impl FnMut() + 'static) {
     ComposeBox(
         Modifier::empty()
             .fill_max_width()
-            .background(card_surface())
+            .background(card_surface(theme))
             .rounded_corners(26.0)
             .padding(22.0),
         BoxSpec::default(),
@@ -1134,48 +1473,116 @@ fn section_card(content: impl FnMut() + 'static) {
 }
 
 #[composable]
-fn primary_button(label: &'static str, on_click: impl FnMut() + 'static) {
+fn primary_button(
+    label: &'static str,
+    count_key: &'static str,
+    ui_preferences: MutableState<UiPreferences>,
+    theme: ThemeMode,
+    on_click: impl FnMut() + 'static,
+) {
+    let count = ui_preferences.value().button_count(count_key);
+    let count_key = count_key.to_string();
     Button(
         Modifier::empty()
-            .background(button_surface())
+            .background(button_surface(theme))
             .rounded_corners(18.0)
             .padding_symmetric(20.0, 14.0),
-        on_click,
         move || {
-            Text(label, Modifier::empty(), button_text_style());
+            record_button_press(ui_preferences.clone(), &count_key);
+            on_click();
+        },
+        move || {
+            button_content(label.to_string(), count, button_text_style(theme), theme);
         },
     );
 }
 
 #[composable]
-fn subtle_button(label: &'static str, on_click: impl FnMut() + 'static) {
+fn subtle_button(
+    label: String,
+    count_key: String,
+    ui_preferences: MutableState<UiPreferences>,
+    theme: ThemeMode,
+    on_click: impl FnMut() + 'static,
+) {
+    let count = ui_preferences.value().button_count(&count_key);
     Button(
         Modifier::empty()
-            .background(panel_surface())
+            .background(panel_surface(theme))
             .rounded_corners(14.0)
             .padding_symmetric(14.0, 10.0),
-        on_click,
         move || {
-            Text(label, Modifier::empty(), subtle_button_text_style());
+            record_button_press(ui_preferences.clone(), &count_key);
+            on_click();
+        },
+        move || {
+            button_content(label.clone(), count, subtle_button_text_style(theme), theme);
         },
     );
 }
 
 #[composable]
-fn tab_button(label: &'static str, selected: bool, on_click: impl FnMut() + 'static) {
+fn tab_button(
+    label: &'static str,
+    count_key: &'static str,
+    selected: bool,
+    ui_preferences: MutableState<UiPreferences>,
+    theme: ThemeMode,
+    on_click: impl FnMut() + 'static,
+) {
     let background = if selected {
-        button_surface()
+        button_surface(theme)
     } else {
-        panel_surface()
+        panel_surface(theme)
     };
+    let count = ui_preferences.value().button_count(count_key);
+    let count_key = count_key.to_string();
     Button(
         Modifier::empty()
             .background(background)
             .rounded_corners(18.0)
             .padding_symmetric(20.0, 14.0),
-        on_click,
         move || {
-            Text(label, Modifier::empty(), tab_text_style(selected));
+            record_button_press(ui_preferences.clone(), &count_key);
+            on_click();
+        },
+        move || {
+            button_content(
+                label.to_string(),
+                count,
+                tab_text_style(selected, theme),
+                theme,
+            );
+        },
+    );
+}
+
+#[composable]
+fn button_content(label: String, count: u64, style: TextStyle, theme: ThemeMode) {
+    Row(
+        Modifier::empty(),
+        RowSpec::default().horizontal_arrangement(LinearArrangement::spaced_by(8.0)),
+        move || {
+            Text(label.clone(), Modifier::empty(), style.clone());
+            button_badge(count, theme);
+        },
+    );
+}
+
+#[composable]
+fn button_badge(count: u64, theme: ThemeMode) {
+    ComposeBox(
+        Modifier::empty()
+            .background(badge_surface(theme))
+            .rounded_corners(999.0)
+            .padding_symmetric(7.0, 2.0),
+        BoxSpec::default().content_alignment(Alignment::CENTER),
+        move || {
+            Text(
+                count.to_string(),
+                Modifier::empty(),
+                badge_text_style(theme),
+            );
         },
     );
 }
@@ -1183,23 +1590,37 @@ fn tab_button(label: &'static str, selected: bool, on_click: impl FnMut() + 'sta
 #[composable]
 fn labeled_field(
     label: &'static str,
+    field_id: &'static str,
     state: TextFieldState,
+    saved_text: String,
     min_lines: usize,
     max_lines: usize,
     status: MutableState<String>,
+    ui_preferences: MutableState<UiPreferences>,
+    theme: ThemeMode,
     allow_paste: bool,
 ) {
+    let is_changed = state.text() != saved_text;
     Column(
         Modifier::empty().fill_max_width(),
         ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(8.0)),
         move || {
-            field_header(label, state.clone(), status.clone(), allow_paste);
+            field_header(
+                label,
+                field_id,
+                state.clone(),
+                status.clone(),
+                allow_paste,
+                is_changed,
+                ui_preferences.clone(),
+                theme,
+            );
 
             let field_state = state.clone();
             ComposeBox(
                 Modifier::empty()
                     .fill_max_width()
-                    .background(panel_surface())
+                    .background(panel_surface(theme))
                     .rounded_corners(18.0)
                     .padding(14.0),
                 BoxSpec::default(),
@@ -1208,8 +1629,8 @@ fn labeled_field(
                         field_state.clone(),
                         Modifier::empty().fill_max_width(),
                         BasicTextFieldOptions {
-                            text_style: field_text_style(),
-                            cursor_color: Color::from_rgb_u8(255, 194, 85),
+                            text_style: field_text_style(theme),
+                            cursor_color: accent_color(theme),
                             line_limits: if min_lines == 1 && max_lines == 1 {
                                 TextFieldLineLimits::SingleLine
                             } else {
@@ -1229,22 +1650,36 @@ fn labeled_field(
 #[composable]
 fn labeled_code_field(
     label: &'static str,
+    field_id: &'static str,
     state: TextFieldState,
+    saved_text: String,
     min_lines: usize,
     max_lines: usize,
     status: MutableState<String>,
+    ui_preferences: MutableState<UiPreferences>,
+    theme: ThemeMode,
 ) {
+    let is_changed = state.text() != saved_text;
     Column(
         Modifier::empty().fill_max_width(),
         ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(8.0)),
         move || {
-            field_header(label, state.clone(), status.clone(), true);
+            field_header(
+                label,
+                field_id,
+                state.clone(),
+                status.clone(),
+                true,
+                is_changed,
+                ui_preferences.clone(),
+                theme,
+            );
 
             let field_state = state.clone();
             ComposeBox(
                 Modifier::empty()
                     .fill_max_width()
-                    .background(panel_surface())
+                    .background(panel_surface(theme))
                     .rounded_corners(18.0)
                     .padding(14.0),
                 BoxSpec::default(),
@@ -1253,8 +1688,8 @@ fn labeled_code_field(
                         field_state.clone(),
                         Modifier::empty().fill_max_width(),
                         BasicTextFieldOptions {
-                            text_style: code_field_style(),
-                            cursor_color: Color::from_rgb_u8(255, 194, 85),
+                            text_style: code_field_style(theme),
+                            cursor_color: accent_color(theme),
                             line_limits: if min_lines == 1 && max_lines == 1 {
                                 TextFieldLineLimits::SingleLine
                             } else {
@@ -1274,24 +1709,89 @@ fn labeled_code_field(
 #[composable]
 fn field_header(
     label: &'static str,
+    field_id: &'static str,
     state: TextFieldState,
     status: MutableState<String>,
     allow_paste: bool,
+    is_changed: bool,
+    ui_preferences: MutableState<UiPreferences>,
+    theme: ThemeMode,
 ) {
     Row(
         Modifier::empty().fill_max_width(),
         RowSpec::default().horizontal_arrangement(LinearArrangement::SpaceBetween),
         move || {
-            Text(label, Modifier::empty(), label_style());
-            if allow_paste {
-                let paste_state = state.clone();
-                let paste_status = status.clone();
-                subtle_button("Paste", move || {
-                    paste_text_from_clipboard(paste_state.clone(), paste_status.clone(), label);
-                });
-            }
+            Text(label, Modifier::empty(), label_style(theme, is_changed));
+            Row(
+                Modifier::empty(),
+                RowSpec::default().horizontal_arrangement(LinearArrangement::spaced_by(8.0)),
+                {
+                    let state = state.clone();
+                    let status = status.clone();
+                    let ui_preferences = ui_preferences.clone();
+                    move || {
+                        if allow_paste {
+                            let paste_state = state.clone();
+                            let paste_status = status.clone();
+                            subtle_button(
+                                "Paste".to_string(),
+                                format!("field.{field_id}.paste"),
+                                ui_preferences.clone(),
+                                theme,
+                                move || {
+                                    paste_text_from_clipboard(
+                                        paste_state.clone(),
+                                        paste_status.clone(),
+                                        label,
+                                    );
+                                },
+                            );
+                        }
+
+                        let clear_state = state.clone();
+                        let clear_status = status.clone();
+                        subtle_button(
+                            "Clear".to_string(),
+                            format!("field.{field_id}.clear"),
+                            ui_preferences.clone(),
+                            theme,
+                            move || {
+                                clear_field(clear_state.clone(), clear_status.clone(), label);
+                            },
+                        );
+                    }
+                },
+            );
         },
     );
+}
+
+fn record_button_press(ui_preferences: MutableState<UiPreferences>, count_key: &str) {
+    let preferences = ui_preferences.update(|preferences| {
+        preferences.increment_button_count(count_key);
+        preferences.clone()
+    });
+    let _ = persist_ui_preferences(&preferences);
+}
+
+fn set_theme_preference(
+    ui_preferences: MutableState<UiPreferences>,
+    theme: ThemeMode,
+    status: MutableState<String>,
+) {
+    let preferences = ui_preferences.update(|preferences| {
+        preferences.theme = theme;
+        preferences.clone()
+    });
+    match persist_ui_preferences(&preferences) {
+        Ok(_) => status.set(format!("Theme set to {}.", theme.label())),
+        Err(error) => status.set(format!("Theme preference save failed: {error}")),
+    }
+}
+
+fn clear_field(state: TextFieldState, status: MutableState<String>, label: &'static str) {
+    state.set_text(String::new());
+    status.set(format!("{label} cleared."));
 }
 
 fn copy_text_to_clipboard(text: String, success_message: String, status: MutableState<String>) {
@@ -1892,10 +2392,10 @@ fn scaled_size(width: u32, height: u32, scale: f32) -> Size {
     }
 }
 
-fn heading_style(size: f32) -> TextStyle {
+fn heading_style(size: f32, theme: ThemeMode) -> TextStyle {
     TextStyle {
         span_style: SpanStyle {
-            color: Some(Color::from_rgb_u8(244, 247, 250)),
+            color: Some(primary_text_color(theme)),
             font_size: cranpose::text::TextUnit::Sp(size),
             font_weight: Some(cranpose::text::FontWeight::BOLD),
             ..SpanStyle::default()
@@ -1904,10 +2404,10 @@ fn heading_style(size: f32) -> TextStyle {
     }
 }
 
-fn muted_style() -> TextStyle {
+fn muted_style(theme: ThemeMode) -> TextStyle {
     TextStyle {
         span_style: SpanStyle {
-            color: Some(Color::from_rgb_u8(126, 142, 158)),
+            color: Some(muted_text_color(theme)),
             font_size: cranpose::text::TextUnit::Sp(15.0),
             ..SpanStyle::default()
         },
@@ -1915,10 +2415,10 @@ fn muted_style() -> TextStyle {
     }
 }
 
-fn body_style() -> TextStyle {
+fn body_style(theme: ThemeMode) -> TextStyle {
     TextStyle {
         span_style: SpanStyle {
-            color: Some(Color::from_rgb_u8(189, 204, 217)),
+            color: Some(body_text_color(theme)),
             font_size: cranpose::text::TextUnit::Sp(18.0),
             ..SpanStyle::default()
         },
@@ -1926,10 +2426,10 @@ fn body_style() -> TextStyle {
     }
 }
 
-fn accent_style() -> TextStyle {
+fn accent_style(theme: ThemeMode) -> TextStyle {
     TextStyle {
         span_style: SpanStyle {
-            color: Some(Color::from_rgb_u8(255, 195, 90)),
+            color: Some(accent_color(theme)),
             font_size: cranpose::text::TextUnit::Sp(17.0),
             ..SpanStyle::default()
         },
@@ -1937,10 +2437,10 @@ fn accent_style() -> TextStyle {
     }
 }
 
-fn code_text_style(size: f32) -> TextStyle {
+fn code_text_style(size: f32, theme: ThemeMode) -> TextStyle {
     TextStyle {
         span_style: SpanStyle {
-            color: Some(Color::from_rgb_u8(232, 238, 245)),
+            color: Some(primary_text_color(theme)),
             font_size: cranpose::text::TextUnit::Sp(size),
             font_family: Some(cranpose::text::FontFamily::Monospace),
             ..SpanStyle::default()
@@ -1949,10 +2449,10 @@ fn code_text_style(size: f32) -> TextStyle {
     }
 }
 
-fn field_text_style() -> TextStyle {
+fn field_text_style(theme: ThemeMode) -> TextStyle {
     TextStyle {
         span_style: SpanStyle {
-            color: Some(Color::from_rgb_u8(232, 238, 245)),
+            color: Some(primary_text_color(theme)),
             font_size: cranpose::text::TextUnit::Sp(18.0),
             ..SpanStyle::default()
         },
@@ -1960,14 +2460,18 @@ fn field_text_style() -> TextStyle {
     }
 }
 
-fn code_field_style() -> TextStyle {
-    code_text_style(18.0)
+fn code_field_style(theme: ThemeMode) -> TextStyle {
+    code_text_style(18.0, theme)
 }
 
-fn label_style() -> TextStyle {
+fn label_style(theme: ThemeMode, is_changed: bool) -> TextStyle {
     TextStyle {
         span_style: SpanStyle {
-            color: Some(Color::from_rgb_u8(132, 226, 255)),
+            color: Some(if is_changed {
+                changed_label_color(theme)
+            } else {
+                label_color(theme)
+            }),
             font_size: cranpose::text::TextUnit::Sp(16.0),
             font_weight: Some(cranpose::text::FontWeight::SEMI_BOLD),
             ..SpanStyle::default()
@@ -1976,10 +2480,10 @@ fn label_style() -> TextStyle {
     }
 }
 
-fn button_text_style() -> TextStyle {
+fn button_text_style(theme: ThemeMode) -> TextStyle {
     TextStyle {
         span_style: SpanStyle {
-            color: Some(Color::from_rgb_u8(14, 18, 24)),
+            color: Some(button_text_color(theme)),
             font_size: cranpose::text::TextUnit::Sp(17.0),
             font_weight: Some(cranpose::text::FontWeight::BOLD),
             ..SpanStyle::default()
@@ -1988,10 +2492,10 @@ fn button_text_style() -> TextStyle {
     }
 }
 
-fn subtle_button_text_style() -> TextStyle {
+fn subtle_button_text_style(theme: ThemeMode) -> TextStyle {
     TextStyle {
         span_style: SpanStyle {
-            color: Some(Color::from_rgb_u8(132, 226, 255)),
+            color: Some(label_color(theme)),
             font_size: cranpose::text::TextUnit::Sp(15.0),
             font_weight: Some(cranpose::text::FontWeight::SEMI_BOLD),
             ..SpanStyle::default()
@@ -2000,16 +2504,28 @@ fn subtle_button_text_style() -> TextStyle {
     }
 }
 
-fn tab_text_style(selected: bool) -> TextStyle {
+fn tab_text_style(selected: bool, theme: ThemeMode) -> TextStyle {
     TextStyle {
         span_style: SpanStyle {
             color: Some(if selected {
-                Color::from_rgb_u8(14, 18, 24)
+                button_text_color(theme)
             } else {
-                Color::from_rgb_u8(215, 224, 233)
+                primary_text_color(theme)
             }),
             font_size: cranpose::text::TextUnit::Sp(17.0),
             font_weight: Some(cranpose::text::FontWeight::SEMI_BOLD),
+            ..SpanStyle::default()
+        },
+        paragraph_style: ParagraphStyle::default(),
+    }
+}
+
+fn badge_text_style(theme: ThemeMode) -> TextStyle {
+    TextStyle {
+        span_style: SpanStyle {
+            color: Some(badge_text_color(theme)),
+            font_size: cranpose::text::TextUnit::Sp(12.0),
+            font_weight: Some(cranpose::text::FontWeight::BOLD),
             ..SpanStyle::default()
         },
         paragraph_style: ParagraphStyle::default(),
@@ -2084,20 +2600,95 @@ fn preview_tldr_style(size: f32, line_height: f32) -> TextStyle {
     }
 }
 
-fn ui_surface() -> Color {
-    Color::from_rgb_u8(8, 14, 23)
+fn ui_surface(theme: ThemeMode) -> Color {
+    match theme {
+        ThemeMode::Dark => Color::from_rgb_u8(8, 14, 23),
+        ThemeMode::Light => Color::from_rgb_u8(236, 241, 245),
+    }
 }
 
-fn card_surface() -> Color {
-    Color::from_rgb_u8(12, 21, 33)
+fn card_surface(theme: ThemeMode) -> Color {
+    match theme {
+        ThemeMode::Dark => Color::from_rgb_u8(12, 21, 33),
+        ThemeMode::Light => Color::from_rgb_u8(252, 253, 255),
+    }
 }
 
-fn panel_surface() -> Color {
-    Color::from_rgb_u8(18, 28, 43)
+fn panel_surface(theme: ThemeMode) -> Color {
+    match theme {
+        ThemeMode::Dark => Color::from_rgb_u8(18, 28, 43),
+        ThemeMode::Light => Color::from_rgb_u8(225, 233, 240),
+    }
 }
 
-fn button_surface() -> Color {
-    Color::from_rgb_u8(255, 194, 85)
+fn button_surface(theme: ThemeMode) -> Color {
+    match theme {
+        ThemeMode::Dark => Color::from_rgb_u8(255, 194, 85),
+        ThemeMode::Light => Color::from_rgb_u8(222, 150, 42),
+    }
+}
+
+fn badge_surface(theme: ThemeMode) -> Color {
+    match theme {
+        ThemeMode::Dark => Color::from_rgb_u8(44, 59, 76),
+        ThemeMode::Light => Color::from_rgb_u8(207, 217, 226),
+    }
+}
+
+fn primary_text_color(theme: ThemeMode) -> Color {
+    match theme {
+        ThemeMode::Dark => Color::from_rgb_u8(244, 247, 250),
+        ThemeMode::Light => Color::from_rgb_u8(24, 35, 48),
+    }
+}
+
+fn body_text_color(theme: ThemeMode) -> Color {
+    match theme {
+        ThemeMode::Dark => Color::from_rgb_u8(189, 204, 217),
+        ThemeMode::Light => Color::from_rgb_u8(61, 76, 91),
+    }
+}
+
+fn muted_text_color(theme: ThemeMode) -> Color {
+    match theme {
+        ThemeMode::Dark => Color::from_rgb_u8(126, 142, 158),
+        ThemeMode::Light => Color::from_rgb_u8(91, 107, 124),
+    }
+}
+
+fn label_color(theme: ThemeMode) -> Color {
+    match theme {
+        ThemeMode::Dark => Color::from_rgb_u8(132, 226, 255),
+        ThemeMode::Light => Color::from_rgb_u8(0, 96, 140),
+    }
+}
+
+fn changed_label_color(theme: ThemeMode) -> Color {
+    match theme {
+        ThemeMode::Dark => Color::from_rgb_u8(104, 226, 142),
+        ThemeMode::Light => Color::from_rgb_u8(24, 139, 78),
+    }
+}
+
+fn accent_color(theme: ThemeMode) -> Color {
+    match theme {
+        ThemeMode::Dark => Color::from_rgb_u8(255, 195, 90),
+        ThemeMode::Light => Color::from_rgb_u8(174, 97, 15),
+    }
+}
+
+fn button_text_color(theme: ThemeMode) -> Color {
+    match theme {
+        ThemeMode::Dark => Color::from_rgb_u8(14, 18, 24),
+        ThemeMode::Light => Color::from_rgb_u8(255, 252, 246),
+    }
+}
+
+fn badge_text_color(theme: ThemeMode) -> Color {
+    match theme {
+        ThemeMode::Dark => Color::from_rgb_u8(230, 237, 245),
+        ThemeMode::Light => Color::from_rgb_u8(43, 58, 73),
+    }
 }
 
 #[cfg(test)]
