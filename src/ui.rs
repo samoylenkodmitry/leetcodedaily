@@ -606,7 +606,7 @@ fn ActionsCard(
                                         theme,
                                     );
                                     Column(
-                                        Modifier::empty().weight(2.0),
+                                        Modifier::empty().weight(3.0),
                                         ColumnSpec::default().vertical_arrangement(
                                             LinearArrangement::spaced_by(10.0),
                                         ),
@@ -693,7 +693,7 @@ fn NextWorkPanel(
 ) {
     ComposeBox(
         Modifier::empty()
-            .fill_max_width()
+            .weight(1.0)
             .background(next_panel_surface(theme))
             .rounded_corners(8.0)
             .padding(18.0),
@@ -888,7 +888,7 @@ fn ActionButtons(
             let action_request_counter = action_request_counter.clone();
             let busy_action = busy_action.clone();
             move || {
-                for row in ordered_actions.chunks(4) {
+                for row in ordered_actions.chunks(5) {
                     let row_actions = row.to_vec();
                     let fields = fields.clone();
                     let status = status.clone();
