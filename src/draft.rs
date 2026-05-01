@@ -589,7 +589,7 @@ pub fn autosave_destination_label() -> String {
 pub fn startup_status_message() -> String {
     match load_autosave() {
         Ok(Some(_)) => "Restored autosaved draft.".to_string(),
-        Ok(None) => "Preview refreshes when you open the Output tab.".to_string(),
+        Ok(None) => "Ready.".to_string(),
         Err(error) => format!("Autosave restore failed: {error}"),
     }
 }

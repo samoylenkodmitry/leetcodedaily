@@ -61,17 +61,10 @@ const WEB_SURFACE_MAX_DIM: u32 = 1900;
 #[cfg(target_arch = "wasm32")]
 const WEB_CANVAS_MARGIN: f64 = 48.0;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-enum EditorTab {
-    Output,
-    Compose,
-    Meta,
-    Writeup,
-    Code,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum ActionButtonId {
+    RefreshRasterPreview,
+    RefreshCranposePreview,
     CopyLeetcode,
     CopyYoutube,
     CopyBlog,
@@ -88,6 +81,8 @@ enum ActionButtonId {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum LongAction {
+    RefreshRasterPreview,
+    RefreshCranposePreview,
     SaveRasterWebp,
     SaveCranposeWebp,
     PublishBlog,
@@ -105,6 +100,8 @@ struct PendingAction {
 
 #[derive(Clone)]
 enum LongActionResult {
+    RefreshRasterPreview(std::result::Result<PreviewState, String>),
+    RefreshCranposePreview(std::result::Result<PreviewState, String>),
     SaveRasterWebp(std::result::Result<PreviewState, String>),
     SaveCranposeWebp(std::result::Result<PreviewState, String>),
     PublishBlog(std::result::Result<PublishBlogOutcome, String>),
@@ -154,7 +151,22 @@ enum EditorFieldId {
     RustCode,
 }
 
-const ACTION_BUTTONS: [ActionButtonId; 12] = [
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum WorkStage {
+    Prepare,
+    Write,
+    Code,
+    Review,
+    Ship,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum NextWorkItem {
+    Field(EditorFieldId),
+    Action(ActionButtonId),
+}
+
+const ACTION_BUTTONS: [ActionButtonId; 14] = [
     ActionButtonId::CopyLeetcode,
     ActionButtonId::CopyYoutube,
     ActionButtonId::CopyBlog,
@@ -162,6 +174,8 @@ const ACTION_BUTTONS: [ActionButtonId; 12] = [
     ActionButtonId::CopyTitle,
     ActionButtonId::CopySubtitle,
     ActionButtonId::CopyRichText,
+    ActionButtonId::RefreshRasterPreview,
+    ActionButtonId::RefreshCranposePreview,
     ActionButtonId::SaveRasterWebp,
     ActionButtonId::SaveCranposeWebp,
     ActionButtonId::PublishBlog,
@@ -194,6 +208,27 @@ const CODE_FIELDS: [EditorFieldId; 4] = [
     EditorFieldId::KotlinCode,
     EditorFieldId::RustRuntimeMs,
     EditorFieldId::RustCode,
+];
+
+const WORKFLOW_FIELDS: [EditorFieldId; 18] = [
+    EditorFieldId::ProblemTitle,
+    EditorFieldId::ProblemUrl,
+    EditorFieldId::Difficulty,
+    EditorFieldId::ProblemTldr,
+    EditorFieldId::Intuition,
+    EditorFieldId::Approach,
+    EditorFieldId::TimeComplexity,
+    EditorFieldId::SpaceComplexity,
+    EditorFieldId::KotlinRuntimeMs,
+    EditorFieldId::KotlinCode,
+    EditorFieldId::RustRuntimeMs,
+    EditorFieldId::RustCode,
+    EditorFieldId::BlogPostUrl,
+    EditorFieldId::SubstackUrl,
+    EditorFieldId::YoutubeUrl,
+    EditorFieldId::ReferenceUrl,
+    EditorFieldId::TelegramText,
+    EditorFieldId::Date,
 ];
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -281,7 +316,6 @@ fn App() {
     })
     .with(|preferences| preferences.clone());
     let autosave_destination = remember(autosave_destination_label).with(|label| label.clone());
-    let active_tab = useState(|| EditorTab::Meta);
     let preview_state = useState(PreviewState::placeholder);
     let preview_loading = useState(|| false);
     let compose_preview_state = useState(PreviewState::placeholder);
@@ -294,7 +328,6 @@ fn App() {
     let busy_action = useState(|| None::<LongAction>);
     let current_draft = PostDraft::from_fields(&fields);
     let markdown_preview = current_draft.blog_template();
-    let current_tab = active_tab.value();
     let queued_action = pending_action.value();
     let theme = ui_preferences.value().theme;
 
@@ -308,91 +341,10 @@ fn App() {
         }
     });
 
-    cranpose_core::LaunchedEffect!(current_tab, {
-        let draft = current_draft.clone();
-        let current_tab = current_tab;
-        let preview_state = preview_state.clone();
-        let preview_loading = preview_loading.clone();
-        let status = status.clone();
-        move |scope| {
-            if current_tab != EditorTab::Output {
-                return;
-            }
-            preview_loading.set(true);
-            preview_state.set(PreviewState::placeholder());
-            status.set("Generating preview...".to_string());
-
-            let preview_state = preview_state.clone();
-            let preview_loading = preview_loading.clone();
-            let status = status.clone();
-            scope.launch_background(
-                move |_| async move { render_preview_frame(&draft) },
-                move |result| {
-                    preview_loading.set(false);
-                    match result {
-                        Ok(frame) => match PreviewState::from_frame(frame) {
-                            Ok(preview) => {
-                                preview_state.set(preview);
-                                status.set("Preview refreshed.".to_string());
-                            }
-                            Err(error) => {
-                                status.set(format!("Preview generation failed: {error}"));
-                            }
-                        },
-                        Err(error) => status.set(format!("Preview generation failed: {error}")),
-                    }
-                },
-            );
-        }
-    });
-
-    cranpose_core::LaunchedEffect!((current_tab, current_draft.clone()), {
-        let draft = current_draft.clone();
-        let current_tab = current_tab;
-        let compose_loading = compose_loading.clone();
-        let compose_error = compose_error.clone();
-        let compose_preview_state = compose_preview_state.clone();
-        let status = status.clone();
-        move |scope| {
-            if current_tab != EditorTab::Compose {
-                return;
-            }
-            compose_loading.set(true);
-            compose_error.set(String::new());
-            compose_preview_state.set(PreviewState::placeholder());
-
-            let compose_loading = compose_loading.clone();
-            let compose_error = compose_error.clone();
-            let compose_preview_state = compose_preview_state.clone();
-            let status = status.clone();
-            scope.launch_background(
-                move |_| async move { render_compose_preview_frame(&draft) },
-                move |result| {
-                    compose_loading.set(false);
-                    match result {
-                        Ok(frame) => match PreviewState::from_frame(frame) {
-                            Ok(preview) => {
-                                compose_preview_state.set(preview);
-                                compose_error.set(String::new());
-                                status.set("Cranpose preview refreshed.".to_string());
-                            }
-                            Err(error) => {
-                                compose_error.set(error.to_string());
-                                status.set(format!("Cranpose preview failed: {error}"));
-                            }
-                        },
-                        Err(error) => {
-                            compose_error.set(error.clone());
-                            status.set(format!("Cranpose preview failed: {error}"));
-                        }
-                    }
-                },
-            );
-        }
-    });
-
     cranpose_core::LaunchedEffect!(queued_action.clone(), {
         let preview_state = preview_state.clone();
+        let compose_preview_state = compose_preview_state.clone();
+        let compose_error = compose_error.clone();
         let busy_action = busy_action.clone();
         let pending_action = pending_action.clone();
         let status = status.clone();
@@ -408,6 +360,8 @@ fn App() {
                     finish_long_action(
                         result,
                         preview_state.clone(),
+                        compose_preview_state.clone(),
+                        compose_error.clone(),
                         busy_action.clone(),
                         pending_action.clone(),
                         status.clone(),
@@ -422,10 +376,10 @@ fn App() {
         Modifier::empty()
             .fill_max_size()
             .background(ui_surface(theme))
-            .vertical_scroll(scroll_state.clone(), false)
             .padding(28.0),
         ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(22.0)),
         {
+            let scroll_state = scroll_state.clone();
             let fields = fields.clone();
             let status = status.clone();
             let preview_state = preview_state.clone();
@@ -435,8 +389,6 @@ fn App() {
             let compose_error = compose_error.clone();
             let telegram_post_link = telegram_post_link.clone();
             let markdown_preview = markdown_preview.clone();
-            let active_tab = active_tab.clone();
-            let scroll_state = scroll_state.clone();
             let autosave_destination = autosave_destination.clone();
             let saved_draft = saved_draft.clone();
             let ui_preferences = ui_preferences.clone();
@@ -458,114 +410,41 @@ fn App() {
                     busy_action.clone(),
                     theme,
                 );
-                section_card(theme, {
-                    let active_tab = active_tab.clone();
-                    let scroll_state = scroll_state.clone();
-                    let ui_preferences = ui_preferences.clone();
-                    move || {
-                        Row(
-                            Modifier::empty().fill_max_width(),
-                            RowSpec::default()
-                                .horizontal_arrangement(LinearArrangement::spaced_by(12.0)),
-                            {
-                                let active_tab = active_tab.clone();
-                                let scroll_state = scroll_state.clone();
-                                let ui_preferences = ui_preferences.clone();
-                                move || {
-                                    tab_button(
-                                        "Output",
-                                        "tab.output",
-                                        active_tab.value() == EditorTab::Output,
-                                        ui_preferences.clone(),
-                                        theme,
-                                        {
-                                            let active_tab = active_tab.clone();
-                                            let scroll_state = scroll_state.clone();
-                                            move || {
-                                                active_tab.set(EditorTab::Output);
-                                                scroll_state.scroll_to(0.0);
-                                            }
-                                        },
-                                    );
-                                    tab_button(
-                                        "Cranpose",
-                                        "tab.compose",
-                                        active_tab.value() == EditorTab::Compose,
-                                        ui_preferences.clone(),
-                                        theme,
-                                        {
-                                            let active_tab = active_tab.clone();
-                                            let scroll_state = scroll_state.clone();
-                                            move || {
-                                                active_tab.set(EditorTab::Compose);
-                                                scroll_state.scroll_to(0.0);
-                                            }
-                                        },
-                                    );
-                                    tab_button(
-                                        "Meta",
-                                        "tab.meta",
-                                        active_tab.value() == EditorTab::Meta,
-                                        ui_preferences.clone(),
-                                        theme,
-                                        {
-                                            let active_tab = active_tab.clone();
-                                            let scroll_state = scroll_state.clone();
-                                            move || {
-                                                active_tab.set(EditorTab::Meta);
-                                                scroll_state.scroll_to(0.0);
-                                            }
-                                        },
-                                    );
-                                    tab_button(
-                                        "Writeup",
-                                        "tab.writeup",
-                                        active_tab.value() == EditorTab::Writeup,
-                                        ui_preferences.clone(),
-                                        theme,
-                                        {
-                                            let active_tab = active_tab.clone();
-                                            let scroll_state = scroll_state.clone();
-                                            move || {
-                                                active_tab.set(EditorTab::Writeup);
-                                                scroll_state.scroll_to(0.0);
-                                            }
-                                        },
-                                    );
-                                    tab_button(
-                                        "Code",
-                                        "tab.code",
-                                        active_tab.value() == EditorTab::Code,
-                                        ui_preferences.clone(),
-                                        theme,
-                                        {
-                                            let active_tab = active_tab.clone();
-                                            let scroll_state = scroll_state.clone();
-                                            move || {
-                                                active_tab.set(EditorTab::Code);
-                                                scroll_state.scroll_to(0.0);
-                                            }
-                                        },
-                                    );
-                                }
-                            },
-                        );
-                    }
-                });
-                ActiveTabContent(
-                    current_tab,
-                    fields.clone(),
-                    preview_state.clone(),
-                    preview_loading.clone(),
-                    compose_preview_state.clone(),
-                    compose_loading.clone(),
-                    compose_error.clone(),
-                    markdown_preview.clone(),
-                    status.clone(),
-                    saved_draft.clone(),
-                    ui_preferences.clone(),
-                    layout_preferences.clone(),
-                    theme,
+                Column(
+                    Modifier::empty()
+                        .fill_max_width()
+                        .weight(1.0)
+                        .vertical_scroll(scroll_state.clone(), false),
+                    ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(22.0)),
+                    {
+                        let fields = fields.clone();
+                        let preview_state = preview_state.clone();
+                        let preview_loading = preview_loading.clone();
+                        let compose_preview_state = compose_preview_state.clone();
+                        let compose_loading = compose_loading.clone();
+                        let compose_error = compose_error.clone();
+                        let markdown_preview = markdown_preview.clone();
+                        let status = status.clone();
+                        let saved_draft = saved_draft.clone();
+                        let ui_preferences = ui_preferences.clone();
+                        let layout_preferences = layout_preferences.clone();
+                        move || {
+                            GuidedWorkspace(
+                                fields.clone(),
+                                preview_state.clone(),
+                                preview_loading.clone(),
+                                compose_preview_state.clone(),
+                                compose_loading.clone(),
+                                compose_error.clone(),
+                                markdown_preview.clone(),
+                                status.clone(),
+                                saved_draft.clone(),
+                                ui_preferences.clone(),
+                                layout_preferences.clone(),
+                                theme,
+                            );
+                        }
+                    },
                 );
             }
         },
@@ -573,8 +452,7 @@ fn App() {
 }
 
 #[composable]
-fn ActiveTabContent(
-    active_tab: EditorTab,
+fn GuidedWorkspace(
     fields: EditorFields,
     preview_state: MutableState<PreviewState>,
     preview_loading: MutableState<bool>,
@@ -588,39 +466,33 @@ fn ActiveTabContent(
     layout_preferences: UiPreferences,
     theme: ThemeMode,
 ) {
-    match active_tab {
-        EditorTab::Output => {
-            PreviewCard(preview_state, preview_loading, theme);
-            MarkdownCard(markdown_preview, theme);
-        }
-        EditorTab::Compose => {
-            ComposePreviewCard(compose_preview_state, compose_loading, compose_error, theme)
-        }
-        EditorTab::Meta => ProblemMetaCard(
-            fields,
-            status,
-            saved_draft,
-            ui_preferences,
-            layout_preferences,
-            theme,
-        ),
-        EditorTab::Writeup => WriteupCard(
-            fields,
-            status,
-            saved_draft,
-            ui_preferences,
-            layout_preferences,
-            theme,
-        ),
-        EditorTab::Code => CodeCard(
-            fields,
-            status,
-            saved_draft,
-            ui_preferences,
-            layout_preferences,
-            theme,
-        ),
-    }
+    ProblemMetaCard(
+        fields.clone(),
+        status.clone(),
+        saved_draft.clone(),
+        ui_preferences.clone(),
+        layout_preferences.clone(),
+        theme,
+    );
+    WriteupCard(
+        fields.clone(),
+        status.clone(),
+        saved_draft.clone(),
+        ui_preferences.clone(),
+        layout_preferences.clone(),
+        theme,
+    );
+    CodeCard(
+        fields,
+        status,
+        saved_draft,
+        ui_preferences,
+        layout_preferences,
+        theme,
+    );
+    PreviewCard(preview_state, preview_loading, theme);
+    ComposePreviewCard(compose_preview_state, compose_loading, compose_error, theme);
+    MarkdownCard(markdown_preview, theme);
 }
 
 #[composable]
@@ -694,25 +566,93 @@ fn ActionsCard(
                             },
                         );
                         Text(
-                            "Fill the template, open Output for the raster export or Cranpose for the live text-rendered comparison, then copy the platform-specific template you need or save the card as WebP.",
-                            Modifier::empty(),
-                            body_style(theme),
-                        );
-                        Text(
                             autosave_destination.clone(),
                             Modifier::empty(),
                             muted_style(theme),
                         );
 
-                        ActionButtons(
-                            fields.clone(),
-                            status.clone(),
-                            telegram_post_link.clone(),
-                            ui_preferences.clone(),
-                            layout_preferences.clone(),
-                            pending_action.clone(),
-                            action_request_counter.clone(),
-                            busy_action.clone(),
+                        let draft = PostDraft::from_fields(&fields);
+                        let preview = preview_state.value();
+                        let latest_telegram_link = telegram_post_link.value();
+                        let next_item = recommended_next_work(
+                            &draft,
+                            &preview,
+                            &latest_telegram_link,
+                            &layout_preferences,
+                        );
+                        Row(
+                            Modifier::empty().fill_max_width(),
+                            RowSpec::default()
+                                .horizontal_arrangement(LinearArrangement::spaced_by(14.0)),
+                            {
+                                let fields = fields.clone();
+                                let status = status.clone();
+                                let telegram_post_link = telegram_post_link.clone();
+                                let ui_preferences = ui_preferences.clone();
+                                let layout_preferences = layout_preferences.clone();
+                                let pending_action = pending_action.clone();
+                                let action_request_counter = action_request_counter.clone();
+                                let busy_action = busy_action.clone();
+                                move || {
+                                    NextWorkPanel(
+                                        next_item,
+                                        fields.clone(),
+                                        status.clone(),
+                                        telegram_post_link.clone(),
+                                        ui_preferences.clone(),
+                                        pending_action.clone(),
+                                        action_request_counter.clone(),
+                                        busy_action.clone(),
+                                        theme,
+                                    );
+                                    Column(
+                                        Modifier::empty().weight(2.0),
+                                        ColumnSpec::default().vertical_arrangement(
+                                            LinearArrangement::spaced_by(10.0),
+                                        ),
+                                        {
+                                            let fields = fields.clone();
+                                            let status = status.clone();
+                                            let telegram_post_link = telegram_post_link.clone();
+                                            let ui_preferences = ui_preferences.clone();
+                                            let layout_preferences = layout_preferences.clone();
+                                            let pending_action = pending_action.clone();
+                                            let action_request_counter =
+                                                action_request_counter.clone();
+                                            let busy_action = busy_action.clone();
+                                            move || {
+                                                ActionButtons(
+                                                    fields.clone(),
+                                                    status.clone(),
+                                                    telegram_post_link.clone(),
+                                                    ui_preferences.clone(),
+                                                    layout_preferences.clone(),
+                                                    pending_action.clone(),
+                                                    action_request_counter.clone(),
+                                                    busy_action.clone(),
+                                                    theme,
+                                                );
+                                            }
+                                        },
+                                    );
+                                }
+                            },
+                        );
+
+                        WorkflowRail(
+                            draft.clone(),
+                            preview.last_saved_webp_path.is_some(),
+                            latest_telegram_link.clone(),
+                            next_item,
+                            theme,
+                        );
+                        WorkQueue(
+                            work_queue(
+                                &draft,
+                                &preview,
+                                &latest_telegram_link,
+                                &layout_preferences,
+                            ),
                             theme,
                         );
 
@@ -725,7 +665,6 @@ fn ActionsCard(
                                 body_style(theme),
                             );
                         }
-                        let latest_telegram_link = telegram_post_link.value();
                         if !latest_telegram_link.is_empty() {
                             Text(
                                 format!("Latest Telegram post: {latest_telegram_link}"),
@@ -738,6 +677,190 @@ fn ActionsCard(
             );
         }
     });
+}
+
+#[composable]
+fn NextWorkPanel(
+    next_item: NextWorkItem,
+    fields: EditorFields,
+    status: MutableState<String>,
+    telegram_post_link: MutableState<String>,
+    ui_preferences: MutableState<UiPreferences>,
+    pending_action: MutableState<Option<PendingAction>>,
+    action_request_counter: MutableState<u64>,
+    busy_action: MutableState<Option<LongAction>>,
+    theme: ThemeMode,
+) {
+    ComposeBox(
+        Modifier::empty()
+            .fill_max_width()
+            .background(next_panel_surface(theme))
+            .rounded_corners(8.0)
+            .padding(18.0),
+        BoxSpec::default(),
+        {
+            let fields = fields.clone();
+            let status = status.clone();
+            let telegram_post_link = telegram_post_link.clone();
+            let ui_preferences = ui_preferences.clone();
+            let pending_action = pending_action.clone();
+            let action_request_counter = action_request_counter.clone();
+            let busy_action = busy_action.clone();
+            move || {
+                Column(
+                    Modifier::empty().fill_max_width(),
+                    ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(12.0)),
+                    {
+                        let fields = fields.clone();
+                        let status = status.clone();
+                        let telegram_post_link = telegram_post_link.clone();
+                        let ui_preferences = ui_preferences.clone();
+                        let pending_action = pending_action.clone();
+                        let action_request_counter = action_request_counter.clone();
+                        let busy_action = busy_action.clone();
+                        move || {
+                            Row(
+                                Modifier::empty().fill_max_width(),
+                                RowSpec::default()
+                                    .horizontal_arrangement(LinearArrangement::SpaceBetween),
+                                {
+                                    move || {
+                                        Text("Now", Modifier::empty(), eyebrow_style(theme));
+                                        Text(
+                                            next_item.stage().label(),
+                                            Modifier::empty(),
+                                            stage_label_style(theme),
+                                        );
+                                    }
+                                },
+                            );
+                            Text(
+                                next_item.title(),
+                                Modifier::empty(),
+                                heading_style(26.0, theme),
+                            );
+                            match next_item {
+                                NextWorkItem::Field(field) => {
+                                    ComposeBox(
+                                        Modifier::empty()
+                                            .fill_max_width()
+                                            .background(stage_surface(theme, false))
+                                            .rounded_corners(8.0)
+                                            .padding_symmetric(12.0, 10.0),
+                                        BoxSpec::default(),
+                                        move || {
+                                            Text(
+                                                field.label(),
+                                                Modifier::empty(),
+                                                queue_text_style(theme),
+                                            );
+                                        },
+                                    );
+                                }
+                                NextWorkItem::Action(action) => {
+                                    focus_action_button(
+                                        action,
+                                        fields.clone(),
+                                        status.clone(),
+                                        telegram_post_link.clone(),
+                                        ui_preferences.clone(),
+                                        pending_action.clone(),
+                                        action_request_counter.clone(),
+                                        busy_action.clone(),
+                                        theme,
+                                    );
+                                }
+                            }
+                        }
+                    },
+                );
+            }
+        },
+    );
+}
+
+#[composable]
+fn WorkflowRail(
+    draft: PostDraft,
+    preview_saved: bool,
+    telegram_link: String,
+    next_item: NextWorkItem,
+    theme: ThemeMode,
+) {
+    let stages = [
+        WorkStage::Prepare,
+        WorkStage::Write,
+        WorkStage::Code,
+        WorkStage::Review,
+        WorkStage::Ship,
+    ];
+    Row(
+        Modifier::empty().fill_max_width(),
+        RowSpec::default().horizontal_arrangement(LinearArrangement::spaced_by(10.0)),
+        move || {
+            for stage in stages {
+                workflow_stage_chip(
+                    stage,
+                    stage_status(stage, &draft, preview_saved, &telegram_link),
+                    stage == next_item.stage(),
+                    theme,
+                );
+            }
+        },
+    );
+}
+
+#[composable]
+fn workflow_stage_chip(stage: WorkStage, status: &'static str, active: bool, theme: ThemeMode) {
+    ComposeBox(
+        Modifier::empty()
+            .weight(1.0)
+            .background(stage_surface(theme, active))
+            .rounded_corners(8.0)
+            .padding_symmetric(12.0, 10.0),
+        BoxSpec::default(),
+        move || {
+            Column(
+                Modifier::empty().fill_max_width(),
+                ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(4.0)),
+                move || {
+                    Text(stage.label(), Modifier::empty(), label_style(theme, active));
+                    Text(status.to_string(), Modifier::empty(), muted_style(theme));
+                },
+            );
+        },
+    );
+}
+
+#[composable]
+fn WorkQueue(queue: Vec<NextWorkItem>, theme: ThemeMode) {
+    Row(
+        Modifier::empty().fill_max_width(),
+        RowSpec::default().horizontal_arrangement(LinearArrangement::spaced_by(8.0)),
+        move || {
+            for (index, item) in queue.iter().take(6).enumerate() {
+                queue_chip(index + 1, *item, theme);
+            }
+        },
+    );
+}
+
+#[composable]
+fn queue_chip(index: usize, item: NextWorkItem, theme: ThemeMode) {
+    ComposeBox(
+        Modifier::empty()
+            .background(panel_surface(theme))
+            .rounded_corners(8.0)
+            .padding_symmetric(12.0, 8.0),
+        BoxSpec::default(),
+        move || {
+            Text(
+                format!("{index}. {}", item.short_label()),
+                Modifier::empty(),
+                queue_text_style(theme),
+            );
+        },
+    );
 }
 
 #[composable]
@@ -844,6 +967,70 @@ fn ActionButton(
     );
 }
 
+#[composable]
+fn focus_action_button(
+    action: ActionButtonId,
+    fields: EditorFields,
+    status: MutableState<String>,
+    telegram_post_link: MutableState<String>,
+    ui_preferences: MutableState<UiPreferences>,
+    pending_action: MutableState<Option<PendingAction>>,
+    action_request_counter: MutableState<u64>,
+    busy_action: MutableState<Option<LongAction>>,
+    theme: ThemeMode,
+) {
+    let action_busy = busy_action.value();
+    let long_action = action.long_action();
+    let is_busy = long_action.is_some() && action_busy == long_action;
+    let disabled = long_action.is_some() && action_busy.is_some();
+    let count_key = action.count_key().to_string();
+    let count = ui_preferences.value().button_count(&count_key);
+    let busy_pulse = if is_busy { busy_pulse() } else { 0.0 };
+    let background = if is_busy {
+        button_surface(theme).with_alpha(0.72 + 0.24 * busy_pulse)
+    } else if disabled {
+        disabled_button_surface(theme)
+    } else {
+        button_surface(theme)
+    };
+    let style = if disabled {
+        disabled_button_text_style(theme)
+    } else {
+        focus_button_text_style(theme, busy_pulse)
+    };
+    Button(
+        Modifier::empty()
+            .fill_max_width()
+            .background(background)
+            .rounded_corners(8.0)
+            .padding_symmetric(24.0, 18.0),
+        move || {
+            if disabled {
+                return;
+            }
+            record_button_press(ui_preferences.clone(), &count_key);
+            handle_action_button(
+                action,
+                fields.clone(),
+                status.clone(),
+                telegram_post_link.clone(),
+                pending_action.clone(),
+                action_request_counter.clone(),
+                busy_action.clone(),
+            );
+        },
+        move || {
+            button_content(
+                action.label().to_string(),
+                count,
+                style.clone(),
+                theme,
+                is_busy,
+            );
+        },
+    );
+}
+
 fn handle_action_button(
     action: ActionButtonId,
     fields: EditorFields,
@@ -897,7 +1084,9 @@ fn handle_action_button(
             status,
         ),
         ActionButtonId::CopyRichText => copy_rich_text_to_clipboard(draft, status),
-        ActionButtonId::SaveRasterWebp
+        ActionButtonId::RefreshRasterPreview
+        | ActionButtonId::RefreshCranposePreview
+        | ActionButtonId::SaveRasterWebp
         | ActionButtonId::SaveCranposeWebp
         | ActionButtonId::PublishBlog
         | ActionButtonId::PostTelegram
@@ -935,6 +1124,8 @@ fn enqueue_long_action(
 impl ActionButtonId {
     fn label(self) -> &'static str {
         match self {
+            Self::RefreshRasterPreview => "Refresh Raster",
+            Self::RefreshCranposePreview => "Refresh Cranpose",
             Self::CopyLeetcode => "Copy LeetCode",
             Self::CopyYoutube => "Copy YouTube",
             Self::CopyBlog => "Copy Blog",
@@ -952,6 +1143,8 @@ impl ActionButtonId {
 
     fn count_key(self) -> &'static str {
         match self {
+            Self::RefreshRasterPreview => "preview.raster",
+            Self::RefreshCranposePreview => "preview.cranpose",
             Self::CopyLeetcode => "copy.leetcode",
             Self::CopyYoutube => "copy.youtube",
             Self::CopyBlog => "copy.blog",
@@ -969,6 +1162,8 @@ impl ActionButtonId {
 
     fn long_action(self) -> Option<LongAction> {
         match self {
+            Self::RefreshRasterPreview => Some(LongAction::RefreshRasterPreview),
+            Self::RefreshCranposePreview => Some(LongAction::RefreshCranposePreview),
             Self::SaveRasterWebp => Some(LongAction::SaveRasterWebp),
             Self::SaveCranposeWebp => Some(LongAction::SaveCranposeWebp),
             Self::PublishBlog => Some(LongAction::PublishBlog),
@@ -982,6 +1177,8 @@ impl ActionButtonId {
 impl LongAction {
     fn label(self) -> &'static str {
         match self {
+            Self::RefreshRasterPreview => "Refresh Raster",
+            Self::RefreshCranposePreview => "Refresh Cranpose",
             Self::SaveRasterWebp => "Save Raster WebP",
             Self::SaveCranposeWebp => "Save Cranpose WebP",
             Self::PublishBlog => "Publish Blog",
@@ -1016,6 +1213,246 @@ fn component_sort_key(
         (1, 0, default_index)
     } else {
         (0, usage_order, default_index)
+    }
+}
+
+fn recommended_next_work(
+    draft: &PostDraft,
+    preview: &PreviewState,
+    telegram_link: &str,
+    preferences: &UiPreferences,
+) -> NextWorkItem {
+    work_queue(draft, preview, telegram_link, preferences)
+        .into_iter()
+        .next()
+        .unwrap_or(NextWorkItem::Action(ActionButtonId::CopyBlog))
+}
+
+fn work_queue(
+    draft: &PostDraft,
+    preview: &PreviewState,
+    telegram_link: &str,
+    preferences: &UiPreferences,
+) -> Vec<NextWorkItem> {
+    let mut queue = Vec::new();
+    for field in ordered_workflow_fields(preferences) {
+        if field_needs_attention(field, draft) {
+            queue.push(NextWorkItem::Field(field));
+        }
+    }
+
+    if preview.last_saved_webp_path.is_none() {
+        queue.push(NextWorkItem::Action(ActionButtonId::SaveRasterWebp));
+    }
+    if draft.blog_post_url.trim().is_empty() {
+        queue.push(NextWorkItem::Action(ActionButtonId::CopyBlog));
+    } else {
+        queue.push(NextWorkItem::Action(ActionButtonId::PublishBlog));
+    }
+    if telegram_link.trim().is_empty() {
+        queue.push(NextWorkItem::Action(ActionButtonId::PostTelegram));
+    } else {
+        queue.push(NextWorkItem::Action(ActionButtonId::PostTelegramComment));
+    }
+
+    for action in ordered_action_buttons(preferences) {
+        let item = NextWorkItem::Action(action);
+        if !queue.contains(&item) {
+            queue.push(item);
+        }
+    }
+
+    queue
+}
+
+fn ordered_workflow_fields(preferences: &UiPreferences) -> Vec<EditorFieldId> {
+    let mut fields = WORKFLOW_FIELDS.to_vec();
+    fields.sort_by_key(|field| {
+        (
+            field_stage(*field).sort_index(),
+            component_sort_key(
+                preferences,
+                &field.component_key(),
+                WORKFLOW_FIELDS
+                    .iter()
+                    .position(|candidate| candidate == field)
+                    .unwrap_or(usize::MAX),
+            ),
+        )
+    });
+    fields
+}
+
+fn field_needs_attention(field: EditorFieldId, draft: &PostDraft) -> bool {
+    match field {
+        EditorFieldId::ProblemTitle => draft.problem_title.trim().is_empty(),
+        EditorFieldId::ProblemUrl => draft.problem_url.trim().is_empty(),
+        EditorFieldId::Difficulty => draft.difficulty.trim().is_empty(),
+        EditorFieldId::ProblemTldr => draft.problem_tldr.trim().is_empty(),
+        EditorFieldId::Intuition => draft.intuition.trim().is_empty(),
+        EditorFieldId::Approach => draft.approach.trim().is_empty(),
+        EditorFieldId::TimeComplexity => draft.time_complexity.trim().is_empty(),
+        EditorFieldId::SpaceComplexity => draft.space_complexity.trim().is_empty(),
+        EditorFieldId::KotlinRuntimeMs => draft.kotlin_runtime_ms.trim().is_empty(),
+        EditorFieldId::KotlinCode => draft.kotlin_code.trim().is_empty(),
+        EditorFieldId::RustRuntimeMs => draft.rust_runtime_ms.trim().is_empty(),
+        EditorFieldId::RustCode => draft.rust_code.trim().is_empty(),
+        EditorFieldId::Date
+        | EditorFieldId::BlogPostUrl
+        | EditorFieldId::SubstackUrl
+        | EditorFieldId::YoutubeUrl
+        | EditorFieldId::ReferenceUrl
+        | EditorFieldId::TelegramText => false,
+    }
+}
+
+fn field_stage(field: EditorFieldId) -> WorkStage {
+    match field {
+        EditorFieldId::Date
+        | EditorFieldId::ProblemTitle
+        | EditorFieldId::ProblemUrl
+        | EditorFieldId::Difficulty => WorkStage::Prepare,
+        EditorFieldId::ProblemTldr
+        | EditorFieldId::Intuition
+        | EditorFieldId::Approach
+        | EditorFieldId::TimeComplexity
+        | EditorFieldId::SpaceComplexity => WorkStage::Write,
+        EditorFieldId::KotlinRuntimeMs
+        | EditorFieldId::KotlinCode
+        | EditorFieldId::RustRuntimeMs
+        | EditorFieldId::RustCode => WorkStage::Code,
+        EditorFieldId::BlogPostUrl
+        | EditorFieldId::SubstackUrl
+        | EditorFieldId::YoutubeUrl
+        | EditorFieldId::ReferenceUrl
+        | EditorFieldId::TelegramText => WorkStage::Ship,
+    }
+}
+
+fn action_stage(action: ActionButtonId) -> WorkStage {
+    match action {
+        ActionButtonId::RefreshRasterPreview
+        | ActionButtonId::RefreshCranposePreview
+        | ActionButtonId::SaveRasterWebp
+        | ActionButtonId::SaveCranposeWebp => WorkStage::Review,
+        ActionButtonId::PublishBlog
+        | ActionButtonId::PostTelegram
+        | ActionButtonId::PostTelegramComment => WorkStage::Ship,
+        ActionButtonId::CopyLeetcode
+        | ActionButtonId::CopyYoutube
+        | ActionButtonId::CopyBlog
+        | ActionButtonId::CopyTelegram
+        | ActionButtonId::CopyTitle
+        | ActionButtonId::CopySubtitle
+        | ActionButtonId::CopyRichText => WorkStage::Ship,
+    }
+}
+
+fn stage_status(
+    stage: WorkStage,
+    draft: &PostDraft,
+    preview_saved: bool,
+    telegram_link: &str,
+) -> &'static str {
+    match stage {
+        WorkStage::Prepare => {
+            if [EditorFieldId::ProblemTitle, EditorFieldId::ProblemUrl]
+                .into_iter()
+                .any(|field| field_needs_attention(field, draft))
+            {
+                "Needs basics"
+            } else {
+                "Ready"
+            }
+        }
+        WorkStage::Write => {
+            if [
+                EditorFieldId::ProblemTldr,
+                EditorFieldId::Intuition,
+                EditorFieldId::Approach,
+            ]
+            .into_iter()
+            .any(|field| field_needs_attention(field, draft))
+            {
+                "Drafting"
+            } else {
+                "Ready"
+            }
+        }
+        WorkStage::Code => {
+            if [
+                EditorFieldId::KotlinCode,
+                EditorFieldId::RustCode,
+                EditorFieldId::KotlinRuntimeMs,
+                EditorFieldId::RustRuntimeMs,
+            ]
+            .into_iter()
+            .any(|field| field_needs_attention(field, draft))
+            {
+                "Needs code"
+            } else {
+                "Ready"
+            }
+        }
+        WorkStage::Review => {
+            if preview_saved {
+                "Saved"
+            } else {
+                "Needs image"
+            }
+        }
+        WorkStage::Ship => {
+            if telegram_link.trim().is_empty() {
+                "Pending"
+            } else {
+                "Posted"
+            }
+        }
+    }
+}
+
+impl WorkStage {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Prepare => "Prepare",
+            Self::Write => "Write",
+            Self::Code => "Code",
+            Self::Review => "Review",
+            Self::Ship => "Ship",
+        }
+    }
+
+    fn sort_index(self) -> u8 {
+        match self {
+            Self::Prepare => 0,
+            Self::Write => 1,
+            Self::Code => 2,
+            Self::Review => 3,
+            Self::Ship => 4,
+        }
+    }
+}
+
+impl NextWorkItem {
+    fn stage(self) -> WorkStage {
+        match self {
+            Self::Field(field) => field_stage(field),
+            Self::Action(action) => action_stage(action),
+        }
+    }
+
+    fn title(self) -> String {
+        match self {
+            Self::Field(field) => format!("Fill {}", field.label()),
+            Self::Action(action) => action.label().to_string(),
+        }
+    }
+
+    fn short_label(self) -> String {
+        match self {
+            Self::Field(field) => field.label().to_string(),
+            Self::Action(action) => action.label().to_string(),
+        }
     }
 }
 
@@ -1056,14 +1493,14 @@ fn PreviewCard(
                                     height: 675.0,
                                 })
                                 .background(panel_surface(theme))
-                                .rounded_corners(24.0)
+                                .rounded_corners(8.0)
                                 .padding(18.0),
                             BoxSpec::default().content_alignment(Alignment::CENTER),
                             move || {
                                 Image(
                                     BitmapPainter(preview.bitmap.clone()),
                                     Some("Generated preview".to_string()),
-                                    Modifier::empty().fill_max_size().rounded_corners(18.0),
+                                    Modifier::empty().fill_max_size().rounded_corners(8.0),
                                     Alignment::CENTER,
                                     ContentScale::Fit,
                                     DEFAULT_ALPHA,
@@ -1105,11 +1542,6 @@ fn ComposePreviewCard(
                             Modifier::empty(),
                             heading_style(28.0, theme),
                         );
-                        Text(
-                            "This tab shows the Cranpose-rendered card capture so you can compare it against the raster export.",
-                            Modifier::empty(),
-                            body_style(theme),
-                        );
                         if compose_loading.value() {
                             Text(
                                 "Preparing Cranpose preview in the background...",
@@ -1126,7 +1558,7 @@ fn ComposePreviewCard(
                                     height: 675.0,
                                 })
                                 .background(panel_surface(theme))
-                                .rounded_corners(24.0)
+                                .rounded_corners(8.0)
                                 .padding(18.0),
                             BoxSpec::default().content_alignment(Alignment::CENTER),
                             move || {
@@ -1140,7 +1572,7 @@ fn ComposePreviewCard(
                                     Image(
                                         BitmapPainter(preview.bitmap.clone()),
                                         Some("Cranpose preview".to_string()),
-                                        Modifier::empty().fill_max_size().rounded_corners(18.0),
+                                        Modifier::empty().fill_max_size().rounded_corners(8.0),
                                         Alignment::CENTER,
                                         ContentScale::Fit,
                                         DEFAULT_ALPHA,
@@ -1366,7 +1798,7 @@ fn MarkdownCard(markdown_preview: String, theme: ThemeMode) {
                             Modifier::empty()
                                 .fill_max_width()
                                 .background(panel_surface(theme))
-                                .rounded_corners(20.0)
+                                .rounded_corners(8.0)
                                 .padding(18.0),
                             BoxSpec::default(),
                             move || {
@@ -1838,7 +2270,7 @@ fn section_card(theme: ThemeMode, content: impl FnMut() + 'static) {
         Modifier::empty()
             .fill_max_width()
             .background(card_surface(theme))
-            .rounded_corners(26.0)
+            .rounded_corners(8.0)
             .padding(22.0),
         BoxSpec::default(),
         content,
@@ -1875,7 +2307,7 @@ fn primary_button(
     Button(
         Modifier::empty()
             .background(background)
-            .rounded_corners(18.0)
+            .rounded_corners(8.0)
             .padding_symmetric(20.0, 14.0),
         move || {
             if disabled {
@@ -1902,7 +2334,7 @@ fn subtle_button(
     Button(
         Modifier::empty()
             .background(panel_surface(theme))
-            .rounded_corners(14.0)
+            .rounded_corners(8.0)
             .padding_symmetric(14.0, 10.0),
         move || {
             record_button_press(ui_preferences.clone(), &count_key);
@@ -1913,43 +2345,6 @@ fn subtle_button(
                 label.clone(),
                 count,
                 subtle_button_text_style(theme),
-                theme,
-                false,
-            );
-        },
-    );
-}
-
-#[composable]
-fn tab_button(
-    label: &'static str,
-    count_key: &'static str,
-    selected: bool,
-    ui_preferences: MutableState<UiPreferences>,
-    theme: ThemeMode,
-    on_click: impl FnMut() + 'static,
-) {
-    let background = if selected {
-        button_surface(theme)
-    } else {
-        panel_surface(theme)
-    };
-    let count = ui_preferences.value().button_count(count_key);
-    let count_key = count_key.to_string();
-    Button(
-        Modifier::empty()
-            .background(background)
-            .rounded_corners(18.0)
-            .padding_symmetric(20.0, 14.0),
-        move || {
-            record_button_press(ui_preferences.clone(), &count_key);
-            on_click();
-        },
-        move || {
-            button_content(
-                label.to_string(),
-                count,
-                tab_text_style(selected, theme),
                 theme,
                 false,
             );
@@ -2045,7 +2440,7 @@ fn labeled_field(
                 Modifier::empty()
                     .fill_max_width()
                     .background(panel_surface(theme))
-                    .rounded_corners(18.0)
+                    .rounded_corners(8.0)
                     .padding(14.0),
                 BoxSpec::default(),
                 move || {
@@ -2106,7 +2501,7 @@ fn labeled_code_field(
                 Modifier::empty()
                     .fill_max_width()
                     .background(panel_surface(theme))
-                    .rounded_corners(18.0)
+                    .rounded_corners(8.0)
                     .padding(14.0),
                 BoxSpec::default(),
                 move || {
@@ -2418,6 +2813,12 @@ fn cleanup_capture_artifacts(draft_path: &Path, output_path: &Path) {
 
 fn run_long_action(pending: PendingAction) -> LongActionResult {
     match pending.action {
+        LongAction::RefreshRasterPreview => {
+            LongActionResult::RefreshRasterPreview(render_raster_preview_result(&pending.draft))
+        }
+        LongAction::RefreshCranposePreview => {
+            LongActionResult::RefreshCranposePreview(render_compose_preview_result(&pending.draft))
+        }
         LongAction::SaveRasterWebp => LongActionResult::SaveRasterWebp(
             save_webp(&pending.draft).map_err(|error| error.to_string()),
         ),
@@ -2439,6 +2840,8 @@ fn run_long_action(pending: PendingAction) -> LongActionResult {
 fn finish_long_action(
     result: LongActionResult,
     preview_state: MutableState<PreviewState>,
+    compose_preview_state: MutableState<PreviewState>,
+    compose_error: MutableState<String>,
     busy_action: MutableState<Option<LongAction>>,
     pending_action: MutableState<Option<PendingAction>>,
     status: MutableState<String>,
@@ -2448,6 +2851,24 @@ fn finish_long_action(
     pending_action.set(None);
 
     match result {
+        LongActionResult::RefreshRasterPreview(result) => match result {
+            Ok(preview) => {
+                preview_state.set(preview);
+                status.set("Raster preview refreshed.".to_string());
+            }
+            Err(error) => status.set(format!("Raster preview failed: {error}")),
+        },
+        LongActionResult::RefreshCranposePreview(result) => match result {
+            Ok(preview) => {
+                compose_preview_state.set(preview);
+                compose_error.set(String::new());
+                status.set("Cranpose preview refreshed.".to_string());
+            }
+            Err(error) => {
+                compose_error.set(error.clone());
+                status.set(format!("Cranpose preview failed: {error}"));
+            }
+        },
         LongActionResult::SaveRasterWebp(result) => match result {
             Ok(preview) => {
                 let saved_to = preview
@@ -2501,6 +2922,18 @@ fn finish_long_action(
             Err(error) => status.set(format!("Telegram comment failed: {error}")),
         },
     }
+}
+
+fn render_raster_preview_result(draft: &PostDraft) -> std::result::Result<PreviewState, String> {
+    render_preview_frame(draft)
+        .map_err(|error| error.to_string())
+        .and_then(|frame| PreviewState::from_frame(frame).map_err(|error| error.to_string()))
+}
+
+fn render_compose_preview_result(draft: &PostDraft) -> std::result::Result<PreviewState, String> {
+    render_compose_preview_frame(draft)
+        .map_err(|error| error.to_string())
+        .and_then(|frame| PreviewState::from_frame(frame).map_err(|error| error.to_string()))
 }
 
 fn save_compose_webp_result(draft: &PostDraft) -> Result<PreviewState> {
@@ -2893,6 +3326,30 @@ fn body_style(theme: ThemeMode) -> TextStyle {
     }
 }
 
+fn eyebrow_style(theme: ThemeMode) -> TextStyle {
+    TextStyle {
+        span_style: SpanStyle {
+            color: Some(accent_color(theme)),
+            font_size: cranpose::text::TextUnit::Sp(15.0),
+            font_weight: Some(cranpose::text::FontWeight::BOLD),
+            ..SpanStyle::default()
+        },
+        paragraph_style: ParagraphStyle::default(),
+    }
+}
+
+fn stage_label_style(theme: ThemeMode) -> TextStyle {
+    TextStyle {
+        span_style: SpanStyle {
+            color: Some(muted_text_color(theme)),
+            font_size: cranpose::text::TextUnit::Sp(16.0),
+            font_weight: Some(cranpose::text::FontWeight::SEMI_BOLD),
+            ..SpanStyle::default()
+        },
+        paragraph_style: ParagraphStyle::default(),
+    }
+}
+
 fn accent_style(theme: ThemeMode) -> TextStyle {
     TextStyle {
         span_style: SpanStyle {
@@ -2959,6 +3416,18 @@ fn button_text_style(theme: ThemeMode) -> TextStyle {
     }
 }
 
+fn focus_button_text_style(theme: ThemeMode, pulse: f32) -> TextStyle {
+    TextStyle {
+        span_style: SpanStyle {
+            color: Some(button_text_color(theme).with_alpha(0.82 + 0.18 * pulse.max(0.0))),
+            font_size: cranpose::text::TextUnit::Sp(22.0),
+            font_weight: Some(cranpose::text::FontWeight::BOLD),
+            ..SpanStyle::default()
+        },
+        paragraph_style: ParagraphStyle::default(),
+    }
+}
+
 fn busy_button_text_style(theme: ThemeMode, pulse: f32) -> TextStyle {
     TextStyle {
         span_style: SpanStyle {
@@ -2995,15 +3464,11 @@ fn subtle_button_text_style(theme: ThemeMode) -> TextStyle {
     }
 }
 
-fn tab_text_style(selected: bool, theme: ThemeMode) -> TextStyle {
+fn queue_text_style(theme: ThemeMode) -> TextStyle {
     TextStyle {
         span_style: SpanStyle {
-            color: Some(if selected {
-                button_text_color(theme)
-            } else {
-                primary_text_color(theme)
-            }),
-            font_size: cranpose::text::TextUnit::Sp(17.0),
+            color: Some(primary_text_color(theme)),
+            font_size: cranpose::text::TextUnit::Sp(14.0),
             font_weight: Some(cranpose::text::FontWeight::SEMI_BOLD),
             ..SpanStyle::default()
         },
@@ -3093,109 +3558,129 @@ fn preview_tldr_style(size: f32, line_height: f32) -> TextStyle {
 
 fn ui_surface(theme: ThemeMode) -> Color {
     match theme {
-        ThemeMode::Dark => Color::from_rgb_u8(8, 14, 23),
-        ThemeMode::Light => Color::from_rgb_u8(236, 241, 245),
+        ThemeMode::Dark => Color::from_rgb_u8(13, 12, 17),
+        ThemeMode::Light => Color::from_rgb_u8(240, 242, 238),
     }
 }
 
 fn card_surface(theme: ThemeMode) -> Color {
     match theme {
-        ThemeMode::Dark => Color::from_rgb_u8(12, 21, 33),
+        ThemeMode::Dark => Color::from_rgb_u8(24, 23, 29),
         ThemeMode::Light => Color::from_rgb_u8(252, 253, 255),
     }
 }
 
 fn panel_surface(theme: ThemeMode) -> Color {
     match theme {
-        ThemeMode::Dark => Color::from_rgb_u8(18, 28, 43),
-        ThemeMode::Light => Color::from_rgb_u8(225, 233, 240),
+        ThemeMode::Dark => Color::from_rgb_u8(35, 34, 42),
+        ThemeMode::Light => Color::from_rgb_u8(228, 232, 225),
+    }
+}
+
+fn next_panel_surface(theme: ThemeMode) -> Color {
+    match theme {
+        ThemeMode::Dark => Color::from_rgb_u8(31, 38, 31),
+        ThemeMode::Light => Color::from_rgb_u8(232, 241, 225),
+    }
+}
+
+fn stage_surface(theme: ThemeMode, active: bool) -> Color {
+    if active {
+        match theme {
+            ThemeMode::Dark => Color::from_rgb_u8(56, 45, 25),
+            ThemeMode::Light => Color::from_rgb_u8(246, 230, 199),
+        }
+    } else {
+        panel_surface(theme)
     }
 }
 
 fn button_surface(theme: ThemeMode) -> Color {
     match theme {
-        ThemeMode::Dark => Color::from_rgb_u8(255, 194, 85),
-        ThemeMode::Light => Color::from_rgb_u8(222, 150, 42),
+        ThemeMode::Dark => Color::from_rgb_u8(244, 173, 74),
+        ThemeMode::Light => Color::from_rgb_u8(183, 88, 42),
     }
 }
 
 fn disabled_button_surface(theme: ThemeMode) -> Color {
     match theme {
-        ThemeMode::Dark => Color::from_rgb_u8(32, 43, 56),
-        ThemeMode::Light => Color::from_rgb_u8(218, 225, 232),
+        ThemeMode::Dark => Color::from_rgb_u8(48, 47, 55),
+        ThemeMode::Light => Color::from_rgb_u8(218, 222, 216),
     }
 }
 
 fn badge_surface(theme: ThemeMode) -> Color {
     match theme {
-        ThemeMode::Dark => Color::from_rgb_u8(44, 59, 76),
-        ThemeMode::Light => Color::from_rgb_u8(207, 217, 226),
+        ThemeMode::Dark => Color::from_rgb_u8(62, 61, 69),
+        ThemeMode::Light => Color::from_rgb_u8(207, 213, 204),
     }
 }
 
 fn primary_text_color(theme: ThemeMode) -> Color {
     match theme {
-        ThemeMode::Dark => Color::from_rgb_u8(244, 247, 250),
-        ThemeMode::Light => Color::from_rgb_u8(24, 35, 48),
+        ThemeMode::Dark => Color::from_rgb_u8(247, 245, 238),
+        ThemeMode::Light => Color::from_rgb_u8(35, 36, 31),
     }
 }
 
 fn body_text_color(theme: ThemeMode) -> Color {
     match theme {
-        ThemeMode::Dark => Color::from_rgb_u8(189, 204, 217),
-        ThemeMode::Light => Color::from_rgb_u8(61, 76, 91),
+        ThemeMode::Dark => Color::from_rgb_u8(204, 201, 193),
+        ThemeMode::Light => Color::from_rgb_u8(70, 75, 67),
     }
 }
 
 fn muted_text_color(theme: ThemeMode) -> Color {
     match theme {
-        ThemeMode::Dark => Color::from_rgb_u8(126, 142, 158),
-        ThemeMode::Light => Color::from_rgb_u8(91, 107, 124),
+        ThemeMode::Dark => Color::from_rgb_u8(151, 148, 141),
+        ThemeMode::Light => Color::from_rgb_u8(95, 101, 91),
     }
 }
 
 fn label_color(theme: ThemeMode) -> Color {
     match theme {
-        ThemeMode::Dark => Color::from_rgb_u8(132, 226, 255),
-        ThemeMode::Light => Color::from_rgb_u8(0, 96, 140),
+        ThemeMode::Dark => Color::from_rgb_u8(115, 214, 165),
+        ThemeMode::Light => Color::from_rgb_u8(28, 107, 73),
     }
 }
 
 fn changed_label_color(theme: ThemeMode) -> Color {
     match theme {
-        ThemeMode::Dark => Color::from_rgb_u8(104, 226, 142),
-        ThemeMode::Light => Color::from_rgb_u8(24, 139, 78),
+        ThemeMode::Dark => Color::from_rgb_u8(126, 216, 240),
+        ThemeMode::Light => Color::from_rgb_u8(13, 103, 130),
     }
 }
 
 fn accent_color(theme: ThemeMode) -> Color {
     match theme {
-        ThemeMode::Dark => Color::from_rgb_u8(255, 195, 90),
-        ThemeMode::Light => Color::from_rgb_u8(174, 97, 15),
+        ThemeMode::Dark => Color::from_rgb_u8(245, 177, 80),
+        ThemeMode::Light => Color::from_rgb_u8(171, 76, 37),
     }
 }
 
 fn button_text_color(theme: ThemeMode) -> Color {
     match theme {
-        ThemeMode::Dark => Color::from_rgb_u8(14, 18, 24),
+        ThemeMode::Dark => Color::from_rgb_u8(19, 17, 15),
         ThemeMode::Light => Color::from_rgb_u8(255, 252, 246),
     }
 }
 
 fn badge_text_color(theme: ThemeMode) -> Color {
     match theme {
-        ThemeMode::Dark => Color::from_rgb_u8(230, 237, 245),
-        ThemeMode::Light => Color::from_rgb_u8(43, 58, 73),
+        ThemeMode::Dark => Color::from_rgb_u8(237, 235, 226),
+        ThemeMode::Light => Color::from_rgb_u8(55, 59, 51),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::draft::UiPreferences;
+    use crate::draft::{PostDraft, UiPreferences};
+    use crate::export::PreviewState;
 
     use super::{
-        APP_HEIGHT, APP_WIDTH, ActionButtonId, EditorFieldId, META_FIELDS, WEB_SURFACE_MAX_DIM,
-        compute_web_canvas_size, ordered_action_buttons, ordered_fields,
+        APP_HEIGHT, APP_WIDTH, ActionButtonId, EditorFieldId, META_FIELDS, NextWorkItem,
+        WEB_SURFACE_MAX_DIM, compute_web_canvas_size, ordered_action_buttons, ordered_fields,
+        recommended_next_work,
     };
 
     #[test]
@@ -3235,5 +3720,26 @@ mod tests {
         assert_eq!(ordered[0], EditorFieldId::YoutubeUrl);
         assert_eq!(ordered[1], EditorFieldId::ProblemTitle);
         assert_eq!(ordered[2], EditorFieldId::Date);
+    }
+
+    #[test]
+    fn next_work_prioritizes_missing_prepare_field() {
+        let mut draft = PostDraft::default();
+        draft.problem_title.clear();
+        let preview = PreviewState::placeholder();
+
+        let next = recommended_next_work(&draft, &preview, "", &UiPreferences::default());
+
+        assert_eq!(next, NextWorkItem::Field(EditorFieldId::ProblemTitle));
+    }
+
+    #[test]
+    fn next_work_recommends_image_after_complete_draft() {
+        let draft = PostDraft::default();
+        let preview = PreviewState::placeholder();
+
+        let next = recommended_next_work(&draft, &preview, "", &UiPreferences::default());
+
+        assert_eq!(next, NextWorkItem::Action(ActionButtonId::SaveRasterWebp));
     }
 }
