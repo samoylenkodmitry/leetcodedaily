@@ -28,6 +28,9 @@ use cranpose::Box as ComposeBox;
 use cranpose::DEFAULT_ALPHA;
 use cranpose::prelude::*;
 use cranpose::widgets::BasicTextFieldWithOptions;
+use cranpose_animation::{
+    AnimationSpec, RepeatMode, StartOffset, infiniteRepeatable, rememberInfiniteTransition,
+};
 use cranpose_core::MutableState;
 use cranpose_foundation::text::{TextFieldLineLimits, TextFieldState};
 #[cfg(not(target_arch = "wasm32"))]
@@ -66,6 +69,132 @@ enum EditorTab {
     Writeup,
     Code,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum ActionButtonId {
+    CopyLeetcode,
+    CopyYoutube,
+    CopyBlog,
+    CopyTelegram,
+    CopyTitle,
+    CopySubtitle,
+    CopyRichText,
+    SaveRasterWebp,
+    SaveCranposeWebp,
+    PublishBlog,
+    PostTelegram,
+    PostTelegramComment,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum LongAction {
+    SaveRasterWebp,
+    SaveCranposeWebp,
+    PublishBlog,
+    PostTelegram,
+    PostTelegramComment,
+}
+
+#[derive(Clone, Debug, PartialEq, Hash)]
+struct PendingAction {
+    action: LongAction,
+    request_id: u64,
+    draft: PostDraft,
+    telegram_post_link: String,
+}
+
+#[derive(Clone)]
+enum LongActionResult {
+    SaveRasterWebp(std::result::Result<PreviewState, String>),
+    SaveCranposeWebp(std::result::Result<PreviewState, String>),
+    PublishBlog(std::result::Result<PublishBlogOutcome, String>),
+    PostTelegram(std::result::Result<TelegramPostOutcome, String>),
+    PostTelegramComment(std::result::Result<String, String>),
+}
+
+#[derive(Clone)]
+struct PublishBlogOutcome {
+    preview: PreviewState,
+    edit: BlogArchiveEdit,
+    commit_sha: Option<String>,
+}
+
+#[derive(Clone)]
+struct TelegramPostOutcome {
+    preview: PreviewState,
+    link: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+enum BlogArchiveEdit {
+    Inserted,
+    Replaced,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum EditorFieldId {
+    Date,
+    ProblemTitle,
+    ProblemUrl,
+    Difficulty,
+    BlogPostUrl,
+    SubstackUrl,
+    YoutubeUrl,
+    ReferenceUrl,
+    TelegramText,
+    ProblemTldr,
+    Intuition,
+    Approach,
+    TimeComplexity,
+    SpaceComplexity,
+    KotlinRuntimeMs,
+    KotlinCode,
+    RustRuntimeMs,
+    RustCode,
+}
+
+const ACTION_BUTTONS: [ActionButtonId; 12] = [
+    ActionButtonId::CopyLeetcode,
+    ActionButtonId::CopyYoutube,
+    ActionButtonId::CopyBlog,
+    ActionButtonId::CopyTelegram,
+    ActionButtonId::CopyTitle,
+    ActionButtonId::CopySubtitle,
+    ActionButtonId::CopyRichText,
+    ActionButtonId::SaveRasterWebp,
+    ActionButtonId::SaveCranposeWebp,
+    ActionButtonId::PublishBlog,
+    ActionButtonId::PostTelegram,
+    ActionButtonId::PostTelegramComment,
+];
+
+const META_FIELDS: [EditorFieldId; 9] = [
+    EditorFieldId::Date,
+    EditorFieldId::ProblemTitle,
+    EditorFieldId::ProblemUrl,
+    EditorFieldId::Difficulty,
+    EditorFieldId::BlogPostUrl,
+    EditorFieldId::SubstackUrl,
+    EditorFieldId::YoutubeUrl,
+    EditorFieldId::ReferenceUrl,
+    EditorFieldId::TelegramText,
+];
+
+const WRITEUP_FIELDS: [EditorFieldId; 5] = [
+    EditorFieldId::ProblemTldr,
+    EditorFieldId::Intuition,
+    EditorFieldId::Approach,
+    EditorFieldId::TimeComplexity,
+    EditorFieldId::SpaceComplexity,
+];
+
+const CODE_FIELDS: [EditorFieldId; 4] = [
+    EditorFieldId::KotlinRuntimeMs,
+    EditorFieldId::KotlinCode,
+    EditorFieldId::RustRuntimeMs,
+    EditorFieldId::RustCode,
+];
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run() {
@@ -146,6 +275,11 @@ fn App() {
     })
     .with(|fields| fields.clone());
     let ui_preferences = useState(load_ui_preferences);
+    let layout_preferences = remember({
+        let initial_preferences = ui_preferences.value();
+        move || initial_preferences
+    })
+    .with(|preferences| preferences.clone());
     let autosave_destination = remember(autosave_destination_label).with(|label| label.clone());
     let active_tab = useState(|| EditorTab::Meta);
     let preview_state = useState(PreviewState::placeholder);
@@ -155,9 +289,13 @@ fn App() {
     let compose_error = useState(String::new);
     let telegram_post_link = useState(String::new);
     let status = useState(startup_status_message);
+    let pending_action = useState(|| None::<PendingAction>);
+    let action_request_counter = useState(|| 0u64);
+    let busy_action = useState(|| None::<LongAction>);
     let current_draft = PostDraft::from_fields(&fields);
     let markdown_preview = current_draft.blog_template();
     let current_tab = active_tab.value();
+    let queued_action = pending_action.value();
     let theme = ui_preferences.value().theme;
 
     cranpose_core::LaunchedEffect!(current_draft.clone(), {
@@ -253,6 +391,33 @@ fn App() {
         }
     });
 
+    cranpose_core::LaunchedEffect!(queued_action.clone(), {
+        let preview_state = preview_state.clone();
+        let busy_action = busy_action.clone();
+        let pending_action = pending_action.clone();
+        let status = status.clone();
+        let telegram_post_link = telegram_post_link.clone();
+        move |scope| {
+            let Some(action) = queued_action.clone() else {
+                return;
+            };
+
+            scope.launch_background(
+                move |_| async move { run_long_action(action) },
+                move |result| {
+                    finish_long_action(
+                        result,
+                        preview_state.clone(),
+                        busy_action.clone(),
+                        pending_action.clone(),
+                        status.clone(),
+                        telegram_post_link.clone(),
+                    );
+                },
+            );
+        }
+    });
+
     Column(
         Modifier::empty()
             .fill_max_size()
@@ -275,6 +440,10 @@ fn App() {
             let autosave_destination = autosave_destination.clone();
             let saved_draft = saved_draft.clone();
             let ui_preferences = ui_preferences.clone();
+            let layout_preferences = layout_preferences.clone();
+            let pending_action = pending_action.clone();
+            let action_request_counter = action_request_counter.clone();
+            let busy_action = busy_action.clone();
             move || {
                 ActionsCard(
                     fields.clone(),
@@ -283,6 +452,10 @@ fn App() {
                     autosave_destination.clone(),
                     telegram_post_link.clone(),
                     ui_preferences.clone(),
+                    layout_preferences.clone(),
+                    pending_action.clone(),
+                    action_request_counter.clone(),
+                    busy_action.clone(),
                     theme,
                 );
                 section_card(theme, {
@@ -391,6 +564,7 @@ fn App() {
                     status.clone(),
                     saved_draft.clone(),
                     ui_preferences.clone(),
+                    layout_preferences.clone(),
                     theme,
                 );
             }
@@ -411,6 +585,7 @@ fn ActiveTabContent(
     status: MutableState<String>,
     saved_draft: PostDraft,
     ui_preferences: MutableState<UiPreferences>,
+    layout_preferences: UiPreferences,
     theme: ThemeMode,
 ) {
     match active_tab {
@@ -421,9 +596,30 @@ fn ActiveTabContent(
         EditorTab::Compose => {
             ComposePreviewCard(compose_preview_state, compose_loading, compose_error, theme)
         }
-        EditorTab::Meta => ProblemMetaCard(fields, status, saved_draft, ui_preferences, theme),
-        EditorTab::Writeup => WriteupCard(fields, status, saved_draft, ui_preferences, theme),
-        EditorTab::Code => CodeCard(fields, status, saved_draft, ui_preferences, theme),
+        EditorTab::Meta => ProblemMetaCard(
+            fields,
+            status,
+            saved_draft,
+            ui_preferences,
+            layout_preferences,
+            theme,
+        ),
+        EditorTab::Writeup => WriteupCard(
+            fields,
+            status,
+            saved_draft,
+            ui_preferences,
+            layout_preferences,
+            theme,
+        ),
+        EditorTab::Code => CodeCard(
+            fields,
+            status,
+            saved_draft,
+            ui_preferences,
+            layout_preferences,
+            theme,
+        ),
     }
 }
 
@@ -435,6 +631,10 @@ fn ActionsCard(
     autosave_destination: String,
     telegram_post_link: MutableState<String>,
     ui_preferences: MutableState<UiPreferences>,
+    layout_preferences: UiPreferences,
+    pending_action: MutableState<Option<PendingAction>>,
+    action_request_counter: MutableState<u64>,
+    busy_action: MutableState<Option<LongAction>>,
     theme: ThemeMode,
 ) {
     section_card(theme, {
@@ -443,6 +643,10 @@ fn ActionsCard(
         let preview_state = preview_state.clone();
         let telegram_post_link = telegram_post_link.clone();
         let ui_preferences = ui_preferences.clone();
+        let layout_preferences = layout_preferences.clone();
+        let pending_action = pending_action.clone();
+        let action_request_counter = action_request_counter.clone();
+        let busy_action = busy_action.clone();
         move || {
             Column(
                 Modifier::empty().fill_max_width(),
@@ -454,6 +658,10 @@ fn ActionsCard(
                     let telegram_post_link = telegram_post_link.clone();
                     let autosave_destination = autosave_destination.clone();
                     let ui_preferences = ui_preferences.clone();
+                    let layout_preferences = layout_preferences.clone();
+                    let pending_action = pending_action.clone();
+                    let action_request_counter = action_request_counter.clone();
+                    let busy_action = busy_action.clone();
                     move || {
                         Row(
                             Modifier::empty().fill_max_width(),
@@ -496,267 +704,16 @@ fn ActionsCard(
                             muted_style(theme),
                         );
 
-                        let action_fields = fields.clone();
-                        let action_status = status.clone();
-                        let action_preview = preview_state.clone();
-                        Column(
-                            Modifier::empty().fill_max_width(),
-                            ColumnSpec::default()
-                                .vertical_arrangement(LinearArrangement::spaced_by(12.0)),
-                            move || {
-                                let row_fields = action_fields.clone();
-                                let row_status = action_status.clone();
-                                Row(
-                                    Modifier::empty().fill_max_width(),
-                                    RowSpec::default()
-                                        .horizontal_arrangement(LinearArrangement::spaced_by(12.0)),
-                                    move || {
-                                        let leetcode_fields = row_fields.clone();
-                                        let leetcode_status = row_status.clone();
-                                        primary_button(
-                                            "Copy LeetCode",
-                                            "copy.leetcode",
-                                            ui_preferences.clone(),
-                                            theme,
-                                            move || {
-                                                let draft =
-                                                    PostDraft::from_fields(&leetcode_fields);
-                                                copy_text_to_clipboard(
-                                                    draft.leetcode_template(),
-                                                    "LeetCode template copied.".to_string(),
-                                                    leetcode_status.clone(),
-                                                );
-                                            },
-                                        );
-
-                                        let youtube_fields = row_fields.clone();
-                                        let youtube_status = row_status.clone();
-                                        primary_button(
-                                            "Copy YouTube",
-                                            "copy.youtube",
-                                            ui_preferences.clone(),
-                                            theme,
-                                            move || {
-                                                let draft = PostDraft::from_fields(&youtube_fields);
-                                                copy_text_to_clipboard(
-                                                    draft.youtube_template(),
-                                                    "YouTube template copied.".to_string(),
-                                                    youtube_status.clone(),
-                                                );
-                                            },
-                                        );
-
-                                        let blog_fields = row_fields.clone();
-                                        let blog_status = row_status.clone();
-                                        primary_button(
-                                            "Copy Blog",
-                                            "copy.blog",
-                                            ui_preferences.clone(),
-                                            theme,
-                                            move || {
-                                                let draft = PostDraft::from_fields(&blog_fields);
-                                                copy_text_to_clipboard(
-                                                    draft.blog_template(),
-                                                    "Blog template copied.".to_string(),
-                                                    blog_status.clone(),
-                                                );
-                                            },
-                                        );
-
-                                        let telegram_fields = row_fields.clone();
-                                        let telegram_status = row_status.clone();
-                                        primary_button(
-                                            "Copy Telegram",
-                                            "copy.telegram",
-                                            ui_preferences.clone(),
-                                            theme,
-                                            move || {
-                                                let draft =
-                                                    PostDraft::from_fields(&telegram_fields);
-                                                copy_text_to_clipboard(
-                                                    draft.telegram_template(),
-                                                    "Telegram template copied.".to_string(),
-                                                    telegram_status.clone(),
-                                                );
-                                            },
-                                        );
-                                    },
-                                );
-
-                                let row_fields = action_fields.clone();
-                                let row_status = action_status.clone();
-                                Row(
-                                    Modifier::empty().fill_max_width(),
-                                    RowSpec::default()
-                                        .horizontal_arrangement(LinearArrangement::spaced_by(12.0)),
-                                    move || {
-                                        let title_fields = row_fields.clone();
-                                        let title_status = row_status.clone();
-                                        primary_button(
-                                            "Copy Title",
-                                            "copy.title",
-                                            ui_preferences.clone(),
-                                            theme,
-                                            move || {
-                                                let draft = PostDraft::from_fields(&title_fields);
-                                                copy_text_to_clipboard(
-                                                    draft.title_text(),
-                                                    "Title copied.".to_string(),
-                                                    title_status.clone(),
-                                                );
-                                            },
-                                        );
-
-                                        let subtitle_fields = row_fields.clone();
-                                        let subtitle_status = row_status.clone();
-                                        primary_button(
-                                            "Copy Subtitle",
-                                            "copy.subtitle",
-                                            ui_preferences.clone(),
-                                            theme,
-                                            move || {
-                                                let draft =
-                                                    PostDraft::from_fields(&subtitle_fields);
-                                                copy_text_to_clipboard(
-                                                    draft.subtitle_text(),
-                                                    "Subtitle copied.".to_string(),
-                                                    subtitle_status.clone(),
-                                                );
-                                            },
-                                        );
-
-                                        let rich_fields = row_fields.clone();
-                                        let rich_status = row_status.clone();
-                                        primary_button(
-                                            "Copy Rich Text",
-                                            "copy.rich_text",
-                                            ui_preferences.clone(),
-                                            theme,
-                                            move || {
-                                                let draft = PostDraft::from_fields(&rich_fields);
-                                                copy_rich_text_to_clipboard(
-                                                    draft,
-                                                    rich_status.clone(),
-                                                );
-                                            },
-                                        );
-                                    },
-                                );
-
-                                let row_fields = action_fields.clone();
-                                let row_status = action_status.clone();
-                                let row_preview = action_preview.clone();
-                                Row(
-                                    Modifier::empty().fill_max_width(),
-                                    RowSpec::default()
-                                        .horizontal_arrangement(LinearArrangement::spaced_by(12.0)),
-                                    move || {
-                                        let save_fields = row_fields.clone();
-                                        let save_status = row_status.clone();
-                                        let save_preview = row_preview.clone();
-                                        primary_button(
-                                            "Save Raster WebP",
-                                            "save.raster_webp",
-                                            ui_preferences.clone(),
-                                            theme,
-                                            move || {
-                                                let draft = PostDraft::from_fields(&save_fields);
-                                                save_raster_webp_action(
-                                                    &draft,
-                                                    save_preview.clone(),
-                                                    save_status.clone(),
-                                                );
-                                            },
-                                        );
-
-                                        let save_fields = row_fields.clone();
-                                        let save_status = row_status.clone();
-                                        let save_preview = row_preview.clone();
-                                        primary_button(
-                                            "Save Cranpose WebP",
-                                            "save.cranpose_webp",
-                                            ui_preferences.clone(),
-                                            theme,
-                                            move || {
-                                                let draft = PostDraft::from_fields(&save_fields);
-                                                save_compose_webp_action(
-                                                    &draft,
-                                                    save_preview.clone(),
-                                                    save_status.clone(),
-                                                );
-                                            },
-                                        );
-                                    },
-                                );
-
-                                let row_fields = action_fields.clone();
-                                let row_status = action_status.clone();
-                                let row_preview = action_preview.clone();
-                                let row_telegram_post_link = telegram_post_link.clone();
-                                Row(
-                                    Modifier::empty().fill_max_width(),
-                                    RowSpec::default()
-                                        .horizontal_arrangement(LinearArrangement::spaced_by(12.0)),
-                                    move || {
-                                        let publish_fields = row_fields.clone();
-                                        let publish_status = row_status.clone();
-                                        let publish_preview = row_preview.clone();
-                                        primary_button(
-                                            "Publish Blog",
-                                            "publish.blog",
-                                            ui_preferences.clone(),
-                                            theme,
-                                            move || {
-                                                let draft = PostDraft::from_fields(&publish_fields);
-                                                publish_blog_action(
-                                                    &draft,
-                                                    publish_preview.clone(),
-                                                    publish_status.clone(),
-                                                );
-                                            },
-                                        );
-
-                                        let telegram_fields = row_fields.clone();
-                                        let telegram_status = row_status.clone();
-                                        let telegram_preview = row_preview.clone();
-                                        let telegram_link = row_telegram_post_link.clone();
-                                        primary_button(
-                                            "Post Telegram",
-                                            "post.telegram",
-                                            ui_preferences.clone(),
-                                            theme,
-                                            move || {
-                                                let draft =
-                                                    PostDraft::from_fields(&telegram_fields);
-                                                post_telegram_channel_action(
-                                                    &draft,
-                                                    telegram_preview.clone(),
-                                                    telegram_status.clone(),
-                                                    telegram_link.clone(),
-                                                );
-                                            },
-                                        );
-
-                                        let comment_fields = row_fields.clone();
-                                        let comment_status = row_status.clone();
-                                        let comment_link = row_telegram_post_link.clone();
-                                        primary_button(
-                                            "Post TG Comment",
-                                            "post.telegram_comment",
-                                            ui_preferences.clone(),
-                                            theme,
-                                            move || {
-                                                let draft = PostDraft::from_fields(&comment_fields);
-                                                post_telegram_comment_action(
-                                                    &draft,
-                                                    comment_status.clone(),
-                                                    comment_link.clone(),
-                                                );
-                                            },
-                                        );
-                                    },
-                                );
-                            },
+                        ActionButtons(
+                            fields.clone(),
+                            status.clone(),
+                            telegram_post_link.clone(),
+                            ui_preferences.clone(),
+                            layout_preferences.clone(),
+                            pending_action.clone(),
+                            action_request_counter.clone(),
+                            busy_action.clone(),
+                            theme,
                         );
 
                         Text(status.clone(), Modifier::empty(), accent_style(theme));
@@ -781,6 +738,285 @@ fn ActionsCard(
             );
         }
     });
+}
+
+#[composable]
+fn ActionButtons(
+    fields: EditorFields,
+    status: MutableState<String>,
+    telegram_post_link: MutableState<String>,
+    ui_preferences: MutableState<UiPreferences>,
+    layout_preferences: UiPreferences,
+    pending_action: MutableState<Option<PendingAction>>,
+    action_request_counter: MutableState<u64>,
+    busy_action: MutableState<Option<LongAction>>,
+    theme: ThemeMode,
+) {
+    let ordered_actions = ordered_action_buttons(&layout_preferences);
+    Column(
+        Modifier::empty().fill_max_width(),
+        ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(12.0)),
+        {
+            let fields = fields.clone();
+            let status = status.clone();
+            let telegram_post_link = telegram_post_link.clone();
+            let ui_preferences = ui_preferences.clone();
+            let pending_action = pending_action.clone();
+            let action_request_counter = action_request_counter.clone();
+            let busy_action = busy_action.clone();
+            move || {
+                for row in ordered_actions.chunks(4) {
+                    let row_actions = row.to_vec();
+                    let fields = fields.clone();
+                    let status = status.clone();
+                    let telegram_post_link = telegram_post_link.clone();
+                    let ui_preferences = ui_preferences.clone();
+                    let pending_action = pending_action.clone();
+                    let action_request_counter = action_request_counter.clone();
+                    let busy_action = busy_action.clone();
+                    Row(
+                        Modifier::empty().fill_max_width(),
+                        RowSpec::default()
+                            .horizontal_arrangement(LinearArrangement::spaced_by(12.0)),
+                        move || {
+                            let fields = fields.clone();
+                            let status = status.clone();
+                            let telegram_post_link = telegram_post_link.clone();
+                            let ui_preferences = ui_preferences.clone();
+                            let pending_action = pending_action.clone();
+                            let action_request_counter = action_request_counter.clone();
+                            let busy_action = busy_action.clone();
+                            ForEach(&row_actions, move |action| {
+                                ActionButton(
+                                    *action,
+                                    fields.clone(),
+                                    status.clone(),
+                                    telegram_post_link.clone(),
+                                    ui_preferences.clone(),
+                                    pending_action.clone(),
+                                    action_request_counter.clone(),
+                                    busy_action.clone(),
+                                    theme,
+                                );
+                            });
+                        },
+                    );
+                }
+            }
+        },
+    );
+}
+
+#[composable]
+fn ActionButton(
+    action: ActionButtonId,
+    fields: EditorFields,
+    status: MutableState<String>,
+    telegram_post_link: MutableState<String>,
+    ui_preferences: MutableState<UiPreferences>,
+    pending_action: MutableState<Option<PendingAction>>,
+    action_request_counter: MutableState<u64>,
+    busy_action: MutableState<Option<LongAction>>,
+    theme: ThemeMode,
+) {
+    let action_busy = busy_action.value();
+    let long_action = action.long_action();
+    let is_busy = long_action.is_some() && action_busy == long_action;
+    let disabled = long_action.is_some() && action_busy.is_some();
+    primary_button(
+        action.label(),
+        action.count_key(),
+        ui_preferences.clone(),
+        theme,
+        disabled,
+        is_busy,
+        move || {
+            handle_action_button(
+                action,
+                fields.clone(),
+                status.clone(),
+                telegram_post_link.clone(),
+                pending_action.clone(),
+                action_request_counter.clone(),
+                busy_action.clone(),
+            );
+        },
+    );
+}
+
+fn handle_action_button(
+    action: ActionButtonId,
+    fields: EditorFields,
+    status: MutableState<String>,
+    telegram_post_link: MutableState<String>,
+    pending_action: MutableState<Option<PendingAction>>,
+    action_request_counter: MutableState<u64>,
+    busy_action: MutableState<Option<LongAction>>,
+) {
+    let draft = PostDraft::from_fields(&fields);
+    if let Some(long_action) = action.long_action() {
+        enqueue_long_action(
+            long_action,
+            draft,
+            telegram_post_link.value(),
+            pending_action,
+            action_request_counter,
+            busy_action,
+            status,
+        );
+        return;
+    }
+
+    match action {
+        ActionButtonId::CopyLeetcode => copy_text_to_clipboard(
+            draft.leetcode_template(),
+            "LeetCode template copied.".to_string(),
+            status,
+        ),
+        ActionButtonId::CopyYoutube => copy_text_to_clipboard(
+            draft.youtube_template(),
+            "YouTube template copied.".to_string(),
+            status,
+        ),
+        ActionButtonId::CopyBlog => copy_text_to_clipboard(
+            draft.blog_template(),
+            "Blog template copied.".to_string(),
+            status,
+        ),
+        ActionButtonId::CopyTelegram => copy_text_to_clipboard(
+            draft.telegram_template(),
+            "Telegram template copied.".to_string(),
+            status,
+        ),
+        ActionButtonId::CopyTitle => {
+            copy_text_to_clipboard(draft.title_text(), "Title copied.".to_string(), status)
+        }
+        ActionButtonId::CopySubtitle => copy_text_to_clipboard(
+            draft.subtitle_text(),
+            "Subtitle copied.".to_string(),
+            status,
+        ),
+        ActionButtonId::CopyRichText => copy_rich_text_to_clipboard(draft, status),
+        ActionButtonId::SaveRasterWebp
+        | ActionButtonId::SaveCranposeWebp
+        | ActionButtonId::PublishBlog
+        | ActionButtonId::PostTelegram
+        | ActionButtonId::PostTelegramComment => {}
+    }
+}
+
+fn enqueue_long_action(
+    action: LongAction,
+    draft: PostDraft,
+    telegram_post_link: String,
+    pending_action: MutableState<Option<PendingAction>>,
+    action_request_counter: MutableState<u64>,
+    busy_action: MutableState<Option<LongAction>>,
+    status: MutableState<String>,
+) {
+    if busy_action.value().is_some() {
+        return;
+    }
+
+    let request_id = action_request_counter.update(|value| {
+        *value = value.wrapping_add(1);
+        *value
+    });
+    busy_action.set(Some(action));
+    pending_action.set(Some(PendingAction {
+        action,
+        request_id,
+        draft,
+        telegram_post_link,
+    }));
+    status.set(format!("{} started...", action.label()));
+}
+
+impl ActionButtonId {
+    fn label(self) -> &'static str {
+        match self {
+            Self::CopyLeetcode => "Copy LeetCode",
+            Self::CopyYoutube => "Copy YouTube",
+            Self::CopyBlog => "Copy Blog",
+            Self::CopyTelegram => "Copy Telegram",
+            Self::CopyTitle => "Copy Title",
+            Self::CopySubtitle => "Copy Subtitle",
+            Self::CopyRichText => "Copy Rich Text",
+            Self::SaveRasterWebp => "Save Raster WebP",
+            Self::SaveCranposeWebp => "Save Cranpose WebP",
+            Self::PublishBlog => "Publish Blog",
+            Self::PostTelegram => "Post Telegram",
+            Self::PostTelegramComment => "Post TG Comment",
+        }
+    }
+
+    fn count_key(self) -> &'static str {
+        match self {
+            Self::CopyLeetcode => "copy.leetcode",
+            Self::CopyYoutube => "copy.youtube",
+            Self::CopyBlog => "copy.blog",
+            Self::CopyTelegram => "copy.telegram",
+            Self::CopyTitle => "copy.title",
+            Self::CopySubtitle => "copy.subtitle",
+            Self::CopyRichText => "copy.rich_text",
+            Self::SaveRasterWebp => "save.raster_webp",
+            Self::SaveCranposeWebp => "save.cranpose_webp",
+            Self::PublishBlog => "publish.blog",
+            Self::PostTelegram => "post.telegram",
+            Self::PostTelegramComment => "post.telegram_comment",
+        }
+    }
+
+    fn long_action(self) -> Option<LongAction> {
+        match self {
+            Self::SaveRasterWebp => Some(LongAction::SaveRasterWebp),
+            Self::SaveCranposeWebp => Some(LongAction::SaveCranposeWebp),
+            Self::PublishBlog => Some(LongAction::PublishBlog),
+            Self::PostTelegram => Some(LongAction::PostTelegram),
+            Self::PostTelegramComment => Some(LongAction::PostTelegramComment),
+            _ => None,
+        }
+    }
+}
+
+impl LongAction {
+    fn label(self) -> &'static str {
+        match self {
+            Self::SaveRasterWebp => "Save Raster WebP",
+            Self::SaveCranposeWebp => "Save Cranpose WebP",
+            Self::PublishBlog => "Publish Blog",
+            Self::PostTelegram => "Post Telegram",
+            Self::PostTelegramComment => "Post TG Comment",
+        }
+    }
+}
+
+fn ordered_action_buttons(preferences: &UiPreferences) -> Vec<ActionButtonId> {
+    let mut actions = ACTION_BUTTONS.to_vec();
+    actions.sort_by_key(|action| {
+        component_sort_key(
+            preferences,
+            action.count_key(),
+            ACTION_BUTTONS
+                .iter()
+                .position(|candidate| candidate == action)
+                .unwrap_or(usize::MAX),
+        )
+    });
+    actions
+}
+
+fn component_sort_key(
+    preferences: &UiPreferences,
+    component_key: &str,
+    default_index: usize,
+) -> (u8, u64, usize) {
+    let usage_order = preferences.component_order(component_key);
+    if usage_order == 0 {
+        (1, 0, default_index)
+    } else {
+        (0, usage_order, default_index)
+    }
 }
 
 #[composable]
@@ -1154,6 +1390,7 @@ fn ProblemMetaCard(
     status: MutableState<String>,
     saved_draft: PostDraft,
     ui_preferences: MutableState<UiPreferences>,
+    layout_preferences: UiPreferences,
     theme: ThemeMode,
 ) {
     section_card(theme, {
@@ -1161,6 +1398,7 @@ fn ProblemMetaCard(
         let status = status.clone();
         let saved_draft = saved_draft.clone();
         let ui_preferences = ui_preferences.clone();
+        let layout_preferences = layout_preferences.clone();
         move || {
             Column(
                 Modifier::empty().fill_max_width(),
@@ -1170,120 +1408,29 @@ fn ProblemMetaCard(
                     let status = status.clone();
                     let saved_draft = saved_draft.clone();
                     let ui_preferences = ui_preferences.clone();
+                    let ordered_fields = ordered_fields(&META_FIELDS, &layout_preferences);
                     move || {
                         Text(
                             "Problem Meta",
                             Modifier::empty(),
                             heading_style(28.0, theme),
                         );
-                        labeled_field(
-                            "Date",
-                            "date",
-                            fields.date.clone(),
-                            saved_draft.date.clone(),
-                            1,
-                            1,
-                            status.clone(),
-                            ui_preferences.clone(),
-                            theme,
-                            true,
-                        );
-                        labeled_field(
-                            "Problem Title",
-                            "problem_title",
-                            fields.problem_title.clone(),
-                            saved_draft.problem_title.clone(),
-                            1,
-                            2,
-                            status.clone(),
-                            ui_preferences.clone(),
-                            theme,
-                            true,
-                        );
-                        labeled_field(
-                            "Problem URL",
-                            "problem_url",
-                            fields.problem_url.clone(),
-                            saved_draft.problem_url.clone(),
-                            1,
-                            2,
-                            status.clone(),
-                            ui_preferences.clone(),
-                            theme,
-                            true,
-                        );
-                        labeled_field(
-                            "Difficulty",
-                            "difficulty",
-                            fields.difficulty.clone(),
-                            saved_draft.difficulty.clone(),
-                            1,
-                            1,
-                            status.clone(),
-                            ui_preferences.clone(),
-                            theme,
-                            true,
-                        );
-                        labeled_field(
-                            "Blog Post URL",
-                            "blog_post_url",
-                            fields.blog_post_url.clone(),
-                            saved_draft.blog_post_url.clone(),
-                            1,
-                            2,
-                            status.clone(),
-                            ui_preferences.clone(),
-                            theme,
-                            true,
-                        );
-                        labeled_field(
-                            "Substack URL",
-                            "substack_url",
-                            fields.substack_url.clone(),
-                            saved_draft.substack_url.clone(),
-                            1,
-                            2,
-                            status.clone(),
-                            ui_preferences.clone(),
-                            theme,
-                            true,
-                        );
-                        labeled_field(
-                            "YouTube URL",
-                            "youtube_url",
-                            fields.youtube_url.clone(),
-                            saved_draft.youtube_url.clone(),
-                            1,
-                            2,
-                            status.clone(),
-                            ui_preferences.clone(),
-                            theme,
-                            true,
-                        );
-                        labeled_field(
-                            "Reference URL",
-                            "reference_url",
-                            fields.reference_url.clone(),
-                            saved_draft.reference_url.clone(),
-                            1,
-                            2,
-                            status.clone(),
-                            ui_preferences.clone(),
-                            theme,
-                            true,
-                        );
-                        labeled_field(
-                            "Telegram CTA Text",
-                            "telegram_text",
-                            fields.telegram_text.clone(),
-                            saved_draft.telegram_text.clone(),
-                            3,
-                            5,
-                            status.clone(),
-                            ui_preferences.clone(),
-                            theme,
-                            true,
-                        );
+                        ForEach(&ordered_fields, {
+                            let fields = fields.clone();
+                            let saved_draft = saved_draft.clone();
+                            let status = status.clone();
+                            let ui_preferences = ui_preferences.clone();
+                            move |field| {
+                                EditorField(
+                                    *field,
+                                    fields.clone(),
+                                    saved_draft.clone(),
+                                    status.clone(),
+                                    ui_preferences.clone(),
+                                    theme,
+                                );
+                            }
+                        });
                     }
                 },
             );
@@ -1297,6 +1444,7 @@ fn WriteupCard(
     status: MutableState<String>,
     saved_draft: PostDraft,
     ui_preferences: MutableState<UiPreferences>,
+    layout_preferences: UiPreferences,
     theme: ThemeMode,
 ) {
     section_card(theme, {
@@ -1304,6 +1452,7 @@ fn WriteupCard(
         let status = status.clone();
         let saved_draft = saved_draft.clone();
         let ui_preferences = ui_preferences.clone();
+        let layout_preferences = layout_preferences.clone();
         move || {
             Column(
                 Modifier::empty().fill_max_width(),
@@ -1313,68 +1462,25 @@ fn WriteupCard(
                     let status = status.clone();
                     let saved_draft = saved_draft.clone();
                     let ui_preferences = ui_preferences.clone();
+                    let ordered_fields = ordered_fields(&WRITEUP_FIELDS, &layout_preferences);
                     move || {
                         Text("Writeup", Modifier::empty(), heading_style(28.0, theme));
-                        labeled_field(
-                            "Problem TLDR",
-                            "problem_tldr",
-                            fields.problem_tldr.clone(),
-                            saved_draft.problem_tldr.clone(),
-                            3,
-                            6,
-                            status.clone(),
-                            ui_preferences.clone(),
-                            theme,
-                            true,
-                        );
-                        labeled_field(
-                            "Intuition",
-                            "intuition",
-                            fields.intuition.clone(),
-                            saved_draft.intuition.clone(),
-                            6,
-                            14,
-                            status.clone(),
-                            ui_preferences.clone(),
-                            theme,
-                            true,
-                        );
-                        labeled_field(
-                            "Approach",
-                            "approach",
-                            fields.approach.clone(),
-                            saved_draft.approach.clone(),
-                            6,
-                            14,
-                            status.clone(),
-                            ui_preferences.clone(),
-                            theme,
-                            true,
-                        );
-                        labeled_field(
-                            "Time Complexity Inner Value",
-                            "time_complexity",
-                            fields.time_complexity.clone(),
-                            saved_draft.time_complexity.clone(),
-                            1,
-                            2,
-                            status.clone(),
-                            ui_preferences.clone(),
-                            theme,
-                            false,
-                        );
-                        labeled_field(
-                            "Space Complexity Inner Value",
-                            "space_complexity",
-                            fields.space_complexity.clone(),
-                            saved_draft.space_complexity.clone(),
-                            1,
-                            2,
-                            status.clone(),
-                            ui_preferences.clone(),
-                            theme,
-                            false,
-                        );
+                        ForEach(&ordered_fields, {
+                            let fields = fields.clone();
+                            let saved_draft = saved_draft.clone();
+                            let status = status.clone();
+                            let ui_preferences = ui_preferences.clone();
+                            move |field| {
+                                EditorField(
+                                    *field,
+                                    fields.clone(),
+                                    saved_draft.clone(),
+                                    status.clone(),
+                                    ui_preferences.clone(),
+                                    theme,
+                                );
+                            }
+                        });
                     }
                 },
             );
@@ -1388,6 +1494,7 @@ fn CodeCard(
     status: MutableState<String>,
     saved_draft: PostDraft,
     ui_preferences: MutableState<UiPreferences>,
+    layout_preferences: UiPreferences,
     theme: ThemeMode,
 ) {
     section_card(theme, {
@@ -1395,6 +1502,7 @@ fn CodeCard(
         let status = status.clone();
         let saved_draft = saved_draft.clone();
         let ui_preferences = ui_preferences.clone();
+        let layout_preferences = layout_preferences.clone();
         move || {
             Column(
                 Modifier::empty().fill_max_width(),
@@ -1404,59 +1512,324 @@ fn CodeCard(
                     let status = status.clone();
                     let saved_draft = saved_draft.clone();
                     let ui_preferences = ui_preferences.clone();
+                    let ordered_fields = ordered_fields(&CODE_FIELDS, &layout_preferences);
                     move || {
                         Text("Code Blocks", Modifier::empty(), heading_style(28.0, theme));
-                        labeled_field(
-                            "Kotlin Runtime (ms)",
-                            "kotlin_runtime_ms",
-                            fields.kotlin_runtime_ms.clone(),
-                            saved_draft.kotlin_runtime_ms.clone(),
-                            1,
-                            1,
-                            status.clone(),
-                            ui_preferences.clone(),
-                            theme,
-                            false,
-                        );
-                        labeled_code_field(
-                            "Kotlin Code",
-                            "kotlin_code",
-                            fields.kotlin_code.clone(),
-                            saved_draft.kotlin_code.clone(),
-                            10,
-                            18,
-                            status.clone(),
-                            ui_preferences.clone(),
-                            theme,
-                        );
-                        labeled_field(
-                            "Rust Runtime (ms)",
-                            "rust_runtime_ms",
-                            fields.rust_runtime_ms.clone(),
-                            saved_draft.rust_runtime_ms.clone(),
-                            1,
-                            1,
-                            status.clone(),
-                            ui_preferences.clone(),
-                            theme,
-                            false,
-                        );
-                        labeled_code_field(
-                            "Rust Code",
-                            "rust_code",
-                            fields.rust_code.clone(),
-                            saved_draft.rust_code.clone(),
-                            10,
-                            18,
-                            status.clone(),
-                            ui_preferences.clone(),
-                            theme,
-                        );
+                        ForEach(&ordered_fields, {
+                            let fields = fields.clone();
+                            let saved_draft = saved_draft.clone();
+                            let status = status.clone();
+                            let ui_preferences = ui_preferences.clone();
+                            move |field| {
+                                EditorField(
+                                    *field,
+                                    fields.clone(),
+                                    saved_draft.clone(),
+                                    status.clone(),
+                                    ui_preferences.clone(),
+                                    theme,
+                                );
+                            }
+                        });
                     }
                 },
             );
         }
     });
+}
+
+#[composable]
+fn EditorField(
+    field: EditorFieldId,
+    fields: EditorFields,
+    saved_draft: PostDraft,
+    status: MutableState<String>,
+    ui_preferences: MutableState<UiPreferences>,
+    theme: ThemeMode,
+) {
+    match field {
+        EditorFieldId::Date => labeled_field(
+            field.label(),
+            field.field_id(),
+            fields.date.clone(),
+            saved_draft.date.clone(),
+            1,
+            1,
+            status,
+            ui_preferences,
+            theme,
+            true,
+        ),
+        EditorFieldId::ProblemTitle => labeled_field(
+            field.label(),
+            field.field_id(),
+            fields.problem_title.clone(),
+            saved_draft.problem_title.clone(),
+            1,
+            2,
+            status,
+            ui_preferences,
+            theme,
+            true,
+        ),
+        EditorFieldId::ProblemUrl => labeled_field(
+            field.label(),
+            field.field_id(),
+            fields.problem_url.clone(),
+            saved_draft.problem_url.clone(),
+            1,
+            2,
+            status,
+            ui_preferences,
+            theme,
+            true,
+        ),
+        EditorFieldId::Difficulty => labeled_field(
+            field.label(),
+            field.field_id(),
+            fields.difficulty.clone(),
+            saved_draft.difficulty.clone(),
+            1,
+            1,
+            status,
+            ui_preferences,
+            theme,
+            true,
+        ),
+        EditorFieldId::BlogPostUrl => labeled_field(
+            field.label(),
+            field.field_id(),
+            fields.blog_post_url.clone(),
+            saved_draft.blog_post_url.clone(),
+            1,
+            2,
+            status,
+            ui_preferences,
+            theme,
+            true,
+        ),
+        EditorFieldId::SubstackUrl => labeled_field(
+            field.label(),
+            field.field_id(),
+            fields.substack_url.clone(),
+            saved_draft.substack_url.clone(),
+            1,
+            2,
+            status,
+            ui_preferences,
+            theme,
+            true,
+        ),
+        EditorFieldId::YoutubeUrl => labeled_field(
+            field.label(),
+            field.field_id(),
+            fields.youtube_url.clone(),
+            saved_draft.youtube_url.clone(),
+            1,
+            2,
+            status,
+            ui_preferences,
+            theme,
+            true,
+        ),
+        EditorFieldId::ReferenceUrl => labeled_field(
+            field.label(),
+            field.field_id(),
+            fields.reference_url.clone(),
+            saved_draft.reference_url.clone(),
+            1,
+            2,
+            status,
+            ui_preferences,
+            theme,
+            true,
+        ),
+        EditorFieldId::TelegramText => labeled_field(
+            field.label(),
+            field.field_id(),
+            fields.telegram_text.clone(),
+            saved_draft.telegram_text.clone(),
+            3,
+            5,
+            status,
+            ui_preferences,
+            theme,
+            true,
+        ),
+        EditorFieldId::ProblemTldr => labeled_field(
+            field.label(),
+            field.field_id(),
+            fields.problem_tldr.clone(),
+            saved_draft.problem_tldr.clone(),
+            3,
+            6,
+            status,
+            ui_preferences,
+            theme,
+            true,
+        ),
+        EditorFieldId::Intuition => labeled_field(
+            field.label(),
+            field.field_id(),
+            fields.intuition.clone(),
+            saved_draft.intuition.clone(),
+            6,
+            14,
+            status,
+            ui_preferences,
+            theme,
+            true,
+        ),
+        EditorFieldId::Approach => labeled_field(
+            field.label(),
+            field.field_id(),
+            fields.approach.clone(),
+            saved_draft.approach.clone(),
+            6,
+            14,
+            status,
+            ui_preferences,
+            theme,
+            true,
+        ),
+        EditorFieldId::TimeComplexity => labeled_field(
+            field.label(),
+            field.field_id(),
+            fields.time_complexity.clone(),
+            saved_draft.time_complexity.clone(),
+            1,
+            2,
+            status,
+            ui_preferences,
+            theme,
+            false,
+        ),
+        EditorFieldId::SpaceComplexity => labeled_field(
+            field.label(),
+            field.field_id(),
+            fields.space_complexity.clone(),
+            saved_draft.space_complexity.clone(),
+            1,
+            2,
+            status,
+            ui_preferences,
+            theme,
+            false,
+        ),
+        EditorFieldId::KotlinRuntimeMs => labeled_field(
+            field.label(),
+            field.field_id(),
+            fields.kotlin_runtime_ms.clone(),
+            saved_draft.kotlin_runtime_ms.clone(),
+            1,
+            1,
+            status,
+            ui_preferences,
+            theme,
+            false,
+        ),
+        EditorFieldId::KotlinCode => labeled_code_field(
+            field.label(),
+            field.field_id(),
+            fields.kotlin_code.clone(),
+            saved_draft.kotlin_code.clone(),
+            10,
+            18,
+            status,
+            ui_preferences,
+            theme,
+        ),
+        EditorFieldId::RustRuntimeMs => labeled_field(
+            field.label(),
+            field.field_id(),
+            fields.rust_runtime_ms.clone(),
+            saved_draft.rust_runtime_ms.clone(),
+            1,
+            1,
+            status,
+            ui_preferences,
+            theme,
+            false,
+        ),
+        EditorFieldId::RustCode => labeled_code_field(
+            field.label(),
+            field.field_id(),
+            fields.rust_code.clone(),
+            saved_draft.rust_code.clone(),
+            10,
+            18,
+            status,
+            ui_preferences,
+            theme,
+        ),
+    }
+}
+
+impl EditorFieldId {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Date => "Date",
+            Self::ProblemTitle => "Problem Title",
+            Self::ProblemUrl => "Problem URL",
+            Self::Difficulty => "Difficulty",
+            Self::BlogPostUrl => "Blog Post URL",
+            Self::SubstackUrl => "Substack URL",
+            Self::YoutubeUrl => "YouTube URL",
+            Self::ReferenceUrl => "Reference URL",
+            Self::TelegramText => "Telegram CTA Text",
+            Self::ProblemTldr => "Problem TLDR",
+            Self::Intuition => "Intuition",
+            Self::Approach => "Approach",
+            Self::TimeComplexity => "Time Complexity Inner Value",
+            Self::SpaceComplexity => "Space Complexity Inner Value",
+            Self::KotlinRuntimeMs => "Kotlin Runtime (ms)",
+            Self::KotlinCode => "Kotlin Code",
+            Self::RustRuntimeMs => "Rust Runtime (ms)",
+            Self::RustCode => "Rust Code",
+        }
+    }
+
+    fn field_id(self) -> &'static str {
+        match self {
+            Self::Date => "date",
+            Self::ProblemTitle => "problem_title",
+            Self::ProblemUrl => "problem_url",
+            Self::Difficulty => "difficulty",
+            Self::BlogPostUrl => "blog_post_url",
+            Self::SubstackUrl => "substack_url",
+            Self::YoutubeUrl => "youtube_url",
+            Self::ReferenceUrl => "reference_url",
+            Self::TelegramText => "telegram_text",
+            Self::ProblemTldr => "problem_tldr",
+            Self::Intuition => "intuition",
+            Self::Approach => "approach",
+            Self::TimeComplexity => "time_complexity",
+            Self::SpaceComplexity => "space_complexity",
+            Self::KotlinRuntimeMs => "kotlin_runtime_ms",
+            Self::KotlinCode => "kotlin_code",
+            Self::RustRuntimeMs => "rust_runtime_ms",
+            Self::RustCode => "rust_code",
+        }
+    }
+
+    fn component_key(self) -> String {
+        format!("field.{}", self.field_id())
+    }
+}
+
+fn ordered_fields(defaults: &[EditorFieldId], preferences: &UiPreferences) -> Vec<EditorFieldId> {
+    let mut fields = defaults.to_vec();
+    fields.sort_by_key(|field| {
+        component_sort_key(
+            preferences,
+            &field.component_key(),
+            defaults
+                .iter()
+                .position(|candidate| candidate == field)
+                .unwrap_or(usize::MAX),
+        )
+    });
+    fields
 }
 
 #[composable]
@@ -1478,21 +1851,41 @@ fn primary_button(
     count_key: &'static str,
     ui_preferences: MutableState<UiPreferences>,
     theme: ThemeMode,
+    disabled: bool,
+    busy: bool,
     on_click: impl FnMut() + 'static,
 ) {
     let count = ui_preferences.value().button_count(count_key);
     let count_key = count_key.to_string();
+    let busy_pulse = if busy { busy_pulse() } else { 0.0 };
+    let background = if busy {
+        button_surface(theme).with_alpha(0.66 + 0.26 * busy_pulse)
+    } else if disabled {
+        disabled_button_surface(theme)
+    } else {
+        button_surface(theme)
+    };
+    let text_style = if busy {
+        busy_button_text_style(theme, busy_pulse)
+    } else if disabled {
+        disabled_button_text_style(theme)
+    } else {
+        button_text_style(theme)
+    };
     Button(
         Modifier::empty()
-            .background(button_surface(theme))
+            .background(background)
             .rounded_corners(18.0)
             .padding_symmetric(20.0, 14.0),
         move || {
+            if disabled {
+                return;
+            }
             record_button_press(ui_preferences.clone(), &count_key);
             on_click();
         },
         move || {
-            button_content(label.to_string(), count, button_text_style(theme), theme);
+            button_content(label.to_string(), count, text_style.clone(), theme, busy);
         },
     );
 }
@@ -1516,7 +1909,13 @@ fn subtle_button(
             on_click();
         },
         move || {
-            button_content(label.clone(), count, subtle_button_text_style(theme), theme);
+            button_content(
+                label.clone(),
+                count,
+                subtle_button_text_style(theme),
+                theme,
+                false,
+            );
         },
     );
 }
@@ -1552,21 +1951,44 @@ fn tab_button(
                 count,
                 tab_text_style(selected, theme),
                 theme,
+                false,
             );
         },
     );
 }
 
 #[composable]
-fn button_content(label: String, count: u64, style: TextStyle, theme: ThemeMode) {
+fn button_content(label: String, count: u64, style: TextStyle, theme: ThemeMode, busy: bool) {
     Row(
         Modifier::empty(),
         RowSpec::default().horizontal_arrangement(LinearArrangement::spaced_by(8.0)),
         move || {
-            Text(label.clone(), Modifier::empty(), style.clone());
+            let label = if busy {
+                format!("{}...", label)
+            } else {
+                label.clone()
+            };
+            Text(label, Modifier::empty(), style.clone());
             button_badge(count, theme);
         },
     );
+}
+
+#[composable]
+fn busy_pulse() -> f32 {
+    let transition = rememberInfiniteTransition("busy_button_pulse");
+    transition
+        .animateFloat(
+            0.35,
+            1.0,
+            infiniteRepeatable(
+                AnimationSpec::linear(650),
+                RepeatMode::Reverse,
+                StartOffset::default(),
+            ),
+            "busy_button_pulse",
+        )
+        .value()
 }
 
 #[composable]
@@ -1600,7 +2022,9 @@ fn labeled_field(
     theme: ThemeMode,
     allow_paste: bool,
 ) {
-    let is_changed = state.text() != saved_text;
+    let current_text = state.text();
+    track_field_interaction(field_id, current_text.clone(), ui_preferences.clone());
+    let is_changed = current_text != saved_text;
     Column(
         Modifier::empty().fill_max_width(),
         ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(8.0)),
@@ -1659,7 +2083,9 @@ fn labeled_code_field(
     ui_preferences: MutableState<UiPreferences>,
     theme: ThemeMode,
 ) {
-    let is_changed = state.text() != saved_text;
+    let current_text = state.text();
+    track_field_interaction(field_id, current_text.clone(), ui_preferences.clone());
+    let is_changed = current_text != saved_text;
     Column(
         Modifier::empty().fill_max_width(),
         ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(8.0)),
@@ -1704,6 +2130,28 @@ fn labeled_code_field(
             );
         },
     );
+}
+
+#[composable]
+fn track_field_interaction(
+    field_id: &'static str,
+    current_text: String,
+    ui_preferences: MutableState<UiPreferences>,
+) {
+    let last_text = useState(|| current_text.clone());
+    cranpose_core::LaunchedEffect!(current_text.clone(), {
+        let current_text = current_text.clone();
+        let last_text = last_text.clone();
+        let ui_preferences = ui_preferences.clone();
+        let component_key = format!("field.{field_id}");
+        move |_scope| {
+            if last_text.value() == current_text {
+                return;
+            }
+            last_text.set(current_text);
+            record_component_interaction(ui_preferences, &component_key);
+        }
+    });
 }
 
 #[composable]
@@ -1769,6 +2217,15 @@ fn field_header(
 fn record_button_press(ui_preferences: MutableState<UiPreferences>, count_key: &str) {
     let preferences = ui_preferences.update(|preferences| {
         preferences.increment_button_count(count_key);
+        preferences.mark_component_used(count_key);
+        preferences.clone()
+    });
+    let _ = persist_ui_preferences(&preferences);
+}
+
+fn record_component_interaction(ui_preferences: MutableState<UiPreferences>, component_key: &str) {
+    let preferences = ui_preferences.update(|preferences| {
+        preferences.mark_component_used(component_key);
         preferences.clone()
     });
     let _ = persist_ui_preferences(&preferences);
@@ -1959,31 +2416,50 @@ fn cleanup_capture_artifacts(draft_path: &Path, output_path: &Path) {
     let _ = fs::remove_file(output_path);
 }
 
-fn save_raster_webp_action(
-    draft: &PostDraft,
-    preview_state: MutableState<PreviewState>,
-    status: MutableState<String>,
-) {
-    match save_webp(draft) {
-        Ok(preview) => {
-            let saved_to = preview
-                .last_saved_webp_path
-                .clone()
-                .unwrap_or_else(|| "~/Downloads".to_string());
-            preview_state.set(preview);
-            status.set(format!("Raster WebP saved to {saved_to}"));
+fn run_long_action(pending: PendingAction) -> LongActionResult {
+    match pending.action {
+        LongAction::SaveRasterWebp => LongActionResult::SaveRasterWebp(
+            save_webp(&pending.draft).map_err(|error| error.to_string()),
+        ),
+        LongAction::SaveCranposeWebp => LongActionResult::SaveCranposeWebp(
+            save_compose_webp_result(&pending.draft).map_err(|error| error.to_string()),
+        ),
+        LongAction::PublishBlog => {
+            LongActionResult::PublishBlog(publish_blog_result(&pending.draft))
         }
-        Err(error) => status.set(format!("Saving raster WebP failed: {error}")),
+        LongAction::PostTelegram => {
+            LongActionResult::PostTelegram(post_telegram_channel_result(&pending.draft))
+        }
+        LongAction::PostTelegramComment => LongActionResult::PostTelegramComment(
+            post_telegram_comment_result(&pending.draft, &pending.telegram_post_link),
+        ),
     }
 }
 
-fn save_compose_webp_action(
-    draft: &PostDraft,
+fn finish_long_action(
+    result: LongActionResult,
     preview_state: MutableState<PreviewState>,
+    busy_action: MutableState<Option<LongAction>>,
+    pending_action: MutableState<Option<PendingAction>>,
     status: MutableState<String>,
+    telegram_post_link: MutableState<String>,
 ) {
-    match render_compose_preview_frame(draft) {
-        Ok(frame) => match save_preview_frame_as_webp(frame, draft) {
+    busy_action.set(None);
+    pending_action.set(None);
+
+    match result {
+        LongActionResult::SaveRasterWebp(result) => match result {
+            Ok(preview) => {
+                let saved_to = preview
+                    .last_saved_webp_path
+                    .clone()
+                    .unwrap_or_else(|| "~/Downloads".to_string());
+                preview_state.set(preview);
+                status.set(format!("Raster WebP saved to {saved_to}"));
+            }
+            Err(error) => status.set(format!("Saving raster WebP failed: {error}")),
+        },
+        LongActionResult::SaveCranposeWebp(result) => match result {
             Ok(preview) => {
                 let saved_to = preview
                     .last_saved_webp_path
@@ -1994,109 +2470,100 @@ fn save_compose_webp_action(
             }
             Err(error) => status.set(format!("Saving Cranpose WebP failed: {error}")),
         },
-        Err(error) => status.set(format!("Saving Cranpose WebP failed: {error}")),
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn post_telegram_channel_action(
-    draft: &PostDraft,
-    preview_state: MutableState<PreviewState>,
-    status: MutableState<String>,
-    telegram_post_link: MutableState<String>,
-) {
-    match save_webp(draft) {
-        Ok(preview) => {
-            let Some(webp_path) = preview.last_saved_webp_path.clone() else {
-                status.set("Telegram post failed: WebP save returned no path.".to_string());
-                return;
-            };
-            match run_telegram_channel_script(draft, &webp_path) {
-                Ok(link) => {
-                    preview_state.set(preview);
-                    telegram_post_link.set(link.clone());
-                    status.set(format!("Telegram post published: {link}"));
+        LongActionResult::PublishBlog(result) => match result {
+            Ok(outcome) => {
+                preview_state.set(outcome.preview);
+                let action = match outcome.edit {
+                    BlogArchiveEdit::Inserted => "inserted",
+                    BlogArchiveEdit::Replaced => "replaced",
+                };
+                match outcome.commit_sha {
+                    Some(sha) => status.set(format!(
+                        "Blog post {action}, image copied, committed {sha}."
+                    )),
+                    None => status.set(format!(
+                        "Blog post {action}; archive and image were already committed."
+                    )),
                 }
-                Err(error) => status.set(format!("Telegram post failed: {error}")),
             }
-        }
-        Err(error) => status.set(format!("Telegram post failed: WebP save failed: {error}")),
+            Err(error) => status.set(format!("Publishing blog failed: {error}")),
+        },
+        LongActionResult::PostTelegram(result) => match result {
+            Ok(outcome) => {
+                preview_state.set(outcome.preview);
+                telegram_post_link.set(outcome.link.clone());
+                status.set(format!("Telegram post published: {}", outcome.link));
+            }
+            Err(error) => status.set(format!("Telegram post failed: {error}")),
+        },
+        LongActionResult::PostTelegramComment(result) => match result {
+            Ok(link) => status.set(format!("Telegram comment published: {link}")),
+            Err(error) => status.set(format!("Telegram comment failed: {error}")),
+        },
     }
 }
 
-#[cfg(target_arch = "wasm32")]
-fn post_telegram_channel_action(
-    _draft: &PostDraft,
-    _preview_state: MutableState<PreviewState>,
-    status: MutableState<String>,
-    _telegram_post_link: MutableState<String>,
-) {
-    status.set("Telegram posting is desktop-only.".to_string());
+fn save_compose_webp_result(draft: &PostDraft) -> Result<PreviewState> {
+    let frame = render_compose_preview_frame(draft).map_err(anyhow::Error::msg)?;
+    save_preview_frame_as_webp(frame, draft)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn post_telegram_comment_action(
-    draft: &PostDraft,
-    status: MutableState<String>,
-    telegram_post_link: MutableState<String>,
-) {
-    match run_telegram_comment_script(draft, &telegram_post_link.value()) {
-        Ok(link) => status.set(format!("Telegram comment published: {link}")),
-        Err(error) => status.set(format!("Telegram comment failed: {error}")),
-    }
+fn publish_blog_result(draft: &PostDraft) -> std::result::Result<PublishBlogOutcome, String> {
+    let preview = save_webp(draft).map_err(|error| format!("WebP save failed: {error}"))?;
+    let Some(webp_path) = preview.last_saved_webp_path.clone() else {
+        return Err("WebP save returned no path.".to_string());
+    };
+    let result = publish_blog_post(draft, &webp_path).map_err(|error| error.to_string())?;
+    let edit = match result.edit {
+        ArchiveEdit::Inserted => BlogArchiveEdit::Inserted,
+        ArchiveEdit::Replaced => BlogArchiveEdit::Replaced,
+    };
+    Ok(PublishBlogOutcome {
+        preview,
+        edit,
+        commit_sha: result.commit_sha,
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
-fn post_telegram_comment_action(
-    _draft: &PostDraft,
-    status: MutableState<String>,
-    _telegram_post_link: MutableState<String>,
-) {
-    status.set("Telegram comment posting is desktop-only.".to_string());
+fn publish_blog_result(_draft: &PostDraft) -> std::result::Result<PublishBlogOutcome, String> {
+    Err("Blog publishing is desktop-only.".to_string())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn publish_blog_action(
+fn post_telegram_channel_result(
     draft: &PostDraft,
-    preview_state: MutableState<PreviewState>,
-    status: MutableState<String>,
-) {
-    match save_webp(draft) {
-        Ok(preview) => {
-            let Some(webp_path) = preview.last_saved_webp_path.clone() else {
-                status.set("Publishing blog failed: WebP save returned no path.".to_string());
-                return;
-            };
-            match publish_blog_post(draft, &webp_path) {
-                Ok(result) => {
-                    preview_state.set(preview);
-                    let action = match result.edit {
-                        ArchiveEdit::Inserted => "inserted",
-                        ArchiveEdit::Replaced => "replaced",
-                    };
-                    match result.commit_sha {
-                        Some(sha) => status.set(format!(
-                            "Blog post {action}, image copied, committed {sha}."
-                        )),
-                        None => status.set(format!(
-                            "Blog post {action}; archive and image were already committed."
-                        )),
-                    }
-                }
-                Err(error) => status.set(format!("Publishing blog failed: {error}")),
-            }
-        }
-        Err(error) => status.set(format!("Publishing blog failed: WebP save failed: {error}")),
-    }
+) -> std::result::Result<TelegramPostOutcome, String> {
+    let preview = save_webp(draft).map_err(|error| format!("WebP save failed: {error}"))?;
+    let Some(webp_path) = preview.last_saved_webp_path.clone() else {
+        return Err("WebP save returned no path.".to_string());
+    };
+    let link = run_telegram_channel_script(draft, &webp_path).map_err(|error| error.to_string())?;
+    Ok(TelegramPostOutcome { preview, link })
 }
 
 #[cfg(target_arch = "wasm32")]
-fn publish_blog_action(
+fn post_telegram_channel_result(
     _draft: &PostDraft,
-    _preview_state: MutableState<PreviewState>,
-    status: MutableState<String>,
-) {
-    status.set("Blog publishing is desktop-only.".to_string());
+) -> std::result::Result<TelegramPostOutcome, String> {
+    Err("Telegram posting is desktop-only.".to_string())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn post_telegram_comment_result(
+    draft: &PostDraft,
+    post_link: &str,
+) -> std::result::Result<String, String> {
+    run_telegram_comment_script(draft, post_link).map_err(|error| error.to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn post_telegram_comment_result(
+    _draft: &PostDraft,
+    _post_link: &str,
+) -> std::result::Result<String, String> {
+    Err("Telegram comment posting is desktop-only.".to_string())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2492,6 +2959,30 @@ fn button_text_style(theme: ThemeMode) -> TextStyle {
     }
 }
 
+fn busy_button_text_style(theme: ThemeMode, pulse: f32) -> TextStyle {
+    TextStyle {
+        span_style: SpanStyle {
+            color: Some(button_text_color(theme).with_alpha(0.72 + 0.28 * pulse)),
+            font_size: cranpose::text::TextUnit::Sp(17.0),
+            font_weight: Some(cranpose::text::FontWeight::BOLD),
+            ..SpanStyle::default()
+        },
+        paragraph_style: ParagraphStyle::default(),
+    }
+}
+
+fn disabled_button_text_style(theme: ThemeMode) -> TextStyle {
+    TextStyle {
+        span_style: SpanStyle {
+            color: Some(muted_text_color(theme)),
+            font_size: cranpose::text::TextUnit::Sp(17.0),
+            font_weight: Some(cranpose::text::FontWeight::SEMI_BOLD),
+            ..SpanStyle::default()
+        },
+        paragraph_style: ParagraphStyle::default(),
+    }
+}
+
 fn subtle_button_text_style(theme: ThemeMode) -> TextStyle {
     TextStyle {
         span_style: SpanStyle {
@@ -2628,6 +3119,13 @@ fn button_surface(theme: ThemeMode) -> Color {
     }
 }
 
+fn disabled_button_surface(theme: ThemeMode) -> Color {
+    match theme {
+        ThemeMode::Dark => Color::from_rgb_u8(32, 43, 56),
+        ThemeMode::Light => Color::from_rgb_u8(218, 225, 232),
+    }
+}
+
 fn badge_surface(theme: ThemeMode) -> Color {
     match theme {
         ThemeMode::Dark => Color::from_rgb_u8(44, 59, 76),
@@ -2693,7 +3191,12 @@ fn badge_text_color(theme: ThemeMode) -> Color {
 
 #[cfg(test)]
 mod tests {
-    use super::{APP_HEIGHT, APP_WIDTH, WEB_SURFACE_MAX_DIM, compute_web_canvas_size};
+    use crate::draft::UiPreferences;
+
+    use super::{
+        APP_HEIGHT, APP_WIDTH, ActionButtonId, EditorFieldId, META_FIELDS, WEB_SURFACE_MAX_DIM,
+        compute_web_canvas_size, ordered_action_buttons, ordered_fields,
+    };
 
     #[test]
     fn web_canvas_size_stays_under_surface_limit() {
@@ -2706,5 +3209,31 @@ mod tests {
     fn web_canvas_size_respects_viewport() {
         let (width, height) = compute_web_canvas_size(980.0, 740.0, 1.0);
         assert_eq!((width, height), (980, 740));
+    }
+
+    #[test]
+    fn remembered_action_order_moves_used_buttons_first() {
+        let mut preferences = UiPreferences::default();
+        preferences.mark_component_used(ActionButtonId::CopyBlog.count_key());
+        preferences.mark_component_used(ActionButtonId::PostTelegram.count_key());
+
+        let ordered = ordered_action_buttons(&preferences);
+
+        assert_eq!(ordered[0], ActionButtonId::CopyBlog);
+        assert_eq!(ordered[1], ActionButtonId::PostTelegram);
+        assert_eq!(ordered[2], ActionButtonId::CopyLeetcode);
+    }
+
+    #[test]
+    fn remembered_field_order_moves_used_fields_first() {
+        let mut preferences = UiPreferences::default();
+        preferences.mark_component_used(&EditorFieldId::YoutubeUrl.component_key());
+        preferences.mark_component_used(&EditorFieldId::ProblemTitle.component_key());
+
+        let ordered = ordered_fields(&META_FIELDS, &preferences);
+
+        assert_eq!(ordered[0], EditorFieldId::YoutubeUrl);
+        assert_eq!(ordered[1], EditorFieldId::ProblemTitle);
+        assert_eq!(ordered[2], EditorFieldId::Date);
     }
 }

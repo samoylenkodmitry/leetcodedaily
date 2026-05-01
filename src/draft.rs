@@ -122,6 +122,7 @@ impl ThemeMode {
 pub struct UiPreferences {
     pub theme: ThemeMode,
     button_counts: BTreeMap<String, u64>,
+    component_order: BTreeMap<String, u64>,
 }
 
 impl UiPreferences {
@@ -133,6 +134,22 @@ impl UiPreferences {
         let count = self.button_counts.entry(key.to_string()).or_default();
         *count = count.saturating_add(1);
         *count
+    }
+
+    pub fn component_order(&self, key: &str) -> u64 {
+        self.component_order.get(key).copied().unwrap_or(0)
+    }
+
+    pub fn mark_component_used(&mut self, key: &str) -> u64 {
+        let next_order = self
+            .component_order
+            .values()
+            .copied()
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        self.component_order.insert(key.to_string(), next_order);
+        next_order
     }
 }
 
@@ -652,6 +669,13 @@ fn encode_ui_preferences(preferences: &UiPreferences) -> String {
     encoded.push('\n');
 
     push_encoded_field(&mut encoded, "theme", preferences.theme.as_storage());
+    for (component_key, order) in &preferences.component_order {
+        push_encoded_field(
+            &mut encoded,
+            "component_order",
+            &format!("{component_key}\t{order}"),
+        );
+    }
     for (button_key, count) in &preferences.button_counts {
         push_encoded_field(
             &mut encoded,
@@ -732,6 +756,13 @@ fn set_ui_preference_field(preferences: &mut UiPreferences, name: &str, value: &
                 && let Ok(count) = count.parse::<u64>()
             {
                 preferences.button_counts.insert(key.to_string(), count);
+            }
+        }
+        "component_order" => {
+            if let Some((key, order)) = value.split_once('\t')
+                && let Ok(order) = order.parse::<u64>()
+            {
+                preferences.component_order.insert(key.to_string(), order);
             }
         }
         _ => {}
@@ -1321,6 +1352,8 @@ mod tests {
         preferences.increment_button_count("copy.leetcode");
         preferences.increment_button_count("copy.leetcode");
         preferences.increment_button_count("field.problem_title.clear");
+        preferences.mark_component_used("field.problem_title");
+        preferences.mark_component_used("copy.leetcode");
 
         let encoded = encode_ui_preferences(&preferences);
         let decoded = decode_ui_preferences(&encoded).expect("decode UI preferences");
@@ -1329,6 +1362,9 @@ mod tests {
         assert_eq!(decoded.button_count("copy.leetcode"), 2);
         assert_eq!(decoded.button_count("field.problem_title.clear"), 1);
         assert_eq!(decoded.button_count("missing"), 0);
+        assert_eq!(decoded.component_order("field.problem_title"), 1);
+        assert_eq!(decoded.component_order("copy.leetcode"), 2);
+        assert_eq!(decoded.component_order("missing"), 0);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1341,6 +1377,7 @@ mod tests {
         preferences.increment_button_count("copy.blog");
         preferences.increment_button_count("copy.blog");
         preferences.increment_button_count("theme.toggle");
+        preferences.mark_component_used("copy.blog");
 
         let path = super::ui_preferences_path();
         if let Some(parent) = path.parent() {
@@ -1356,6 +1393,7 @@ mod tests {
         assert_eq!(restored.theme, ThemeMode::Light);
         assert_eq!(restored.button_count("copy.blog"), 2);
         assert_eq!(restored.button_count("theme.toggle"), 1);
+        assert_eq!(restored.component_order("copy.blog"), 1);
 
         let _ = std::fs::remove_file(path);
     }
