@@ -60,6 +60,8 @@ use web_sys::{Blob, BlobPropertyBag, ClipboardItem};
 
 const APP_WIDTH: u32 = 1480;
 const APP_HEIGHT: u32 = 1560;
+const INTERACTIVE_QUEUE_CHIP_WIDTH: f32 = 214.0;
+const INTERACTIVE_QUEUE_CHIP_GAP: f32 = 10.0;
 #[cfg(any(test, target_arch = "wasm32"))]
 const WEB_SURFACE_MAX_DIM: u32 = 1900;
 #[cfg(target_arch = "wasm32")]
@@ -347,6 +349,11 @@ fn App() {
     })
     .with(|fields| fields.clone());
     let ui_preferences = useState(load_ui_preferences);
+    let startup_interactive_queue = remember({
+        let initial_queue = ui_preferences.value().interactive_queue().to_vec();
+        move || initial_queue
+    })
+    .with(|queue| queue.clone());
     let layout_preferences = remember({
         let initial_preferences = ui_preferences.value();
         move || initial_preferences
@@ -363,10 +370,28 @@ fn App() {
     let pending_action = useState(|| None::<PendingAction>);
     let action_request_counter = useState(|| 0u64);
     let busy_action = useState(|| None::<LongAction>);
+    let active_queue_target = useState(|| None::<String>);
     let current_draft = PostDraft::from_fields(&fields);
     let markdown_preview = current_draft.blog_template();
     let queued_action = pending_action.value();
     let theme = ui_preferences.value().theme;
+    let queue_reset_done = useState(|| false);
+
+    cranpose_core::LaunchedEffect!(queue_reset_done.value(), {
+        let queue_reset_done = queue_reset_done.clone();
+        let ui_preferences = ui_preferences.clone();
+        move |_scope| {
+            if queue_reset_done.value() {
+                return;
+            }
+            queue_reset_done.set(true);
+            let preferences = ui_preferences.update(|preferences| {
+                preferences.clear_interactive_queue();
+                preferences.clone()
+            });
+            let _ = persist_ui_preferences(&preferences);
+        }
+    });
 
     cranpose_core::LaunchedEffect!(current_draft.clone(), {
         let draft = current_draft.clone();
@@ -429,9 +454,11 @@ fn App() {
             let saved_draft = saved_draft.clone();
             let ui_preferences = ui_preferences.clone();
             let layout_preferences = layout_preferences.clone();
+            let startup_interactive_queue = startup_interactive_queue.clone();
             let pending_action = pending_action.clone();
             let action_request_counter = action_request_counter.clone();
             let busy_action = busy_action.clone();
+            let active_queue_target = active_queue_target.clone();
             move || {
                 BoxWithConstraints(Modifier::empty().fill_max_size(), {
                     let scroll_state = scroll_state.clone();
@@ -448,9 +475,11 @@ fn App() {
                     let saved_draft = saved_draft.clone();
                     let ui_preferences = ui_preferences.clone();
                     let layout_preferences = layout_preferences.clone();
+                    let startup_interactive_queue = startup_interactive_queue.clone();
                     let pending_action = pending_action.clone();
                     let action_request_counter = action_request_counter.clone();
                     let busy_action = busy_action.clone();
+                    let active_queue_target = active_queue_target.clone();
                     move |scope| {
                         let compact = scope.max_width().0 < 1120.0;
                         let root_horizontal_padding = if scope.max_width().0 < 700.0 {
@@ -483,9 +512,11 @@ fn App() {
                                 let saved_draft = saved_draft.clone();
                                 let ui_preferences = ui_preferences.clone();
                                 let layout_preferences = layout_preferences.clone();
+                                let startup_interactive_queue = startup_interactive_queue.clone();
                                 let pending_action = pending_action.clone();
                                 let action_request_counter = action_request_counter.clone();
                                 let busy_action = busy_action.clone();
+                                let active_queue_target = active_queue_target.clone();
                                 let workspace_scroll_state = scroll_state.clone();
                                 move || {
                                     ActionsCard(
@@ -496,9 +527,11 @@ fn App() {
                                         telegram_post_link.clone(),
                                         ui_preferences.clone(),
                                         layout_preferences.clone(),
+                                        startup_interactive_queue.clone(),
                                         pending_action.clone(),
                                         action_request_counter.clone(),
                                         busy_action.clone(),
+                                        active_queue_target.clone(),
                                         theme,
                                         compact,
                                     );
@@ -522,6 +555,7 @@ fn App() {
                                             let saved_draft = saved_draft.clone();
                                             let ui_preferences = ui_preferences.clone();
                                             let layout_preferences = layout_preferences.clone();
+                                            let active_queue_target = active_queue_target.clone();
                                             move || {
                                                 Column(
                                                     Modifier::empty()
@@ -563,6 +597,7 @@ fn App() {
                                                                 saved_draft.clone(),
                                                                 ui_preferences.clone(),
                                                                 layout_preferences.clone(),
+                                                                active_queue_target.clone(),
                                                                 theme,
                                                                 compact,
                                                             );
@@ -596,6 +631,7 @@ fn GuidedWorkspace(
     saved_draft: PostDraft,
     ui_preferences: MutableState<UiPreferences>,
     layout_preferences: UiPreferences,
+    active_queue_target: MutableState<Option<String>>,
     theme: ThemeMode,
     compact: bool,
 ) {
@@ -605,6 +641,7 @@ fn GuidedWorkspace(
         saved_draft.clone(),
         ui_preferences.clone(),
         layout_preferences.clone(),
+        active_queue_target.clone(),
         theme,
         compact,
     );
@@ -614,6 +651,7 @@ fn GuidedWorkspace(
         saved_draft.clone(),
         ui_preferences.clone(),
         layout_preferences.clone(),
+        active_queue_target.clone(),
         theme,
     );
     CodeCard(
@@ -622,6 +660,7 @@ fn GuidedWorkspace(
         saved_draft,
         ui_preferences,
         layout_preferences,
+        active_queue_target,
         theme,
     );
     PreviewCard(preview_state, preview_loading, theme);
@@ -638,9 +677,11 @@ fn ActionsCard(
     telegram_post_link: MutableState<String>,
     ui_preferences: MutableState<UiPreferences>,
     layout_preferences: UiPreferences,
+    startup_interactive_queue: Vec<String>,
     pending_action: MutableState<Option<PendingAction>>,
     action_request_counter: MutableState<u64>,
     busy_action: MutableState<Option<LongAction>>,
+    active_queue_target: MutableState<Option<String>>,
     theme: ThemeMode,
     compact: bool,
 ) {
@@ -655,9 +696,11 @@ fn ActionsCard(
             let autosave_destination = autosave_destination.clone();
             let ui_preferences = ui_preferences.clone();
             let layout_preferences = layout_preferences.clone();
+            let startup_interactive_queue = startup_interactive_queue.clone();
             let pending_action = pending_action.clone();
             let action_request_counter = action_request_counter.clone();
             let busy_action = busy_action.clone();
+            let active_queue_target = active_queue_target.clone();
             move || {
                 HeaderBar(
                     autosave_destination.clone(),
@@ -670,12 +713,23 @@ fn ActionsCard(
                 let draft = PostDraft::from_fields(&fields);
                 let preview = preview_state.value();
                 let latest_telegram_link = telegram_post_link.value();
-                let next_item = recommended_next_work(
-                    &draft,
-                    &preview,
-                    &latest_telegram_link,
-                    &layout_preferences,
-                );
+                let current_queue = ui_preferences.value().interactive_queue().to_vec();
+                let next_queue_key =
+                    interactive_queue_next_key(&startup_interactive_queue, &current_queue);
+                let next_item = next_queue_key
+                    .as_deref()
+                    .and_then(next_work_item_from_queue_key)
+                    .unwrap_or_else(|| {
+                        recommended_next_work(
+                            &draft,
+                            &preview,
+                            &latest_telegram_link,
+                            &layout_preferences,
+                        )
+                    });
+                let next_title = next_queue_key
+                    .as_deref()
+                    .map(|key| interactive_queue_label(key, false, false));
                 if compact {
                     Column(
                         Modifier::empty().fill_max_width(),
@@ -690,9 +744,11 @@ fn ActionsCard(
                             let pending_action = pending_action.clone();
                             let action_request_counter = action_request_counter.clone();
                             let busy_action = busy_action.clone();
+                            let active_queue_target = active_queue_target.clone();
                             move || {
                                 NextWorkPanel(
                                     next_item,
+                                    next_title.clone(),
                                     fields.clone(),
                                     status.clone(),
                                     telegram_post_link.clone(),
@@ -700,6 +756,7 @@ fn ActionsCard(
                                     pending_action.clone(),
                                     action_request_counter.clone(),
                                     busy_action.clone(),
+                                    active_queue_target.clone(),
                                     theme,
                                     true,
                                 );
@@ -732,9 +789,11 @@ fn ActionsCard(
                             let pending_action = pending_action.clone();
                             let action_request_counter = action_request_counter.clone();
                             let busy_action = busy_action.clone();
+                            let active_queue_target = active_queue_target.clone();
                             move || {
                                 NextWorkPanel(
                                     next_item,
+                                    next_title.clone(),
                                     fields.clone(),
                                     status.clone(),
                                     telegram_post_link.clone(),
@@ -742,6 +801,7 @@ fn ActionsCard(
                                     pending_action.clone(),
                                     action_request_counter.clone(),
                                     busy_action.clone(),
+                                    active_queue_target.clone(),
                                     theme,
                                     false,
                                 );
@@ -762,15 +822,16 @@ fn ActionsCard(
                     );
                 }
 
-                WorkflowRail(
-                    draft.clone(),
-                    preview.last_saved_webp_path.is_some(),
-                    latest_telegram_link.clone(),
-                    next_item,
-                    theme,
-                );
-                WorkQueue(
-                    work_queue(&draft, &preview, &latest_telegram_link, &layout_preferences),
+                InteractiveQueuePanel(
+                    startup_interactive_queue.clone(),
+                    fields.clone(),
+                    status.clone(),
+                    telegram_post_link.clone(),
+                    ui_preferences.clone(),
+                    pending_action.clone(),
+                    action_request_counter.clone(),
+                    busy_action.clone(),
+                    active_queue_target.clone(),
                     theme,
                 );
 
@@ -811,6 +872,7 @@ fn HeaderBar(
                 HeaderTitle(autosave_destination.clone(), theme, true);
                 let next_theme = theme.toggled();
                 theme_button(format!("Theme: {}", theme.label()), theme, move || {
+                    record_button_press(ui_preferences.clone(), "theme.toggle");
                     set_theme_preference(ui_preferences.clone(), next_theme, status.clone());
                 });
             },
@@ -825,6 +887,7 @@ fn HeaderBar(
                 HeaderTitle(autosave_destination.clone(), theme, false);
                 let next_theme = theme.toggled();
                 theme_button(format!("Theme: {}", theme.label()), theme, move || {
+                    record_button_press(ui_preferences.clone(), "theme.toggle");
                     set_theme_preference(ui_preferences.clone(), next_theme, status.clone());
                 });
             },
@@ -960,6 +1023,7 @@ fn StatusStrip(message: String, theme: ThemeMode) {
 #[composable]
 fn NextWorkPanel(
     next_item: NextWorkItem,
+    title_override: Option<String>,
     fields: EditorFields,
     status: MutableState<String>,
     telegram_post_link: MutableState<String>,
@@ -967,6 +1031,7 @@ fn NextWorkPanel(
     pending_action: MutableState<Option<PendingAction>>,
     action_request_counter: MutableState<u64>,
     busy_action: MutableState<Option<LongAction>>,
+    active_queue_target: MutableState<Option<String>>,
     theme: ThemeMode,
     compact: bool,
 ) {
@@ -975,6 +1040,7 @@ fn NextWorkPanel(
     } else {
         Modifier::empty().weight(1.0)
     };
+    let title = title_override.unwrap_or_else(|| next_item.title());
     glass_panel(modifier, theme, 18.0, 18.0, {
         let fields = fields.clone();
         let status = status.clone();
@@ -983,6 +1049,8 @@ fn NextWorkPanel(
         let pending_action = pending_action.clone();
         let action_request_counter = action_request_counter.clone();
         let busy_action = busy_action.clone();
+        let active_queue_target = active_queue_target.clone();
+        let title = title.clone();
         move || {
             Row(
                 Modifier::empty().fill_max_width(),
@@ -995,6 +1063,8 @@ fn NextWorkPanel(
                     let pending_action = pending_action.clone();
                     let action_request_counter = action_request_counter.clone();
                     let busy_action = busy_action.clone();
+                    let active_queue_target = active_queue_target.clone();
+                    let row_title = title.clone();
                     move || {
                         HeroTile(next_item.stage(), theme);
                         Column(
@@ -1009,6 +1079,8 @@ fn NextWorkPanel(
                                 let pending_action = pending_action.clone();
                                 let action_request_counter = action_request_counter.clone();
                                 let busy_action = busy_action.clone();
+                                let active_queue_target = active_queue_target.clone();
+                                let title = row_title.clone();
                                 move || {
                                     Row(
                                         Modifier::empty().fill_max_width(),
@@ -1025,13 +1097,18 @@ fn NextWorkPanel(
                                         },
                                     );
                                     Text(
-                                        next_item.title(),
+                                        title.clone(),
                                         Modifier::empty(),
                                         heading_style(21.0, theme),
                                     );
                                     match next_item {
                                         NextWorkItem::Field(field) => {
-                                            FieldSuggestion(field, theme);
+                                            FieldSuggestion(
+                                                field,
+                                                active_queue_target.clone(),
+                                                status.clone(),
+                                                theme,
+                                            );
                                         }
                                         NextWorkItem::Action(action) => {
                                             focus_action_button(
@@ -1058,64 +1135,165 @@ fn NextWorkPanel(
 }
 
 #[composable]
-fn WorkflowRail(
-    draft: PostDraft,
-    preview_saved: bool,
-    telegram_link: String,
-    next_item: NextWorkItem,
+fn InteractiveQueuePanel(
+    queue: Vec<String>,
+    fields: EditorFields,
+    status: MutableState<String>,
+    telegram_post_link: MutableState<String>,
+    ui_preferences: MutableState<UiPreferences>,
+    pending_action: MutableState<Option<PendingAction>>,
+    action_request_counter: MutableState<u64>,
+    busy_action: MutableState<Option<LongAction>>,
+    active_queue_target: MutableState<Option<String>>,
     theme: ThemeMode,
 ) {
-    let stages = [
-        WorkStage::Prepare,
-        WorkStage::Write,
-        WorkStage::Code,
-        WorkStage::Review,
-        WorkStage::Ship,
-    ];
-    glass_panel(
-        Modifier::empty().fill_max_width(),
-        theme,
-        16.0,
-        12.0,
+    if queue.is_empty() {
+        return;
+    }
+
+    let scroll_state = remember(|| ScrollState::new(0.0)).with(|state| state.clone());
+    let scroll_retry = useState(|| 0u64);
+    let last_auto_scroll_key = useState(|| None::<String>);
+    glass_panel(Modifier::empty().fill_max_width(), theme, 14.0, 10.0, {
+        let fields = fields.clone();
+        let status = status.clone();
+        let telegram_post_link = telegram_post_link.clone();
+        let ui_preferences = ui_preferences.clone();
+        let pending_action = pending_action.clone();
+        let action_request_counter = action_request_counter.clone();
+        let busy_action = busy_action.clone();
+        let active_queue_target = active_queue_target.clone();
+        let scroll_retry = scroll_retry.clone();
+        let last_auto_scroll_key = last_auto_scroll_key.clone();
         move || {
-            let draft = draft.clone();
-            let telegram_link = telegram_link.clone();
-            BoxWithConstraints(Modifier::empty().fill_max_width(), move |scope| {
-                let width = scope.max_width().0;
-                let columns = if width >= 860.0 {
-                    5
-                } else if width >= 560.0 {
-                    3
-                } else {
-                    2
-                };
-                Column(
-                    Modifier::empty().fill_max_width(),
-                    ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(10.0)),
-                    {
-                        let draft = draft.clone();
-                        let telegram_link = telegram_link.clone();
-                        move || {
-                            for row in stages.chunks(columns) {
-                                let row_stages = row.to_vec();
+            Column(
+                Modifier::empty().fill_max_width(),
+                ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(9.0)),
+                {
+                    let fields = fields.clone();
+                    let status = status.clone();
+                    let telegram_post_link = telegram_post_link.clone();
+                    let ui_preferences = ui_preferences.clone();
+                    let pending_action = pending_action.clone();
+                    let action_request_counter = action_request_counter.clone();
+                    let busy_action = busy_action.clone();
+                    let active_queue_target = active_queue_target.clone();
+                    let queue = queue.clone();
+                    let current_queue = ui_preferences.value().interactive_queue().to_vec();
+                    let selected_key = interactive_queue_selected_key(
+                        &queue,
+                        &current_queue,
+                        active_queue_target.value().as_deref(),
+                    );
+                    let scroll_state = scroll_state.clone();
+                    let scroll_retry = scroll_retry.clone();
+                    let last_auto_scroll_key = last_auto_scroll_key.clone();
+                    move || {
+                        Text("Interactive Queue", Modifier::empty(), eyebrow_style(theme));
+                        BoxWithConstraints(Modifier::empty().fill_max_width(), {
+                            let fields = fields.clone();
+                            let status = status.clone();
+                            let telegram_post_link = telegram_post_link.clone();
+                            let ui_preferences = ui_preferences.clone();
+                            let pending_action = pending_action.clone();
+                            let action_request_counter = action_request_counter.clone();
+                            let busy_action = busy_action.clone();
+                            let active_queue_target = active_queue_target.clone();
+                            let row_queue = queue.clone();
+                            let row_current_queue = current_queue.clone();
+                            let selected_key = selected_key.clone();
+                            let scroll_state = scroll_state.clone();
+                            let scroll_retry = scroll_retry.clone();
+                            let last_auto_scroll_key = last_auto_scroll_key.clone();
+                            move |scope| {
+                                let viewport_width = scope.max_width().0;
+                                let selected_index = selected_key
+                                    .as_ref()
+                                    .and_then(|key| row_queue.iter().position(|item| item == key));
+                                let selected_key_for_effect = selected_key.clone();
+                                let max_scroll_probe = scroll_state.max_value();
+                                let scroll_effect_key = (
+                                    selected_key_for_effect.clone(),
+                                    (viewport_width * 10.0).round() as i32,
+                                    (max_scroll_probe * 10.0).round() as i32,
+                                    scroll_retry.value(),
+                                );
+                                cranpose_core::LaunchedEffect!(scroll_effect_key, {
+                                    let scroll_state = scroll_state.clone();
+                                    let scroll_retry = scroll_retry.clone();
+                                    let last_auto_scroll_key = last_auto_scroll_key.clone();
+                                    let selected_key = selected_key_for_effect.clone();
+                                    move |scope| {
+                                        let Some(selected_key) = selected_key.clone() else {
+                                            last_auto_scroll_key.set(None);
+                                            scroll_retry.set(0);
+                                            return;
+                                        };
+                                        if !interactive_queue_should_auto_scroll(
+                                            Some(&selected_key),
+                                            last_auto_scroll_key.value().as_deref(),
+                                            scroll_retry.value(),
+                                        ) {
+                                            return;
+                                        }
+                                        let Some(index) = selected_index else {
+                                            return;
+                                        };
+                                        let current_scroll = scroll_state.value_non_reactive();
+                                        let max_scroll = scroll_state.max_value();
+                                        if max_scroll <= 0.0 {
+                                            schedule_interactive_queue_scroll_retry(
+                                                scope,
+                                                scroll_retry.clone(),
+                                            );
+                                            return;
+                                        }
+                                        let target = interactive_queue_scroll_target(
+                                            index,
+                                            viewport_width,
+                                            current_scroll,
+                                        );
+                                        let clamped_target = target.min(max_scroll).max(0.0);
+                                        scroll_retry.set(0);
+                                        last_auto_scroll_key.set(Some(selected_key));
+                                        if (clamped_target - current_scroll).abs() > 0.5 {
+                                            scroll_state.scroll_to(clamped_target);
+                                        }
+                                    }
+                                });
                                 Row(
-                                    Modifier::empty().fill_max_width(),
-                                    RowSpec::default()
-                                        .horizontal_arrangement(LinearArrangement::spaced_by(12.0)),
+                                    Modifier::empty()
+                                        .fill_max_width()
+                                        .height(58.0)
+                                        .clip_to_bounds()
+                                        .horizontal_scroll(scroll_state.clone(), false),
+                                    RowSpec::default().horizontal_arrangement(
+                                        LinearArrangement::spaced_by(INTERACTIVE_QUEUE_CHIP_GAP),
+                                    ),
                                     {
-                                        let draft = draft.clone();
-                                        let telegram_link = telegram_link.clone();
+                                        let fields = fields.clone();
+                                        let status = status.clone();
+                                        let telegram_post_link = telegram_post_link.clone();
+                                        let ui_preferences = ui_preferences.clone();
+                                        let pending_action = pending_action.clone();
+                                        let action_request_counter = action_request_counter.clone();
+                                        let busy_action = busy_action.clone();
+                                        let active_queue_target = active_queue_target.clone();
+                                        let row_queue = row_queue.clone();
+                                        let row_current_queue = row_current_queue.clone();
                                         move || {
-                                            for stage in &row_stages {
-                                                workflow_stage_chip(
-                                                    *stage,
-                                                    stage_status(
-                                                        *stage,
-                                                        &draft,
-                                                        preview_saved,
-                                                        &telegram_link,
-                                                    ),
-                                                    *stage == next_item.stage(),
+                                            for item_key in &row_queue {
+                                                InteractiveQueueChip(
+                                                    item_key.clone(),
+                                                    row_current_queue.contains(item_key),
+                                                    fields.clone(),
+                                                    status.clone(),
+                                                    telegram_post_link.clone(),
+                                                    ui_preferences.clone(),
+                                                    pending_action.clone(),
+                                                    action_request_counter.clone(),
+                                                    busy_action.clone(),
+                                                    active_queue_target.clone(),
                                                     theme,
                                                 );
                                             }
@@ -1123,115 +1301,223 @@ fn WorkflowRail(
                                     },
                                 );
                             }
-                        }
-                    },
-                );
-            });
-        },
-    );
-}
-
-#[composable]
-fn workflow_stage_chip(stage: WorkStage, status: &'static str, active: bool, theme: ThemeMode) {
-    let icon = stage.icon();
-    glass_panel(
-        Modifier::empty().weight(1.0),
-        theme,
-        13.0,
-        10.0,
-        move || {
-            Row(
-                icon_overlay_modifier(
-                    Modifier::empty().fill_max_width(),
-                    icon,
-                    58.0,
-                    0.0,
-                    theme,
-                    active,
-                ),
-                RowSpec::default().horizontal_arrangement(LinearArrangement::spaced_by(12.0)),
-                move || {
-                    Spacer(Size::new(58.0, 0.0));
-                    Column(
-                        Modifier::empty().weight(1.0),
-                        ColumnSpec::default()
-                            .vertical_arrangement(LinearArrangement::spaced_by(3.0)),
-                        move || {
-                            BasicText(
-                                stage.label(),
-                                Modifier::empty().fill_max_width(),
-                                label_style(theme, active),
-                                TextOverflow::Ellipsis,
-                                false,
-                                1,
-                                1,
-                            );
-                            BasicText(
-                                status.to_string(),
-                                Modifier::empty().fill_max_width(),
-                                muted_style(theme),
-                                TextOverflow::Ellipsis,
-                                false,
-                                1,
-                                1,
-                            );
-                        },
-                    );
-                    StatusDot(
-                        status == "Ready" || status == "Saved" || status == "Posted",
-                        theme,
-                    );
-                },
-            );
-        },
-    );
-}
-
-#[composable]
-fn WorkQueue(queue: Vec<NextWorkItem>, theme: ThemeMode) {
-    glass_panel(
-        Modifier::empty().fill_max_width(),
-        theme,
-        14.0,
-        10.0,
-        move || {
-            let queue = queue.clone();
-            Row(
-                Modifier::empty().fill_max_width(),
-                RowSpec::default().horizontal_arrangement(LinearArrangement::spaced_by(10.0)),
-                move || {
-                    for (index, item) in queue.iter().take(6).enumerate() {
-                        queue_chip(index + 1, *item, theme);
+                        });
+                        QueueCurrentRow(
+                            active_queue_target.value(),
+                            fields.clone(),
+                            status.clone(),
+                            ui_preferences.clone(),
+                            theme,
+                        );
                     }
                 },
             );
+        }
+    });
+}
+
+#[composable]
+fn QueueCurrentRow(
+    active_key: Option<String>,
+    fields: EditorFields,
+    status: MutableState<String>,
+    ui_preferences: MutableState<UiPreferences>,
+    theme: ThemeMode,
+) {
+    let Some(active_key) = active_key else {
+        return;
+    };
+    let Some((field, FieldQueueCommand::Edit)) = parse_field_queue_key(&active_key) else {
+        return;
+    };
+
+    cranpose_core::with_key(&active_key, || {
+        Column(
+            Modifier::empty().fill_max_width(),
+            ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(7.0)),
+            {
+                let fields = fields.clone();
+                let status = status.clone();
+                let ui_preferences = ui_preferences.clone();
+                move || {
+                    Text(
+                        "Current",
+                        Modifier::empty(),
+                        queue_current_label_style(theme),
+                    );
+                    QueueCurrentEditorField(
+                        field,
+                        fields.clone(),
+                        status.clone(),
+                        ui_preferences.clone(),
+                        theme,
+                    );
+                }
+            },
+        );
+    });
+}
+
+#[composable]
+fn QueueCurrentEditorField(
+    field: EditorFieldId,
+    fields: EditorFields,
+    status: MutableState<String>,
+    ui_preferences: MutableState<UiPreferences>,
+    theme: ThemeMode,
+) {
+    let state = field_state(&fields, field);
+    let saved_text = state.text();
+    match field {
+        EditorFieldId::KotlinCode | EditorFieldId::RustCode => labeled_code_field(
+            field.label(),
+            field.field_id(),
+            state,
+            saved_text,
+            6,
+            14,
+            status,
+            ui_preferences,
+            false,
+            theme,
+        ),
+        EditorFieldId::ProblemTldr | EditorFieldId::Intuition | EditorFieldId::Approach => {
+            labeled_field(
+                field.label(),
+                field.field_id(),
+                state,
+                saved_text,
+                3,
+                8,
+                status,
+                ui_preferences,
+                false,
+                theme,
+                true,
+            );
+        }
+        EditorFieldId::TimeComplexity | EditorFieldId::SpaceComplexity => labeled_field(
+            field.label(),
+            field.field_id(),
+            state,
+            saved_text,
+            2,
+            4,
+            status,
+            ui_preferences,
+            false,
+            theme,
+            true,
+        ),
+        _ => labeled_field(
+            field.label(),
+            field.field_id(),
+            state,
+            saved_text,
+            1,
+            1,
+            status,
+            ui_preferences,
+            false,
+            theme,
+            true,
+        ),
+    }
+}
+
+#[composable]
+fn InteractiveQueueChip(
+    item_key: String,
+    done: bool,
+    fields: EditorFields,
+    status: MutableState<String>,
+    telegram_post_link: MutableState<String>,
+    ui_preferences: MutableState<UiPreferences>,
+    pending_action: MutableState<Option<PendingAction>>,
+    action_request_counter: MutableState<u64>,
+    busy_action: MutableState<Option<LongAction>>,
+    active_queue_target: MutableState<Option<String>>,
+    theme: ThemeMode,
+) {
+    let action = ActionButtonId::from_count_key(&item_key);
+    let long_action = action.and_then(ActionButtonId::long_action);
+    let action_busy = busy_action.value();
+    let is_busy = long_action.is_some() && action_busy == long_action;
+    let disabled = long_action.is_some() && action_busy.is_some();
+    let busy_pulse = if is_busy { busy_pulse() } else { 0.0 };
+    let invokes_button = queue_item_invokes_button(&item_key);
+    let background =
+        interactive_queue_surface(theme, done, disabled, is_busy, busy_pulse, invokes_button);
+    Button(
+        glass_button_modifier(
+            Modifier::empty()
+                .width(INTERACTIVE_QUEUE_CHIP_WIDTH)
+                .height(48.0),
+            theme,
+            !disabled,
+            done || is_busy,
+            background,
+            10.0,
+        )
+        .padding_symmetric(10.0, 8.0),
+        {
+            let item_key = item_key.clone();
+            move || {
+                if disabled {
+                    return;
+                }
+                handle_interactive_queue_press(
+                    &item_key,
+                    fields.clone(),
+                    status.clone(),
+                    telegram_post_link.clone(),
+                    ui_preferences.clone(),
+                    pending_action.clone(),
+                    action_request_counter.clone(),
+                    busy_action.clone(),
+                    active_queue_target.clone(),
+                    theme,
+                );
+            }
+        },
+        move || {
+            interactive_queue_content(
+                interactive_queue_icon(&item_key),
+                interactive_queue_label(&item_key, done, is_busy),
+                interactive_queue_text_style(theme, done, disabled, is_busy, busy_pulse),
+                theme,
+                is_busy,
+            );
         },
     );
 }
 
 #[composable]
-fn queue_chip(index: usize, item: NextWorkItem, theme: ThemeMode) {
-    let active = index == 1;
-    ComposeBox(
-        glass_button_modifier(
-            Modifier::empty().weight(1.0),
+fn interactive_queue_content(
+    icon: UiIcon,
+    label: String,
+    style: TextStyle,
+    theme: ThemeMode,
+    busy: bool,
+) {
+    let icon_size = 24.0;
+    let label = if busy { format!("{label}...") } else { label };
+    Row(
+        icon_overlay_modifier(
+            Modifier::empty().fill_max_width(),
+            icon,
+            icon_size,
+            0.0,
             theme,
-            active,
-            false,
-            if active {
-                Color::from_rgb_u8(37, 143, 225)
-            } else {
-                Color::from_rgb_u8(225, 246, 255)
-            },
-            9.0,
-        )
-        .padding_symmetric(12.0, 7.0),
-        BoxSpec::default().content_alignment(Alignment::CENTER),
+            busy,
+        ),
+        RowSpec::default().horizontal_arrangement(LinearArrangement::spaced_by(5.0)),
         move || {
+            Spacer(Size::new(icon_size, 0.0));
             BasicText(
-                format!("{index}. {}", item.short_label()),
-                Modifier::empty(),
-                queue_text_style(theme),
+                label.clone(),
+                Modifier::empty().weight(1.0),
+                style.clone(),
                 TextOverflow::Ellipsis,
                 false,
                 1,
@@ -1439,6 +1725,149 @@ fn focus_action_button(
     );
 }
 
+fn handle_interactive_queue_press(
+    item_key: &str,
+    fields: EditorFields,
+    status: MutableState<String>,
+    telegram_post_link: MutableState<String>,
+    ui_preferences: MutableState<UiPreferences>,
+    pending_action: MutableState<Option<PendingAction>>,
+    action_request_counter: MutableState<u64>,
+    busy_action: MutableState<Option<LongAction>>,
+    active_queue_target: MutableState<Option<String>>,
+    theme: ThemeMode,
+) {
+    if let Some(action) = ActionButtonId::from_count_key(item_key) {
+        record_button_press(ui_preferences, item_key);
+        handle_action_button(
+            action,
+            fields,
+            status,
+            telegram_post_link,
+            pending_action,
+            action_request_counter,
+            busy_action,
+        );
+        return;
+    }
+
+    if item_key == "theme.toggle" {
+        record_button_press(ui_preferences.clone(), item_key);
+        set_theme_preference(ui_preferences, theme.toggled(), status);
+        return;
+    }
+
+    if let Some((field, command)) = parse_field_queue_key(item_key) {
+        match command {
+            FieldQueueCommand::Edit => {
+                active_queue_target.set(Some(field.component_key()));
+                status.set(format!("Current queue row: {}.", field.label()));
+            }
+            FieldQueueCommand::Paste => {
+                record_button_press(ui_preferences, item_key);
+                paste_text_from_clipboard(field_state(&fields, field), status, field.label());
+            }
+            FieldQueueCommand::Clear => {
+                record_button_press(ui_preferences, item_key);
+                clear_field(field_state(&fields, field), status, field.label());
+            }
+        }
+        return;
+    }
+
+    active_queue_target.set(Some(item_key.to_string()));
+    status.set(format!("Current queued target: {item_key}."));
+}
+
+fn interactive_queue_label(item_key: &str, done: bool, busy: bool) -> String {
+    let label = if let Some(action) = ActionButtonId::from_count_key(item_key) {
+        action.label().to_string()
+    } else if item_key == "theme.toggle" {
+        "Toggle Theme".to_string()
+    } else if let Some((field, command)) = parse_field_queue_key(item_key) {
+        match command {
+            FieldQueueCommand::Edit => format!("Edit {}", field.label()),
+            FieldQueueCommand::Paste => format!("Paste {}", field.label()),
+            FieldQueueCommand::Clear => format!("Clear {}", field.label()),
+        }
+    } else {
+        item_key.to_string()
+    };
+
+    if done && !busy {
+        format!("Done: {label}")
+    } else {
+        label
+    }
+}
+
+fn queue_item_invokes_button(item_key: &str) -> bool {
+    ActionButtonId::from_count_key(item_key).is_some()
+        || item_key == "theme.toggle"
+        || parse_field_queue_key(item_key)
+            .is_some_and(|(_, command)| command != FieldQueueCommand::Edit)
+}
+
+fn interactive_queue_icon(item_key: &str) -> UiIcon {
+    if let Some(action) = ActionButtonId::from_count_key(item_key) {
+        return action.icon();
+    }
+    if item_key == "theme.toggle" {
+        return UiIcon::Theme;
+    }
+    if let Some((field, command)) = parse_field_queue_key(item_key) {
+        return match command {
+            FieldQueueCommand::Edit => field.icon(),
+            FieldQueueCommand::Paste => UiIcon::Paste,
+            FieldQueueCommand::Clear => UiIcon::Clear,
+        };
+    }
+    UiIcon::Generic
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FieldQueueCommand {
+    Edit,
+    Paste,
+    Clear,
+}
+
+fn parse_field_queue_key(item_key: &str) -> Option<(EditorFieldId, FieldQueueCommand)> {
+    let field_key = item_key.strip_prefix("field.")?;
+    if let Some(field_id) = field_key.strip_suffix(".paste") {
+        return EditorFieldId::from_field_id(field_id)
+            .map(|field| (field, FieldQueueCommand::Paste));
+    }
+    if let Some(field_id) = field_key.strip_suffix(".clear") {
+        return EditorFieldId::from_field_id(field_id)
+            .map(|field| (field, FieldQueueCommand::Clear));
+    }
+    EditorFieldId::from_field_id(field_key).map(|field| (field, FieldQueueCommand::Edit))
+}
+
+fn field_state(fields: &EditorFields, field: EditorFieldId) -> TextFieldState {
+    match field {
+        EditorFieldId::Date => fields.date.clone(),
+        EditorFieldId::ProblemTitle => fields.problem_title.clone(),
+        EditorFieldId::ProblemUrl => fields.problem_url.clone(),
+        EditorFieldId::Difficulty => fields.difficulty.clone(),
+        EditorFieldId::BlogPostUrl => fields.blog_post_url.clone(),
+        EditorFieldId::SubstackUrl => fields.substack_url.clone(),
+        EditorFieldId::YoutubeUrl => fields.youtube_url.clone(),
+        EditorFieldId::ReferenceUrl => fields.reference_url.clone(),
+        EditorFieldId::TelegramText => fields.telegram_text.clone(),
+        EditorFieldId::ProblemTldr => fields.problem_tldr.clone(),
+        EditorFieldId::Intuition => fields.intuition.clone(),
+        EditorFieldId::Approach => fields.approach.clone(),
+        EditorFieldId::TimeComplexity => fields.time_complexity.clone(),
+        EditorFieldId::SpaceComplexity => fields.space_complexity.clone(),
+        EditorFieldId::KotlinRuntimeMs => fields.kotlin_runtime_ms.clone(),
+        EditorFieldId::KotlinCode => fields.kotlin_code.clone(),
+        EditorFieldId::RustRuntimeMs => fields.rust_runtime_ms.clone(),
+        EditorFieldId::RustCode => fields.rust_code.clone(),
+    }
+}
+
 fn handle_action_button(
     action: ActionButtonId,
     fields: EditorFields,
@@ -1530,6 +1959,13 @@ fn enqueue_long_action(
 }
 
 impl ActionButtonId {
+    fn from_count_key(key: &str) -> Option<Self> {
+        ACTION_BUTTONS
+            .iter()
+            .copied()
+            .find(|action| action.count_key() == key)
+    }
+
     fn icon(self) -> UiIcon {
         match self {
             Self::RefreshRasterPreview => UiIcon::Refresh,
@@ -1692,6 +2128,106 @@ fn work_queue(
     queue
 }
 
+fn interactive_queue_next_key(queue: &[String], done_queue: &[String]) -> Option<String> {
+    queue
+        .iter()
+        .filter(|key| !done_queue.contains(key))
+        .find(|key| next_work_item_from_queue_key(key).is_some())
+        .cloned()
+        .or_else(|| {
+            queue
+                .iter()
+                .find(|key| next_work_item_from_queue_key(key).is_some())
+                .cloned()
+        })
+}
+
+fn interactive_queue_selected_key(
+    queue: &[String],
+    done_queue: &[String],
+    active_queue_target: Option<&str>,
+) -> Option<String> {
+    active_queue_target
+        .filter(|target| {
+            queue.iter().any(|item| item.as_str() == *target)
+                && !done_queue.iter().any(|item| item.as_str() == *target)
+        })
+        .map(str::to_string)
+        .or_else(|| interactive_queue_next_key(queue, done_queue))
+}
+
+fn interactive_queue_scroll_target(index: usize, viewport_width: f32, current_scroll: f32) -> f32 {
+    let item_left = index as f32 * (INTERACTIVE_QUEUE_CHIP_WIDTH + INTERACTIVE_QUEUE_CHIP_GAP);
+    let item_center = item_left + INTERACTIVE_QUEUE_CHIP_WIDTH * 0.5;
+    let visible_center = item_center - current_scroll;
+    if visible_center > viewport_width * 0.5 {
+        (item_center - viewport_width * 0.42).max(0.0)
+    } else if item_left < current_scroll {
+        item_left.max(0.0)
+    } else {
+        current_scroll.max(0.0)
+    }
+}
+
+fn interactive_queue_should_auto_scroll(
+    selected_key: Option<&str>,
+    last_auto_scroll_key: Option<&str>,
+    retry: u64,
+) -> bool {
+    match selected_key {
+        Some(key) => last_auto_scroll_key != Some(key) || retry > 0,
+        None => false,
+    }
+}
+
+fn bump_interactive_queue_scroll_retry(scroll_retry: MutableState<u64>) {
+    scroll_retry.update(|value| {
+        *value = value.saturating_add(1).min(16);
+        *value
+    });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn schedule_interactive_queue_scroll_retry(
+    scope: cranpose_core::LaunchedEffectScope,
+    scroll_retry: MutableState<u64>,
+) {
+    if scroll_retry.value() >= 16 {
+        return;
+    }
+    scope.launch_background(
+        |token| async move {
+            std::thread::sleep(Duration::from_millis(35));
+            token.is_active()
+        },
+        move |active| {
+            if active {
+                bump_interactive_queue_scroll_retry(scroll_retry);
+            }
+        },
+    );
+}
+
+#[cfg(target_arch = "wasm32")]
+fn schedule_interactive_queue_scroll_retry(
+    scope: cranpose_core::LaunchedEffectScope,
+    scroll_retry: MutableState<u64>,
+) {
+    if scroll_retry.value() >= 16 {
+        return;
+    }
+    scope.post_ui(move || {
+        bump_interactive_queue_scroll_retry(scroll_retry);
+    });
+}
+
+fn next_work_item_from_queue_key(item_key: &str) -> Option<NextWorkItem> {
+    if let Some(action) = ActionButtonId::from_count_key(item_key) {
+        return Some(NextWorkItem::Action(action));
+    }
+    parse_field_queue_key(item_key).map(|(field, _)| NextWorkItem::Field(field))
+}
+
 fn ordered_workflow_fields(preferences: &UiPreferences) -> Vec<EditorFieldId> {
     let mut fields = WORKFLOW_FIELDS.to_vec();
     fields.sort_by_key(|field| {
@@ -1775,69 +2311,6 @@ fn action_stage(action: ActionButtonId) -> WorkStage {
     }
 }
 
-fn stage_status(
-    stage: WorkStage,
-    draft: &PostDraft,
-    preview_saved: bool,
-    telegram_link: &str,
-) -> &'static str {
-    match stage {
-        WorkStage::Prepare => {
-            if [EditorFieldId::ProblemTitle, EditorFieldId::ProblemUrl]
-                .into_iter()
-                .any(|field| field_needs_attention(field, draft))
-            {
-                "Needs basics"
-            } else {
-                "Ready"
-            }
-        }
-        WorkStage::Write => {
-            if [
-                EditorFieldId::ProblemTldr,
-                EditorFieldId::Intuition,
-                EditorFieldId::Approach,
-            ]
-            .into_iter()
-            .any(|field| field_needs_attention(field, draft))
-            {
-                "Drafting"
-            } else {
-                "Ready"
-            }
-        }
-        WorkStage::Code => {
-            if [
-                EditorFieldId::KotlinCode,
-                EditorFieldId::RustCode,
-                EditorFieldId::KotlinRuntimeMs,
-                EditorFieldId::RustRuntimeMs,
-            ]
-            .into_iter()
-            .any(|field| field_needs_attention(field, draft))
-            {
-                "Needs code"
-            } else {
-                "Ready"
-            }
-        }
-        WorkStage::Review => {
-            if preview_saved {
-                "Saved"
-            } else {
-                "Needs image"
-            }
-        }
-        WorkStage::Ship => {
-            if telegram_link.trim().is_empty() {
-                "Pending"
-            } else {
-                "Posted"
-            }
-        }
-    }
-}
-
 impl WorkStage {
     fn icon(self) -> UiIcon {
         match self {
@@ -1881,13 +2354,6 @@ impl NextWorkItem {
     fn title(self) -> String {
         match self {
             Self::Field(field) => format!("Fill {}", field.label()),
-            Self::Action(action) => action.label().to_string(),
-        }
-    }
-
-    fn short_label(self) -> String {
-        match self {
-            Self::Field(field) => field.label().to_string(),
             Self::Action(action) => action.label().to_string(),
         }
     }
@@ -2260,6 +2726,7 @@ fn ProblemMetaCard(
     saved_draft: PostDraft,
     ui_preferences: MutableState<UiPreferences>,
     _layout_preferences: UiPreferences,
+    active_queue_target: MutableState<Option<String>>,
     theme: ThemeMode,
     compact: bool,
 ) {
@@ -2268,6 +2735,7 @@ fn ProblemMetaCard(
         let status = status.clone();
         let saved_draft = saved_draft.clone();
         let ui_preferences = ui_preferences.clone();
+        let active_queue_target = active_queue_target.clone();
         move || {
             Column(
                 Modifier::empty().fill_max_width(),
@@ -2277,6 +2745,7 @@ fn ProblemMetaCard(
                     let status = status.clone();
                     let saved_draft = saved_draft.clone();
                     let ui_preferences = ui_preferences.clone();
+                    let active_queue_target = active_queue_target.clone();
                     move || {
                         SectionHeader("Problem Meta", UiIcon::Document, theme);
                         if compact {
@@ -2296,6 +2765,7 @@ fn ProblemMetaCard(
                                 saved_draft.clone(),
                                 status.clone(),
                                 ui_preferences.clone(),
+                                active_queue_target.clone(),
                                 theme,
                                 false,
                             );
@@ -2309,6 +2779,7 @@ fn ProblemMetaCard(
                                     let saved_draft = saved_draft.clone();
                                     let status = status.clone();
                                     let ui_preferences = ui_preferences.clone();
+                                    let active_queue_target = active_queue_target.clone();
                                     move || {
                                         MetaFieldColumn(
                                             vec![
@@ -2322,6 +2793,7 @@ fn ProblemMetaCard(
                                             saved_draft.clone(),
                                             status.clone(),
                                             ui_preferences.clone(),
+                                            active_queue_target.clone(),
                                             theme,
                                             true,
                                         );
@@ -2336,6 +2808,7 @@ fn ProblemMetaCard(
                                             saved_draft.clone(),
                                             status.clone(),
                                             ui_preferences.clone(),
+                                            active_queue_target.clone(),
                                             theme,
                                             true,
                                         );
@@ -2357,6 +2830,7 @@ fn MetaFieldColumn(
     saved_draft: PostDraft,
     status: MutableState<String>,
     ui_preferences: MutableState<UiPreferences>,
+    active_queue_target: MutableState<Option<String>>,
     theme: ThemeMode,
     weighted: bool,
 ) {
@@ -2374,6 +2848,7 @@ fn MetaFieldColumn(
                 let saved_draft = saved_draft.clone();
                 let status = status.clone();
                 let ui_preferences = ui_preferences.clone();
+                let active_queue_target = active_queue_target.clone();
                 move |field| {
                     EditorField(
                         *field,
@@ -2381,6 +2856,7 @@ fn MetaFieldColumn(
                         saved_draft.clone(),
                         status.clone(),
                         ui_preferences.clone(),
+                        active_queue_target.clone(),
                         theme,
                     );
                 }
@@ -2396,6 +2872,7 @@ fn WriteupCard(
     saved_draft: PostDraft,
     ui_preferences: MutableState<UiPreferences>,
     layout_preferences: UiPreferences,
+    active_queue_target: MutableState<Option<String>>,
     theme: ThemeMode,
 ) {
     section_card(theme, {
@@ -2404,6 +2881,7 @@ fn WriteupCard(
         let saved_draft = saved_draft.clone();
         let ui_preferences = ui_preferences.clone();
         let layout_preferences = layout_preferences.clone();
+        let active_queue_target = active_queue_target.clone();
         move || {
             Column(
                 Modifier::empty().fill_max_width(),
@@ -2413,6 +2891,7 @@ fn WriteupCard(
                     let status = status.clone();
                     let saved_draft = saved_draft.clone();
                     let ui_preferences = ui_preferences.clone();
+                    let active_queue_target = active_queue_target.clone();
                     let ordered_fields = ordered_fields(&WRITEUP_FIELDS, &layout_preferences);
                     move || {
                         Text("Writeup", Modifier::empty(), heading_style(28.0, theme));
@@ -2421,6 +2900,7 @@ fn WriteupCard(
                             let saved_draft = saved_draft.clone();
                             let status = status.clone();
                             let ui_preferences = ui_preferences.clone();
+                            let active_queue_target = active_queue_target.clone();
                             move |field| {
                                 EditorField(
                                     *field,
@@ -2428,6 +2908,7 @@ fn WriteupCard(
                                     saved_draft.clone(),
                                     status.clone(),
                                     ui_preferences.clone(),
+                                    active_queue_target.clone(),
                                     theme,
                                 );
                             }
@@ -2446,6 +2927,7 @@ fn CodeCard(
     saved_draft: PostDraft,
     ui_preferences: MutableState<UiPreferences>,
     layout_preferences: UiPreferences,
+    active_queue_target: MutableState<Option<String>>,
     theme: ThemeMode,
 ) {
     section_card(theme, {
@@ -2454,6 +2936,7 @@ fn CodeCard(
         let saved_draft = saved_draft.clone();
         let ui_preferences = ui_preferences.clone();
         let layout_preferences = layout_preferences.clone();
+        let active_queue_target = active_queue_target.clone();
         move || {
             Column(
                 Modifier::empty().fill_max_width(),
@@ -2463,6 +2946,7 @@ fn CodeCard(
                     let status = status.clone();
                     let saved_draft = saved_draft.clone();
                     let ui_preferences = ui_preferences.clone();
+                    let active_queue_target = active_queue_target.clone();
                     let ordered_fields = ordered_fields(&CODE_FIELDS, &layout_preferences);
                     move || {
                         Text("Code Blocks", Modifier::empty(), heading_style(28.0, theme));
@@ -2471,6 +2955,7 @@ fn CodeCard(
                             let saved_draft = saved_draft.clone();
                             let status = status.clone();
                             let ui_preferences = ui_preferences.clone();
+                            let active_queue_target = active_queue_target.clone();
                             move |field| {
                                 EditorField(
                                     *field,
@@ -2478,6 +2963,7 @@ fn CodeCard(
                                     saved_draft.clone(),
                                     status.clone(),
                                     ui_preferences.clone(),
+                                    active_queue_target.clone(),
                                     theme,
                                 );
                             }
@@ -2496,8 +2982,10 @@ fn EditorField(
     saved_draft: PostDraft,
     status: MutableState<String>,
     ui_preferences: MutableState<UiPreferences>,
+    _active_queue_target: MutableState<Option<String>>,
     theme: ThemeMode,
 ) {
+    let highlighted = false;
     match field {
         EditorFieldId::Date => labeled_field(
             field.label(),
@@ -2508,6 +2996,7 @@ fn EditorField(
             1,
             status,
             ui_preferences,
+            highlighted,
             theme,
             true,
         ),
@@ -2520,6 +3009,7 @@ fn EditorField(
             1,
             status,
             ui_preferences,
+            highlighted,
             theme,
             true,
         ),
@@ -2532,6 +3022,7 @@ fn EditorField(
             1,
             status,
             ui_preferences,
+            highlighted,
             theme,
             true,
         ),
@@ -2544,6 +3035,7 @@ fn EditorField(
             1,
             status,
             ui_preferences,
+            highlighted,
             theme,
             true,
         ),
@@ -2556,6 +3048,7 @@ fn EditorField(
             1,
             status,
             ui_preferences,
+            highlighted,
             theme,
             true,
         ),
@@ -2568,6 +3061,7 @@ fn EditorField(
             1,
             status,
             ui_preferences,
+            highlighted,
             theme,
             true,
         ),
@@ -2580,6 +3074,7 @@ fn EditorField(
             1,
             status,
             ui_preferences,
+            highlighted,
             theme,
             true,
         ),
@@ -2592,6 +3087,7 @@ fn EditorField(
             1,
             status,
             ui_preferences,
+            highlighted,
             theme,
             true,
         ),
@@ -2604,6 +3100,7 @@ fn EditorField(
             2,
             status,
             ui_preferences,
+            highlighted,
             theme,
             true,
         ),
@@ -2616,6 +3113,7 @@ fn EditorField(
             6,
             status,
             ui_preferences,
+            highlighted,
             theme,
             true,
         ),
@@ -2628,6 +3126,7 @@ fn EditorField(
             14,
             status,
             ui_preferences,
+            highlighted,
             theme,
             true,
         ),
@@ -2640,6 +3139,7 @@ fn EditorField(
             14,
             status,
             ui_preferences,
+            highlighted,
             theme,
             true,
         ),
@@ -2652,6 +3152,7 @@ fn EditorField(
             2,
             status,
             ui_preferences,
+            highlighted,
             theme,
             false,
         ),
@@ -2664,6 +3165,7 @@ fn EditorField(
             2,
             status,
             ui_preferences,
+            highlighted,
             theme,
             false,
         ),
@@ -2676,6 +3178,7 @@ fn EditorField(
             1,
             status,
             ui_preferences,
+            highlighted,
             theme,
             false,
         ),
@@ -2688,6 +3191,7 @@ fn EditorField(
             18,
             status,
             ui_preferences,
+            highlighted,
             theme,
         ),
         EditorFieldId::RustRuntimeMs => labeled_field(
@@ -2699,6 +3203,7 @@ fn EditorField(
             1,
             status,
             ui_preferences,
+            highlighted,
             theme,
             false,
         ),
@@ -2711,12 +3216,20 @@ fn EditorField(
             18,
             status,
             ui_preferences,
+            highlighted,
             theme,
         ),
     }
 }
 
 impl EditorFieldId {
+    fn from_field_id(field_id: &str) -> Option<Self> {
+        WORKFLOW_FIELDS
+            .iter()
+            .copied()
+            .find(|field| field.field_id() == field_id)
+    }
+
     fn icon(self) -> UiIcon {
         UiIcon::for_field_id(self.field_id())
     }
@@ -3438,9 +3951,14 @@ fn HeroTile(stage: WorkStage, theme: ThemeMode) {
 }
 
 #[composable]
-fn FieldSuggestion(field: EditorFieldId, theme: ThemeMode) {
+fn FieldSuggestion(
+    field: EditorFieldId,
+    active_queue_target: MutableState<Option<String>>,
+    status: MutableState<String>,
+    theme: ThemeMode,
+) {
     let icon = field.icon();
-    ComposeBox(
+    Button(
         glass_button_modifier(
             Modifier::empty().fill_max_width(),
             theme,
@@ -3450,7 +3968,10 @@ fn FieldSuggestion(field: EditorFieldId, theme: ThemeMode) {
             11.0,
         )
         .padding_symmetric(13.0, 11.0),
-        BoxSpec::default(),
+        move || {
+            active_queue_target.set(Some(field.component_key()));
+            status.set(format!("Current queue row: {}.", field.label()));
+        },
         move || {
             Row(
                 icon_overlay_modifier(Modifier::empty(), icon, 24.0, 0.0, theme, false),
@@ -3896,6 +4417,7 @@ fn labeled_field(
     max_lines: usize,
     status: MutableState<String>,
     ui_preferences: MutableState<UiPreferences>,
+    _highlighted: bool,
     theme: ThemeMode,
     allow_paste: bool,
 ) {
@@ -3987,6 +4509,7 @@ fn labeled_code_field(
     max_lines: usize,
     status: MutableState<String>,
     ui_preferences: MutableState<UiPreferences>,
+    _highlighted: bool,
     theme: ThemeMode,
 ) {
     let current_text = state.text();
@@ -4205,6 +4728,7 @@ fn record_button_press(ui_preferences: MutableState<UiPreferences>, count_key: &
     let preferences = ui_preferences.update(|preferences| {
         preferences.increment_button_count(count_key);
         preferences.mark_component_used(count_key);
+        preferences.record_interactive_queue_item(count_key);
         preferences.clone()
     });
     let _ = persist_ui_preferences(&preferences);
@@ -4213,6 +4737,7 @@ fn record_button_press(ui_preferences: MutableState<UiPreferences>, count_key: &
 fn record_component_interaction(ui_preferences: MutableState<UiPreferences>, component_key: &str) {
     let preferences = ui_preferences.update(|preferences| {
         preferences.mark_component_used(component_key);
+        preferences.record_interactive_queue_item(component_key);
         preferences.clone()
     });
     let _ = persist_ui_preferences(&preferences);
@@ -5194,6 +5719,42 @@ fn queue_text_style(theme: ThemeMode) -> TextStyle {
     }
 }
 
+fn queue_current_label_style(theme: ThemeMode) -> TextStyle {
+    TextStyle {
+        span_style: SpanStyle {
+            color: Some(accent_color(theme).with_alpha(0.86)),
+            font_size: cranpose::text::TextUnit::Sp(10.0),
+            font_weight: Some(cranpose::text::FontWeight::BOLD),
+            ..SpanStyle::default()
+        },
+        paragraph_style: ParagraphStyle::default(),
+    }
+}
+
+fn interactive_queue_text_style(
+    theme: ThemeMode,
+    done: bool,
+    disabled: bool,
+    busy: bool,
+    pulse: f32,
+) -> TextStyle {
+    TextStyle {
+        span_style: SpanStyle {
+            color: Some(if disabled {
+                muted_text_color(theme)
+            } else if done || busy {
+                button_text_color(theme).with_alpha(0.82 + 0.18 * pulse.max(0.0))
+            } else {
+                primary_text_color(theme)
+            }),
+            font_size: cranpose::text::TextUnit::Sp(12.0),
+            font_weight: Some(cranpose::text::FontWeight::BOLD),
+            ..SpanStyle::default()
+        },
+        paragraph_style: ParagraphStyle::default(),
+    }
+}
+
 fn badge_text_style(theme: ThemeMode) -> TextStyle {
     TextStyle {
         span_style: SpanStyle {
@@ -5302,6 +5863,35 @@ fn disabled_button_surface(theme: ThemeMode) -> Color {
     }
 }
 
+fn interactive_queue_surface(
+    theme: ThemeMode,
+    done: bool,
+    disabled: bool,
+    busy: bool,
+    pulse: f32,
+    invokes_button: bool,
+) -> Color {
+    if busy {
+        return button_surface(theme).with_alpha(0.66 + 0.26 * pulse);
+    }
+    if disabled {
+        return disabled_button_surface(theme);
+    }
+    if invokes_button && !done {
+        return button_surface(theme);
+    }
+    if done {
+        return match theme {
+            ThemeMode::Dark => Color::from_rgb_u8(100, 207, 50),
+            ThemeMode::Light => Color::from_rgb_u8(77, 184, 91),
+        };
+    }
+    match theme {
+        ThemeMode::Dark => Color::from_rgba_u8(237, 250, 255, 188),
+        ThemeMode::Light => Color::from_rgba_u8(255, 255, 255, 218),
+    }
+}
+
 fn badge_surface(theme: ThemeMode) -> Color {
     match theme {
         ThemeMode::Dark => Color::from_rgba_u8(255, 255, 255, 215),
@@ -5371,8 +5961,12 @@ mod tests {
     use crate::export::PreviewState;
 
     use super::{
-        APP_HEIGHT, APP_WIDTH, ActionButtonId, EditorFieldId, META_FIELDS, NextWorkItem,
-        WEB_SURFACE_MAX_DIM, compute_web_canvas_size, ordered_action_buttons, ordered_fields,
+        APP_HEIGHT, APP_WIDTH, ActionButtonId, EditorFieldId, FieldQueueCommand,
+        INTERACTIVE_QUEUE_CHIP_GAP, INTERACTIVE_QUEUE_CHIP_WIDTH, META_FIELDS, NextWorkItem,
+        WEB_SURFACE_MAX_DIM, compute_web_canvas_size, interactive_queue_label,
+        interactive_queue_next_key, interactive_queue_scroll_target,
+        interactive_queue_selected_key, interactive_queue_should_auto_scroll,
+        ordered_action_buttons, ordered_fields, parse_field_queue_key, queue_item_invokes_button,
         recommended_next_work,
     };
 
@@ -5413,6 +6007,99 @@ mod tests {
         assert_eq!(ordered[0], EditorFieldId::YoutubeUrl);
         assert_eq!(ordered[1], EditorFieldId::ProblemTitle);
         assert_eq!(ordered[2], EditorFieldId::Date);
+    }
+
+    #[test]
+    fn interactive_queue_labels_actions_and_field_commands() {
+        assert_eq!(
+            interactive_queue_label(ActionButtonId::CopyBlog.count_key(), false, false),
+            "Copy Blog"
+        );
+        assert_eq!(
+            interactive_queue_label("field.problem_title", true, false),
+            "Done: Edit Problem Title"
+        );
+        assert_eq!(
+            parse_field_queue_key("field.problem_title.clear"),
+            Some((EditorFieldId::ProblemTitle, FieldQueueCommand::Clear))
+        );
+        assert!(queue_item_invokes_button(
+            ActionButtonId::CopyBlog.count_key()
+        ));
+        assert!(queue_item_invokes_button("field.problem_title.clear"));
+        assert!(!queue_item_invokes_button("field.problem_title"));
+    }
+
+    #[test]
+    fn interactive_queue_next_key_skips_done_items() {
+        let queue = vec![
+            ActionButtonId::CopyBlog.count_key().to_string(),
+            "field.problem_title".to_string(),
+        ];
+        let done = vec![ActionButtonId::CopyBlog.count_key().to_string()];
+
+        assert_eq!(
+            interactive_queue_next_key(&queue, &done),
+            Some("field.problem_title".to_string())
+        );
+    }
+
+    #[test]
+    fn interactive_queue_selected_key_prefers_active_target() {
+        let queue = vec![
+            ActionButtonId::CopyBlog.count_key().to_string(),
+            "field.problem_title".to_string(),
+        ];
+        let done = vec![];
+
+        assert_eq!(
+            interactive_queue_selected_key(&queue, &done, Some("field.problem_title")),
+            Some("field.problem_title".to_string())
+        );
+    }
+
+    #[test]
+    fn interactive_queue_selected_key_moves_past_done_active_target() {
+        let queue = vec![
+            "field.problem_title".to_string(),
+            "field.youtube_url".to_string(),
+        ];
+        let done = vec!["field.problem_title".to_string()];
+
+        assert_eq!(
+            interactive_queue_selected_key(&queue, &done, Some("field.problem_title")),
+            Some("field.youtube_url".to_string())
+        );
+    }
+
+    #[test]
+    fn interactive_queue_scroll_target_moves_right_half_item_leftward() {
+        let target = interactive_queue_scroll_target(3, 500.0, 0.0);
+
+        assert!(target > 0.0);
+        let item_center = 3.0 * (INTERACTIVE_QUEUE_CHIP_WIDTH + INTERACTIVE_QUEUE_CHIP_GAP)
+            + INTERACTIVE_QUEUE_CHIP_WIDTH * 0.5;
+        assert!(item_center - target < 250.0);
+    }
+
+    #[test]
+    fn interactive_queue_auto_scroll_only_runs_for_new_selection_or_retry() {
+        assert!(interactive_queue_should_auto_scroll(
+            Some("field.problem_title"),
+            None,
+            0
+        ));
+        assert!(interactive_queue_should_auto_scroll(
+            Some("field.problem_title"),
+            Some("field.problem_title"),
+            1
+        ));
+        assert!(!interactive_queue_should_auto_scroll(
+            Some("field.problem_title"),
+            Some("field.problem_title"),
+            0
+        ));
+        assert!(!interactive_queue_should_auto_scroll(None, None, 0));
     }
 
     #[test]

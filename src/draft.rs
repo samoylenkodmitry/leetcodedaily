@@ -14,6 +14,7 @@ const AUTOSAVE_FORMAT_VERSION: &str = "leetcodedaily-draft-v1";
 #[cfg(target_arch = "wasm32")]
 const UI_PREFERENCES_STORAGE_KEY: &str = "leetcodedaily.ui-preferences.v1";
 const UI_PREFERENCES_FORMAT_VERSION: &str = "leetcodedaily-ui-preferences-v1";
+const MAX_INTERACTIVE_QUEUE_ITEMS: usize = 24;
 
 #[derive(Clone, PartialEq)]
 pub struct EditorFields {
@@ -123,6 +124,7 @@ pub struct UiPreferences {
     pub theme: ThemeMode,
     button_counts: BTreeMap<String, u64>,
     component_order: BTreeMap<String, u64>,
+    interactive_queue: Vec<String>,
 }
 
 impl UiPreferences {
@@ -150,6 +152,30 @@ impl UiPreferences {
             .saturating_add(1);
         self.component_order.insert(key.to_string(), next_order);
         next_order
+    }
+
+    pub fn interactive_queue(&self) -> &[String] {
+        &self.interactive_queue
+    }
+
+    pub fn clear_interactive_queue(&mut self) {
+        self.interactive_queue.clear();
+    }
+
+    pub fn record_interactive_queue_item(&mut self, key: &str) {
+        let key = key.trim();
+        if key.is_empty() || self.interactive_queue.iter().any(|item| item == key) {
+            return;
+        }
+        if self.interactive_queue.len() >= MAX_INTERACTIVE_QUEUE_ITEMS {
+            let overflow = self
+                .interactive_queue
+                .len()
+                .saturating_add(1)
+                .saturating_sub(MAX_INTERACTIVE_QUEUE_ITEMS);
+            self.interactive_queue.drain(0..overflow);
+        }
+        self.interactive_queue.push(key.to_string());
     }
 }
 
@@ -683,6 +709,9 @@ fn encode_ui_preferences(preferences: &UiPreferences) -> String {
             &format!("{button_key}\t{count}"),
         );
     }
+    for item in &preferences.interactive_queue {
+        push_encoded_field(&mut encoded, "interactive_queue", item);
+    }
 
     encoded
 }
@@ -765,6 +794,7 @@ fn set_ui_preference_field(preferences: &mut UiPreferences, name: &str, value: &
                 preferences.component_order.insert(key.to_string(), order);
             }
         }
+        "interactive_queue" => preferences.record_interactive_queue_item(value),
         _ => {}
     }
 }
@@ -1354,6 +1384,9 @@ mod tests {
         preferences.increment_button_count("field.problem_title.clear");
         preferences.mark_component_used("field.problem_title");
         preferences.mark_component_used("copy.leetcode");
+        preferences.record_interactive_queue_item("field.problem_title");
+        preferences.record_interactive_queue_item("copy.leetcode");
+        preferences.record_interactive_queue_item("copy.leetcode");
 
         let encoded = encode_ui_preferences(&preferences);
         let decoded = decode_ui_preferences(&encoded).expect("decode UI preferences");
@@ -1365,6 +1398,13 @@ mod tests {
         assert_eq!(decoded.component_order("field.problem_title"), 1);
         assert_eq!(decoded.component_order("copy.leetcode"), 2);
         assert_eq!(decoded.component_order("missing"), 0);
+        assert_eq!(
+            decoded.interactive_queue(),
+            [
+                "field.problem_title".to_string(),
+                "copy.leetcode".to_string()
+            ]
+        );
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1378,6 +1418,7 @@ mod tests {
         preferences.increment_button_count("copy.blog");
         preferences.increment_button_count("theme.toggle");
         preferences.mark_component_used("copy.blog");
+        preferences.record_interactive_queue_item("copy.blog");
 
         let path = super::ui_preferences_path();
         if let Some(parent) = path.parent() {
@@ -1394,6 +1435,7 @@ mod tests {
         assert_eq!(restored.button_count("copy.blog"), 2);
         assert_eq!(restored.button_count("theme.toggle"), 1);
         assert_eq!(restored.component_order("copy.blog"), 1);
+        assert_eq!(restored.interactive_queue(), ["copy.blog".to_string()]);
 
         let _ = std::fs::remove_file(path);
     }
