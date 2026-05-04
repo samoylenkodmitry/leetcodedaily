@@ -38,6 +38,34 @@ pub fn run_cli() -> Result<()> {
             }
             ui::run_compose_capture_cli(Path::new(&draft_path), Path::new(&output_path))
         }
+        Some(flag) if flag == "--capture-app-screenshot" => {
+            let first = args
+                .next()
+                .ok_or_else(|| anyhow!("missing output image path or capture width"))?;
+            let second = args.next();
+            match second {
+                None => ui::run_app_capture_cli(Path::new(&first), None),
+                Some(height) => {
+                    let output_path = args
+                        .next()
+                        .ok_or_else(|| anyhow!("missing output image path"))?;
+                    if args.next().is_some() {
+                        return Err(anyhow!(
+                            "unexpected extra arguments for app screenshot capture mode"
+                        ));
+                    }
+                    let width = first
+                        .to_string_lossy()
+                        .parse::<u32>()
+                        .map_err(|error| anyhow!("invalid capture width: {error}"))?;
+                    let height = height
+                        .to_string_lossy()
+                        .parse::<u32>()
+                        .map_err(|error| anyhow!("invalid capture height: {error}"))?;
+                    ui::run_app_capture_cli(Path::new(&output_path), Some((width, height)))
+                }
+            }
+        }
         Some(flag) => Err(anyhow!(
             "unknown command-line flag: {}",
             flag.to_string_lossy()
