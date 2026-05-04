@@ -60,6 +60,7 @@ use web_sys::{Blob, BlobPropertyBag, ClipboardItem};
 
 const APP_WIDTH: u32 = 1480;
 const APP_HEIGHT: u32 = 1560;
+const APP_BOTTOM_LIST_GAP: f32 = 50.0;
 const INTERACTIVE_QUEUE_CHIP_WIDTH: f32 = 214.0;
 const INTERACTIVE_QUEUE_CHIP_GAP: f32 = 10.0;
 #[cfg(any(test, target_arch = "wasm32"))]
@@ -460,7 +461,7 @@ fn App() {
             let busy_action = busy_action.clone();
             let active_queue_target = active_queue_target.clone();
             move || {
-                BoxWithConstraints(Modifier::empty().fill_max_size(), {
+                Column(Modifier::empty().fill_max_size(), ColumnSpec::default(), {
                     let scroll_state = scroll_state.clone();
                     let fields = fields.clone();
                     let status = status.clone();
@@ -480,137 +481,224 @@ fn App() {
                     let action_request_counter = action_request_counter.clone();
                     let busy_action = busy_action.clone();
                     let active_queue_target = active_queue_target.clone();
-                    move |scope| {
-                        let compact = scope.max_width().0 < 1120.0;
-                        let root_horizontal_padding = if scope.max_width().0 < 700.0 {
-                            18.0
-                        } else if compact {
-                            24.0
-                        } else {
-                            34.0
-                        };
-                        Column(
-                            Modifier::empty().fill_max_size().padding_each(
-                                root_horizontal_padding,
-                                30.0,
-                                root_horizontal_padding,
-                                22.0,
-                            ),
-                            ColumnSpec::default()
-                                .vertical_arrangement(LinearArrangement::spaced_by(14.0)),
-                            {
-                                let fields = fields.clone();
-                                let status = status.clone();
-                                let preview_state = preview_state.clone();
-                                let preview_loading = preview_loading.clone();
-                                let compose_preview_state = compose_preview_state.clone();
-                                let compose_loading = compose_loading.clone();
-                                let compose_error = compose_error.clone();
-                                let telegram_post_link = telegram_post_link.clone();
-                                let markdown_preview = markdown_preview.clone();
-                                let autosave_destination = autosave_destination.clone();
-                                let saved_draft = saved_draft.clone();
-                                let ui_preferences = ui_preferences.clone();
-                                let layout_preferences = layout_preferences.clone();
-                                let startup_interactive_queue = startup_interactive_queue.clone();
-                                let pending_action = pending_action.clone();
-                                let action_request_counter = action_request_counter.clone();
-                                let busy_action = busy_action.clone();
-                                let active_queue_target = active_queue_target.clone();
-                                let workspace_scroll_state = scroll_state.clone();
-                                move || {
-                                    ActionsCard(
-                                        fields.clone(),
-                                        status.clone(),
-                                        preview_state.clone(),
-                                        autosave_destination.clone(),
-                                        telegram_post_link.clone(),
-                                        ui_preferences.clone(),
-                                        layout_preferences.clone(),
-                                        startup_interactive_queue.clone(),
-                                        pending_action.clone(),
-                                        action_request_counter.clone(),
-                                        busy_action.clone(),
-                                        active_queue_target.clone(),
-                                        theme,
-                                        compact,
-                                    );
-                                    let viewport_scroll_state = workspace_scroll_state.clone();
-                                    ComposeBox(
-                                        workspace_viewport_modifier(
-                                            Modifier::empty().fill_max_width().weight(1.0),
-                                            theme,
-                                        ),
-                                        BoxSpec::default(),
-                                        {
-                                            let fields = fields.clone();
-                                            let status = status.clone();
-                                            let preview_state = preview_state.clone();
-                                            let preview_loading = preview_loading.clone();
-                                            let compose_preview_state =
-                                                compose_preview_state.clone();
-                                            let compose_loading = compose_loading.clone();
-                                            let compose_error = compose_error.clone();
-                                            let markdown_preview = markdown_preview.clone();
-                                            let saved_draft = saved_draft.clone();
-                                            let ui_preferences = ui_preferences.clone();
-                                            let layout_preferences = layout_preferences.clone();
-                                            let active_queue_target = active_queue_target.clone();
-                                            move || {
-                                                Column(
-                                                    Modifier::empty()
-                                                        .fill_max_size()
-                                                        .vertical_scroll(
-                                                            viewport_scroll_state.clone(),
-                                                            false,
-                                                        ),
-                                                    ColumnSpec::default().vertical_arrangement(
-                                                        LinearArrangement::spaced_by(16.0),
-                                                    ),
-                                                    {
-                                                        let fields = fields.clone();
-                                                        let status = status.clone();
-                                                        let preview_state = preview_state.clone();
-                                                        let preview_loading =
-                                                            preview_loading.clone();
-                                                        let compose_preview_state =
-                                                            compose_preview_state.clone();
-                                                        let compose_loading =
-                                                            compose_loading.clone();
-                                                        let compose_error = compose_error.clone();
-                                                        let markdown_preview =
-                                                            markdown_preview.clone();
-                                                        let saved_draft = saved_draft.clone();
-                                                        let ui_preferences = ui_preferences.clone();
-                                                        let layout_preferences =
-                                                            layout_preferences.clone();
-                                                        move || {
-                                                            GuidedWorkspace(
-                                                                fields.clone(),
-                                                                preview_state.clone(),
-                                                                preview_loading.clone(),
-                                                                compose_preview_state.clone(),
-                                                                compose_loading.clone(),
-                                                                compose_error.clone(),
-                                                                markdown_preview.clone(),
-                                                                status.clone(),
-                                                                saved_draft.clone(),
-                                                                ui_preferences.clone(),
-                                                                layout_preferences.clone(),
-                                                                active_queue_target.clone(),
+                    move || {
+                        BoxWithConstraints(Modifier::empty().fill_max_width().weight(1.0), {
+                            let scroll_state = scroll_state.clone();
+                            let fields = fields.clone();
+                            let status = status.clone();
+                            let preview_state = preview_state.clone();
+                            let preview_loading = preview_loading.clone();
+                            let compose_preview_state = compose_preview_state.clone();
+                            let compose_loading = compose_loading.clone();
+                            let compose_error = compose_error.clone();
+                            let telegram_post_link = telegram_post_link.clone();
+                            let markdown_preview = markdown_preview.clone();
+                            let autosave_destination = autosave_destination.clone();
+                            let saved_draft = saved_draft.clone();
+                            let ui_preferences = ui_preferences.clone();
+                            let layout_preferences = layout_preferences.clone();
+                            let startup_interactive_queue = startup_interactive_queue.clone();
+                            let pending_action = pending_action.clone();
+                            let action_request_counter = action_request_counter.clone();
+                            let busy_action = busy_action.clone();
+                            let active_queue_target = active_queue_target.clone();
+                            move |scope| {
+                                let compact = scope.max_width().0 < 1120.0;
+                                let root_horizontal_padding = if scope.max_width().0 < 700.0 {
+                                    18.0
+                                } else if compact {
+                                    24.0
+                                } else {
+                                    34.0
+                                };
+                                Column(
+                                    Modifier::empty().fill_max_size().padding_each(
+                                        root_horizontal_padding,
+                                        30.0,
+                                        root_horizontal_padding,
+                                        APP_BOTTOM_LIST_GAP,
+                                    ),
+                                    ColumnSpec::default()
+                                        .vertical_arrangement(LinearArrangement::spaced_by(14.0)),
+                                    {
+                                        let fields = fields.clone();
+                                        let status = status.clone();
+                                        let preview_state = preview_state.clone();
+                                        let preview_loading = preview_loading.clone();
+                                        let compose_preview_state = compose_preview_state.clone();
+                                        let compose_loading = compose_loading.clone();
+                                        let compose_error = compose_error.clone();
+                                        let telegram_post_link = telegram_post_link.clone();
+                                        let markdown_preview = markdown_preview.clone();
+                                        let autosave_destination = autosave_destination.clone();
+                                        let saved_draft = saved_draft.clone();
+                                        let ui_preferences = ui_preferences.clone();
+                                        let layout_preferences = layout_preferences.clone();
+                                        let startup_interactive_queue =
+                                            startup_interactive_queue.clone();
+                                        let pending_action = pending_action.clone();
+                                        let action_request_counter = action_request_counter.clone();
+                                        let busy_action = busy_action.clone();
+                                        let active_queue_target = active_queue_target.clone();
+                                        let workspace_scroll_state = scroll_state.clone();
+                                        move || {
+                                            ActionsCard(
+                                                fields.clone(),
+                                                status.clone(),
+                                                preview_state.clone(),
+                                                autosave_destination.clone(),
+                                                telegram_post_link.clone(),
+                                                ui_preferences.clone(),
+                                                layout_preferences.clone(),
+                                                startup_interactive_queue.clone(),
+                                                pending_action.clone(),
+                                                action_request_counter.clone(),
+                                                busy_action.clone(),
+                                                active_queue_target.clone(),
+                                                theme,
+                                                compact,
+                                            );
+                                            let viewport_scroll_state =
+                                                workspace_scroll_state.clone();
+                                            BoxWithConstraints(
+                                                Modifier::empty()
+                                                    .fill_max_width()
+                                                    .weight(1.0)
+                                                    .padding_each(0.0, 12.0, 0.0, 0.0),
+                                                {
+                                                    let fields = fields.clone();
+                                                    let status = status.clone();
+                                                    let preview_state = preview_state.clone();
+                                                    let preview_loading = preview_loading.clone();
+                                                    let compose_preview_state =
+                                                        compose_preview_state.clone();
+                                                    let compose_loading = compose_loading.clone();
+                                                    let compose_error = compose_error.clone();
+                                                    let markdown_preview = markdown_preview.clone();
+                                                    let saved_draft = saved_draft.clone();
+                                                    let ui_preferences = ui_preferences.clone();
+                                                    let layout_preferences =
+                                                        layout_preferences.clone();
+                                                    let active_queue_target =
+                                                        active_queue_target.clone();
+                                                    move |viewport_scope| {
+                                                        let viewport_width =
+                                                            viewport_scope.max_width().0;
+                                                        let viewport_height =
+                                                            viewport_scope.max_height().0;
+                                                        ComposeBox(
+                                                            workspace_viewport_modifier(
+                                                                Modifier::empty().fill_max_size(),
                                                                 theme,
-                                                                compact,
+                                                                viewport_scroll_state.clone(),
+                                                                viewport_width,
+                                                                viewport_height,
+                                                            ),
+                                                            BoxSpec::default(),
+                                                            {
+                                                                let fields = fields.clone();
+                                                                let status = status.clone();
+                                                                let preview_state =
+                                                                    preview_state.clone();
+                                                                let preview_loading =
+                                                                    preview_loading.clone();
+                                                                let compose_preview_state =
+                                                                    compose_preview_state.clone();
+                                                                let compose_loading =
+                                                                    compose_loading.clone();
+                                                                let compose_error =
+                                                                    compose_error.clone();
+                                                                let markdown_preview =
+                                                                    markdown_preview.clone();
+                                                                let saved_draft =
+                                                                    saved_draft.clone();
+                                                                let ui_preferences =
+                                                                    ui_preferences.clone();
+                                                                let layout_preferences =
+                                                                    layout_preferences.clone();
+                                                                let active_queue_target =
+                                                                    active_queue_target.clone();
+                                                                let viewport_scroll_state =
+                                                                    viewport_scroll_state.clone();
+                                                                move || {
+                                                                    Column(
+                                                                Modifier::empty()
+                                                                    .fill_max_size()
+                                                                    .vertical_scroll(
+                                                                        viewport_scroll_state
+                                                                            .clone(),
+                                                                        false,
+                                                                    )
+                                                                    .padding_each(
+                                                                        0.0, 22.0, 0.0, 0.0,
+                                                                    ),
+                                                                ColumnSpec::default()
+                                                                    .vertical_arrangement(
+                                                                    LinearArrangement::spaced_by(
+                                                                        22.0,
+                                                                    ),
+                                                                ),
+                                                                {
+                                                                    let fields = fields.clone();
+                                                                    let status = status.clone();
+                                                                    let preview_state =
+                                                                        preview_state.clone();
+                                                                    let preview_loading =
+                                                                        preview_loading.clone();
+                                                                    let compose_preview_state =
+                                                                        compose_preview_state
+                                                                            .clone();
+                                                                    let compose_loading =
+                                                                        compose_loading.clone();
+                                                                    let compose_error =
+                                                                        compose_error.clone();
+                                                                    let markdown_preview =
+                                                                        markdown_preview.clone();
+                                                                    let saved_draft =
+                                                                        saved_draft.clone();
+                                                                    let ui_preferences =
+                                                                        ui_preferences.clone();
+                                                                    let layout_preferences =
+                                                                        layout_preferences.clone();
+                                                                    move || {
+                                                                        GuidedWorkspace(
+                                                                            fields.clone(),
+                                                                            preview_state.clone(),
+                                                                            preview_loading.clone(),
+                                                                            compose_preview_state
+                                                                                .clone(),
+                                                                            compose_loading.clone(),
+                                                                            compose_error.clone(),
+                                                                            markdown_preview
+                                                                                .clone(),
+                                                                            status.clone(),
+                                                                            saved_draft.clone(),
+                                                                            ui_preferences.clone(),
+                                                                            layout_preferences
+                                                                                .clone(),
+                                                                            active_queue_target
+                                                                                .clone(),
+                                                                            theme,
+                                                                            compact,
+                                                                        );
+                                                                        Spacer(Size::new(
+                                                                            0.0, 86.0,
+                                                                        ));
+                                                                    }
+                                                                },
                                                             );
-                                                            Spacer(Size::new(0.0, 86.0));
-                                                        }
-                                                    },
-                                                );
-                                            }
-                                        },
-                                    );
-                                }
-                            },
-                        );
+                                                                }
+                                                            },
+                                                        );
+                                                    }
+                                                },
+                                            );
+                                        }
+                                    },
+                                );
+                            }
+                        });
+                        BottomListGapMask();
                     }
                 });
             }
@@ -654,6 +742,7 @@ fn GuidedWorkspace(
         active_queue_target.clone(),
         theme,
     );
+    Spacer(Size::new(0.0, 82.0));
     CodeCard(
         fields,
         status,
@@ -3503,6 +3592,65 @@ fn draw_app_background<S: DrawScope + ?Sized>(scope: &mut S) {
     }
 }
 
+#[composable]
+fn BottomListGapMask() {
+    ComposeBox(
+        Modifier::empty()
+            .fill_max_width()
+            .height(APP_BOTTOM_LIST_GAP)
+            .draw_behind(|scope| draw_bottom_list_gap_mask(scope)),
+        BoxSpec::default(),
+        || {},
+    );
+}
+
+fn draw_bottom_list_gap_mask<S: DrawScope + ?Sized>(scope: &mut S) {
+    let size = scope.size();
+    let horizontal_padding = if size.width < 700.0 {
+        18.0
+    } else if size.width < 1120.0 {
+        24.0
+    } else {
+        34.0
+    };
+    let y = (size.height - APP_BOTTOM_LIST_GAP).max(0.0);
+    let content_width = (size.width - horizontal_padding * 2.0).max(0.0);
+    scope.draw_rect_at(
+        Rect {
+            x: horizontal_padding,
+            y,
+            width: content_width,
+            height: APP_BOTTOM_LIST_GAP,
+        },
+        Brush::linear_gradient_range(
+            vec![
+                Color::from_rgba_u8(209, 247, 252, 255),
+                Color::from_rgba_u8(153, 236, 231, 255),
+                Color::from_rgba_u8(71, 218, 218, 255),
+            ],
+            Point::new(0.0, y),
+            Point::new(size.width, size.height),
+        ),
+    );
+    scope.draw_rect_at(
+        Rect {
+            x: horizontal_padding,
+            y,
+            width: content_width,
+            height: 2.0,
+        },
+        Brush::horizontal_gradient(
+            vec![
+                Color::TRANSPARENT,
+                Color::from_rgba_u8(255, 255, 255, 172),
+                Color::TRANSPARENT,
+            ],
+            0.0,
+            size.width,
+        ),
+    );
+}
+
 #[derive(Clone, Copy)]
 struct NineSliceInsets {
     left: f32,
@@ -4016,43 +4164,98 @@ fn StatusDot(ok: bool, theme: ThemeMode) {
 
 #[composable]
 fn section_card(theme: ThemeMode, content: impl FnMut() + 'static) {
+    let radius = 18.0;
+    let shape = LayerShape::Rounded(RoundedCornerShape::uniform(radius));
     glass_panel(
-        Modifier::empty().fill_max_width(),
+        Modifier::empty()
+            .fill_max_width()
+            .drop_shadow(shape, move |shadow| {
+                shadow.radius = 22.0;
+                shadow.spread = 1.0;
+                shadow.offset = Point::new(0.0, 14.0);
+                shadow.color = Color::from_rgba_u8(16, 79, 122, 82);
+                shadow.alpha = 0.36;
+            }),
         theme,
-        18.0,
+        radius,
         20.0,
         content,
     );
 }
 
-fn workspace_viewport_modifier(modifier: Modifier, theme: ThemeMode) -> Modifier {
+fn workspace_viewport_modifier(
+    modifier: Modifier,
+    theme: ThemeMode,
+    scroll_state: ScrollState,
+    viewport_width: f32,
+    viewport_height: f32,
+) -> Modifier {
     modifier
-        .draw_behind(move |scope| {
+        .draw_with_content(move |scope| {
+            scope.draw_content();
             let size = scope.size();
-            let radii = CornerRadii::uniform(18.0);
-            let colors = match theme {
-                ThemeMode::Dark => vec![
-                    Color::from_rgb_u8(248, 254, 255),
-                    Color::from_rgb_u8(230, 251, 255),
-                    Color::from_rgb_u8(216, 249, 244),
-                ],
-                ThemeMode::Light => vec![
-                    Color::from_rgb_u8(255, 255, 255),
-                    Color::from_rgb_u8(238, 253, 255),
-                    Color::from_rgb_u8(224, 250, 245),
-                ],
-            };
-            scope.draw_round_rect(
-                Brush::linear_gradient_range(
-                    colors,
-                    Point::new(0.0, 0.0),
-                    Point::new(size.width, size.height),
-                ),
-                radii,
-            );
+            let current_scroll = scroll_state.value_non_reactive();
+            let max_scroll = scroll_state.max_value();
+            if current_scroll > 0.5 {
+                draw_workspace_scroll_shadow(scope, theme, size, true);
+            }
+            if max_scroll - current_scroll > 0.5 {
+                draw_workspace_scroll_shadow(scope, theme, size, false);
+            }
         })
-        .rounded_corners(18.0)
+        .graphics_layer_block(|layer| {
+            layer.clip = true;
+            layer.compositing_strategy = CompositingStrategy::Offscreen;
+        })
+        .rounded_alpha_mask(viewport_width, viewport_height, 0.0, 0.0)
         .clip_to_bounds()
+}
+
+fn draw_workspace_scroll_shadow(
+    scope: &mut dyn DrawScope,
+    theme: ThemeMode,
+    size: Size,
+    top: bool,
+) {
+    let shadow_height = 82.0_f32.min(size.height.max(0.0));
+    if shadow_height <= 0.0 || size.width <= 0.0 {
+        return;
+    }
+    let y = if top {
+        0.0
+    } else {
+        (size.height - shadow_height).max(0.0)
+    };
+    let edge_color = match theme {
+        ThemeMode::Dark => Color::from_rgba_u8(3, 33, 72, 178),
+        ThemeMode::Light => Color::from_rgba_u8(4, 57, 105, 152),
+    };
+    let mid_color = match theme {
+        ThemeMode::Dark => Color::from_rgba_u8(6, 76, 132, 92),
+        ThemeMode::Light => Color::from_rgba_u8(8, 86, 140, 78),
+    };
+    let soft_color = match theme {
+        ThemeMode::Dark => Color::from_rgba_u8(8, 86, 140, 38),
+        ThemeMode::Light => Color::from_rgba_u8(8, 86, 140, 34),
+    };
+    let colors = if top {
+        vec![edge_color, mid_color, soft_color, Color::TRANSPARENT]
+    } else {
+        vec![Color::TRANSPARENT, soft_color, mid_color, edge_color]
+    };
+    scope.draw_rect_at(
+        Rect {
+            x: 0.0,
+            y,
+            width: size.width,
+            height: shadow_height,
+        },
+        Brush::linear_gradient_range(
+            colors,
+            Point::new(0.0, y),
+            Point::new(0.0, y + shadow_height),
+        ),
+    );
 }
 
 #[composable]
@@ -4163,17 +4366,30 @@ fn glass_button_modifier(
                 ),
                 radii,
             );
+            let gloss_height = (size.height * 0.44).max(1.0);
+            scope.draw_round_rect(
+                Brush::linear_gradient_range(
+                    vec![
+                        Color::from_rgba_u8(255, 255, 255, if active { 145 } else { 118 }),
+                        Color::from_rgba_u8(255, 255, 255, if active { 58 } else { 42 }),
+                        Color::TRANSPARENT,
+                    ],
+                    Point::new(0.0, 0.0),
+                    Point::new(0.0, gloss_height),
+                ),
+                radii,
+            );
             scope.draw_rect_at(
                 Rect {
-                    x: 2.0,
-                    y: 2.0,
-                    width: (size.width - 4.0).max(0.0),
-                    height: 2.0,
+                    x: radius * 0.45,
+                    y: 0.0,
+                    width: (size.width - radius * 0.9).max(0.0),
+                    height: 3.0,
                 },
                 Brush::horizontal_gradient(
                     vec![
                         Color::TRANSPARENT,
-                        Color::from_rgba_u8(255, 255, 255, if active { 220 } else { 160 }),
+                        Color::from_rgba_u8(255, 255, 255, if active { 230 } else { 190 }),
                         Color::TRANSPARENT,
                     ],
                     0.0,
