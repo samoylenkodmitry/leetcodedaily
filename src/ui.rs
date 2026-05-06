@@ -5034,6 +5034,17 @@ fn copy_rich_text_to_clipboard(draft: PostDraft, status: MutableState<String>) {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn render_compose_preview_frame(draft: &PostDraft) -> std::result::Result<PreviewFrame, String> {
+    // The Cranpose headless helper currently drops non-image layers for this
+    // capture surface on desktop, leaving a background-only preview. Keep the
+    // user-facing preview/export path on the same renderer used by Card Preview.
+    render_preview_frame(draft)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
+fn render_compose_preview_frame_with_helper(
+    draft: &PostDraft,
+) -> std::result::Result<PreviewFrame, String> {
     let (draft_path, output_path) = compose_capture_paths();
     let result = (|| -> Result<PreviewFrame> {
         write_draft_snapshot(&draft_path, draft)?;
@@ -5087,6 +5098,7 @@ pub fn run_compose_capture_cli(draft_path: &Path, output_path: &Path) -> Result<
             move |robot| {
                 let result = (|| -> std::result::Result<PreviewFrame, String> {
                     robot.wait_for_idle()?;
+                    robot.pump_frames(4)?;
                     let screenshot = robot.screenshot_with_scale(1.0)?;
                     robot.exit()?;
                     Ok(PreviewFrame {
