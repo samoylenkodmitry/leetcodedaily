@@ -1,6 +1,6 @@
 [package]
 name = "leetcodedaily"
-version = "0.1.21"
+version = "0.1.22"
 edition = "2024"
 
 [lib]
@@ -44,3 +44,12 @@ web-sys = { version = "0.3.97", features = [
     "Url",
     "Window",
 ] }
+
+# Keep `cargo run` usable for the Cranpose/WGPU UI; fully unoptimized
+# dev builds are too slow for interactive work.
+[profile.dev]
+opt-level = 1
+debug = 1
+
+[profile.dev.package."*"]
+opt-level = 3
