@@ -268,7 +268,6 @@ impl PostDraft {
             lines.push(String::new());
         }
 
-        push_markdown_section(&mut lines, "#### Join me on ", &self.telegram_text);
         push_markdown_section(&mut lines, "#### Problem TLDR", &self.problem_tldr);
         push_markdown_section(&mut lines, "#### Intuition", &self.intuition);
         push_markdown_section(&mut lines, "#### Approach", &self.approach);
