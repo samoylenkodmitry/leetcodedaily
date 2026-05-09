@@ -30,7 +30,8 @@ use cranpose::DEFAULT_ALPHA;
 use cranpose::prelude::*;
 use cranpose::widgets::BasicTextFieldWithOptions;
 use cranpose_animation::{
-    AnimationSpec, RepeatMode, StartOffset, infiniteRepeatable, rememberInfiniteTransition,
+    AnimationSpec, RepeatMode, StartOffset, animateFloatAsState, infiniteRepeatable,
+    rememberInfiniteTransition,
 };
 use cranpose_core::MutableState;
 use cranpose_foundation::DrawScope;
@@ -439,7 +440,7 @@ fn App() {
 
     ComposeBox(
         Modifier::empty().fill_max_size().draw_behind(move |scope| {
-            draw_app_background(scope);
+            draw_app_background(scope, theme);
         }),
         BoxSpec::default(),
         {
@@ -700,7 +701,7 @@ fn App() {
                                 );
                             }
                         });
-                        BottomListGapMask();
+                        BottomListGapMask(theme);
                     }
                 });
             }
@@ -1776,14 +1777,17 @@ fn focus_action_button(
     } else {
         focus_button_text_style(theme, busy_pulse)
     };
+    let press_tick = useState(|| 0u64);
+    let press_lift = press_lift_value(press_tick.clone());
     Button(
-        glass_button_modifier(
+        glass_button_modifier_with_press(
             Modifier::empty().fill_max_width(),
             theme,
             !disabled,
             is_busy,
             background,
             14.0,
+            press_lift,
         )
         .height(64.0)
         .padding_symmetric(14.0, 16.0),
@@ -1791,6 +1795,7 @@ fn focus_action_button(
             if disabled {
                 return;
             }
+            press_tick.set(press_tick.value().wrapping_add(1));
             record_button_press(ui_preferences.clone(), &count_key);
             handle_action_button(
                 action,
@@ -3576,37 +3581,57 @@ fn target_image_pixels(dst: Rect) -> Option<(u32, u32)> {
     Some((width, height))
 }
 
-fn draw_app_background<S: DrawScope + ?Sized>(scope: &mut S) {
+fn draw_app_background<S: DrawScope + ?Sized>(scope: &mut S, theme: ThemeMode) {
     let size = scope.size();
-    scope.draw_rect(Brush::linear_gradient_range(
-        vec![
+    let gradient_stops = match theme {
+        ThemeMode::Dark => vec![
+            Color::from_rgb_u8(8, 14, 28),
+            Color::from_rgb_u8(14, 24, 46),
+            Color::from_rgb_u8(20, 32, 58),
+            Color::from_rgb_u8(10, 18, 32),
+        ],
+        ThemeMode::Light => vec![
             Color::from_rgb_u8(218, 244, 255),
             Color::from_rgb_u8(236, 251, 255),
             Color::from_rgb_u8(188, 242, 249),
             Color::from_rgb_u8(120, 226, 209),
         ],
+    };
+    scope.draw_rect(Brush::linear_gradient_range(
+        gradient_stops,
         Point::new(0.0, 0.0),
         Point::new(size.width, size.height),
     ));
 
-    if let Some(bitmap) = app_background_bitmap() {
-        draw_stretchable_app_background(scope, bitmap, size, app_background_slices());
+    if matches!(theme, ThemeMode::Light) {
+        if let Some(bitmap) = app_background_bitmap() {
+            draw_stretchable_app_background(scope, bitmap, size, app_background_slices());
+        }
+    } else {
+        scope.draw_rect(Brush::radial_gradient(
+            vec![
+                Color::from_rgba_u8(46, 86, 148, 70),
+                Color::TRANSPARENT,
+            ],
+            Point::new(size.width * 0.5, size.height * 0.32),
+            (size.width.max(size.height)) * 0.7,
+        ));
     }
 }
 
 #[composable]
-fn BottomListGapMask() {
+fn BottomListGapMask(theme: ThemeMode) {
     ComposeBox(
         Modifier::empty()
             .fill_max_width()
             .height(APP_BOTTOM_LIST_GAP)
-            .draw_behind(|scope| draw_bottom_list_gap_mask(scope)),
+            .draw_behind(move |scope| draw_bottom_list_gap_mask(scope, theme)),
         BoxSpec::default(),
         || {},
     );
 }
 
-fn draw_bottom_list_gap_mask<S: DrawScope + ?Sized>(scope: &mut S) {
+fn draw_bottom_list_gap_mask<S: DrawScope + ?Sized>(scope: &mut S, theme: ThemeMode) {
     let size = scope.size();
     let horizontal_padding = if size.width < 700.0 {
         18.0
@@ -3617,6 +3642,24 @@ fn draw_bottom_list_gap_mask<S: DrawScope + ?Sized>(scope: &mut S) {
     };
     let y = (size.height - APP_BOTTOM_LIST_GAP).max(0.0);
     let content_width = (size.width - horizontal_padding * 2.0).max(0.0);
+    let (gradient_stops, highlight) = match theme {
+        ThemeMode::Dark => (
+            vec![
+                Color::from_rgba_u8(28, 44, 70, 255),
+                Color::from_rgba_u8(20, 34, 58, 255),
+                Color::from_rgba_u8(14, 24, 44, 255),
+            ],
+            Color::from_rgba_u8(110, 170, 230, 110),
+        ),
+        ThemeMode::Light => (
+            vec![
+                Color::from_rgba_u8(209, 247, 252, 255),
+                Color::from_rgba_u8(153, 236, 231, 255),
+                Color::from_rgba_u8(71, 218, 218, 255),
+            ],
+            Color::from_rgba_u8(255, 255, 255, 172),
+        ),
+    };
     scope.draw_rect_at(
         Rect {
             x: horizontal_padding,
@@ -3625,11 +3668,7 @@ fn draw_bottom_list_gap_mask<S: DrawScope + ?Sized>(scope: &mut S) {
             height: APP_BOTTOM_LIST_GAP,
         },
         Brush::linear_gradient_range(
-            vec![
-                Color::from_rgba_u8(209, 247, 252, 255),
-                Color::from_rgba_u8(153, 236, 231, 255),
-                Color::from_rgba_u8(71, 218, 218, 255),
-            ],
+            gradient_stops,
             Point::new(0.0, y),
             Point::new(size.width, size.height),
         ),
@@ -3642,11 +3681,7 @@ fn draw_bottom_list_gap_mask<S: DrawScope + ?Sized>(scope: &mut S) {
             height: 2.0,
         },
         Brush::horizontal_gradient(
-            vec![
-                Color::TRANSPARENT,
-                Color::from_rgba_u8(255, 255, 255, 172),
-                Color::TRANSPARENT,
-            ],
+            vec![Color::TRANSPARENT, highlight, Color::TRANSPARENT],
             0.0,
             size.width,
         ),
@@ -4114,7 +4149,7 @@ fn FieldSuggestion(
             theme,
             true,
             false,
-            Color::from_rgba_u8(237, 250, 255, 210),
+            soft_button_surface(theme),
             11.0,
         )
         .padding_symmetric(13.0, 11.0),
@@ -4289,18 +4324,30 @@ fn glass_panel_modifier(modifier: Modifier, theme: ThemeMode, radius: f32) -> Mo
             let size = scope.size();
             let radii = CornerRadii::uniform(radius);
             scope.draw_round_rect(panel_brush(theme, size), radii);
+            let gloss_stops = match theme {
+                ThemeMode::Dark => vec![
+                    Color::from_rgba_u8(120, 168, 220, 92),
+                    Color::from_rgba_u8(60, 96, 148, 30),
+                    Color::from_rgba_u8(8, 18, 36, 0),
+                ],
+                ThemeMode::Light => vec![
+                    Color::from_rgba_u8(255, 255, 255, 205),
+                    Color::from_rgba_u8(255, 255, 255, 62),
+                    Color::from_rgba_u8(17, 144, 212, 42),
+                ],
+            };
             scope.draw_round_rect(
                 Brush::linear_gradient_range(
-                    vec![
-                        Color::from_rgba_u8(255, 255, 255, 205),
-                        Color::from_rgba_u8(255, 255, 255, 62),
-                        Color::from_rgba_u8(17, 144, 212, 42),
-                    ],
+                    gloss_stops,
                     Point::new(0.0, 0.0),
                     Point::new(size.width, size.height),
                 ),
                 radii,
             );
+            let highlight = match theme {
+                ThemeMode::Dark => Color::from_rgba_u8(140, 188, 240, 110),
+                ThemeMode::Light => Color::from_rgba_u8(255, 255, 255, 180),
+            };
             scope.draw_rect_at(
                 Rect {
                     x: 2.0,
@@ -4309,11 +4356,7 @@ fn glass_panel_modifier(modifier: Modifier, theme: ThemeMode, radius: f32) -> Mo
                     height: 2.0,
                 },
                 Brush::horizontal_gradient(
-                    vec![
-                        Color::TRANSPARENT,
-                        Color::from_rgba_u8(255, 255, 255, 180),
-                        Color::TRANSPARENT,
-                    ],
+                    vec![Color::TRANSPARENT, highlight, Color::TRANSPARENT],
                     0.0,
                     size.width,
                 ),
@@ -4323,8 +4366,14 @@ fn glass_panel_modifier(modifier: Modifier, theme: ThemeMode, radius: f32) -> Mo
             shadow.radius = 8.0;
             shadow.spread = -1.0;
             shadow.offset = Point::new(0.0, 2.0);
-            shadow.color = Color::from_rgba_u8(255, 255, 255, 150);
-            shadow.alpha = 0.72;
+            shadow.color = match theme {
+                ThemeMode::Dark => Color::from_rgba_u8(150, 195, 240, 110),
+                ThemeMode::Light => Color::from_rgba_u8(255, 255, 255, 150),
+            };
+            shadow.alpha = match theme {
+                ThemeMode::Dark => 0.45,
+                ThemeMode::Light => 0.72,
+            };
         })
         .rounded_corners(radius)
 }
@@ -4337,15 +4386,33 @@ fn glass_button_modifier(
     base: Color,
     radius: f32,
 ) -> Modifier {
+    glass_button_modifier_with_press(modifier, theme, enabled, active, base, radius, 0.0)
+}
+
+fn glass_button_modifier_with_press(
+    modifier: Modifier,
+    theme: ThemeMode,
+    enabled: bool,
+    active: bool,
+    base: Color,
+    radius: f32,
+    press_lift: f32,
+) -> Modifier {
     let shape = LayerShape::Rounded(RoundedCornerShape::uniform(radius));
     let shadow_alpha = if enabled { 0.64 } else { 0.18 };
+    let press = press_lift.clamp(0.0, 1.0);
     modifier
+        .graphics_layer_block(move |layer| {
+            layer.translation_y = 2.4 * press;
+            layer.scale_x = 1.0 - 0.018 * press;
+            layer.scale_y = 1.0 - 0.018 * press;
+        })
         .drop_shadow(shape, move |shadow| {
-            shadow.radius = if active { 13.0 } else { 9.0 };
+            shadow.radius = (if active { 13.0 } else { 9.0 }) - 4.0 * press;
             shadow.spread = if active { 1.0 } else { 0.0 };
-            shadow.offset = Point::new(0.0, if active { 6.0 } else { 4.0 });
+            shadow.offset = Point::new(0.0, (if active { 6.0 } else { 4.0 }) - 2.5 * press);
             shadow.color = shadow_color(theme);
-            shadow.alpha = shadow_alpha;
+            shadow.alpha = shadow_alpha * (1.0 - 0.5 * press);
         })
         .draw_behind(move |scope| {
             let size = scope.size();
@@ -4437,14 +4504,17 @@ fn primary_button(
     } else {
         button_text_style(theme)
     };
+    let press_tick = useState(|| 0u64);
+    let press_lift = press_lift_value(press_tick.clone());
     Button(
-        glass_button_modifier(
+        glass_button_modifier_with_press(
             Modifier::empty().weight(1.0),
             theme,
             !disabled,
             busy,
             background,
             10.0,
+            press_lift,
         )
         .height(46.0)
         .padding_symmetric(8.0, 9.0),
@@ -4452,6 +4522,7 @@ fn primary_button(
             if disabled {
                 return;
             }
+            press_tick.set(press_tick.value().wrapping_add(1));
             record_button_press(ui_preferences.clone(), &count_key);
             on_click();
         },
@@ -4484,7 +4555,7 @@ fn subtle_button(
             theme,
             true,
             false,
-            Color::from_rgba_u8(237, 250, 255, 185),
+            soft_button_surface(theme),
             9.0,
         )
         .padding_symmetric(9.0, 7.0),
@@ -4514,7 +4585,7 @@ fn theme_button(label: String, theme: ThemeMode, on_click: impl FnMut() + 'stati
             theme,
             true,
             false,
-            Color::from_rgba_u8(237, 250, 255, 185),
+            soft_button_surface(theme),
             9.0,
         )
         .padding_symmetric(10.0, 7.0),
@@ -4605,6 +4676,37 @@ fn busy_pulse() -> f32 {
             "busy_button_pulse",
         )
         .value()
+}
+
+#[composable]
+fn press_lift_value(press_tick: MutableState<u64>) -> f32 {
+    let press_target = useState(|| 0.0_f32);
+    cranpose_core::LaunchedEffect!(press_tick.value(), {
+        let press_target = press_target.clone();
+        let press_tick = press_tick.clone();
+        move |scope| {
+            if press_tick.value() == 0 {
+                return;
+            }
+            press_target.set(1.0);
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let press_target = press_target.clone();
+                scope.launch_background(
+                    move |_token| async move {
+                        std::thread::sleep(std::time::Duration::from_millis(120));
+                    },
+                    move |_| press_target.set(0.0),
+                );
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                let _ = scope;
+                press_target.set(0.0);
+            }
+        }
+    });
+    animateFloatAsState(press_target.value(), "press_lift").value()
 }
 
 #[composable]
@@ -5688,9 +5790,9 @@ fn panel_brush(theme: ThemeMode, size: Size) -> Brush {
     match theme {
         ThemeMode::Dark => Brush::linear_gradient_range(
             vec![
-                Color::from_rgba_u8(244, 253, 255, 205),
-                Color::from_rgba_u8(212, 244, 255, 162),
-                Color::from_rgba_u8(187, 242, 236, 142),
+                Color::from_rgba_u8(36, 52, 80, 215),
+                Color::from_rgba_u8(24, 38, 62, 195),
+                Color::from_rgba_u8(18, 28, 50, 175),
             ],
             Point::new(0.0, 0.0),
             Point::new(size.width, size.height),
@@ -5709,7 +5811,7 @@ fn panel_brush(theme: ThemeMode, size: Size) -> Brush {
 
 fn shadow_color(theme: ThemeMode) -> Color {
     match theme {
-        ThemeMode::Dark => Color::from_rgba_u8(24, 113, 178, 106),
+        ThemeMode::Dark => Color::from_rgba_u8(0, 0, 0, 175),
         ThemeMode::Light => Color::from_rgba_u8(44, 147, 184, 86),
     }
 }
@@ -6079,21 +6181,21 @@ fn panel_surface(theme: ThemeMode) -> Color {
 
 fn input_surface(theme: ThemeMode) -> Color {
     match theme {
-        ThemeMode::Dark => Color::from_rgba_u8(248, 253, 255, 218),
+        ThemeMode::Dark => Color::from_rgba_u8(28, 42, 66, 220),
         ThemeMode::Light => Color::from_rgba_u8(255, 255, 255, 226),
     }
 }
 
 fn button_surface(theme: ThemeMode) -> Color {
     match theme {
-        ThemeMode::Dark => Color::from_rgb_u8(100, 207, 50),
+        ThemeMode::Dark => Color::from_rgb_u8(98, 220, 130),
         ThemeMode::Light => Color::from_rgb_u8(39, 145, 224),
     }
 }
 
 fn disabled_button_surface(theme: ThemeMode) -> Color {
     match theme {
-        ThemeMode::Dark => Color::from_rgba_u8(197, 220, 229, 165),
+        ThemeMode::Dark => Color::from_rgba_u8(58, 76, 100, 200),
         ThemeMode::Light => Color::from_rgba_u8(213, 230, 236, 170),
     }
 }
@@ -6117,75 +6219,82 @@ fn interactive_queue_surface(
     }
     if done {
         return match theme {
-            ThemeMode::Dark => Color::from_rgb_u8(100, 207, 50),
+            ThemeMode::Dark => Color::from_rgb_u8(70, 178, 100),
             ThemeMode::Light => Color::from_rgb_u8(77, 184, 91),
         };
     }
     match theme {
-        ThemeMode::Dark => Color::from_rgba_u8(237, 250, 255, 188),
+        ThemeMode::Dark => Color::from_rgba_u8(38, 56, 82, 215),
         ThemeMode::Light => Color::from_rgba_u8(255, 255, 255, 218),
     }
 }
 
 fn badge_surface(theme: ThemeMode) -> Color {
     match theme {
-        ThemeMode::Dark => Color::from_rgba_u8(255, 255, 255, 215),
+        ThemeMode::Dark => Color::from_rgba_u8(48, 70, 102, 225),
         ThemeMode::Light => Color::from_rgba_u8(226, 245, 252, 230),
+    }
+}
+
+fn soft_button_surface(theme: ThemeMode) -> Color {
+    match theme {
+        ThemeMode::Dark => Color::from_rgba_u8(38, 58, 88, 215),
+        ThemeMode::Light => Color::from_rgba_u8(237, 250, 255, 185),
     }
 }
 
 fn primary_text_color(theme: ThemeMode) -> Color {
     match theme {
-        ThemeMode::Dark => Color::from_rgb_u8(12, 45, 86),
+        ThemeMode::Dark => Color::from_rgb_u8(228, 240, 252),
         ThemeMode::Light => Color::from_rgb_u8(14, 58, 96),
     }
 }
 
 fn body_text_color(theme: ThemeMode) -> Color {
     match theme {
-        ThemeMode::Dark => Color::from_rgb_u8(45, 78, 105),
+        ThemeMode::Dark => Color::from_rgb_u8(202, 218, 238),
         ThemeMode::Light => Color::from_rgb_u8(52, 84, 107),
     }
 }
 
 fn muted_text_color(theme: ThemeMode) -> Color {
     match theme {
-        ThemeMode::Dark => Color::from_rgb_u8(41, 78, 117),
+        ThemeMode::Dark => Color::from_rgb_u8(150, 175, 205),
         ThemeMode::Light => Color::from_rgb_u8(60, 96, 128),
     }
 }
 
 fn label_color(theme: ThemeMode) -> Color {
     match theme {
-        ThemeMode::Dark => Color::from_rgb_u8(14, 77, 133),
+        ThemeMode::Dark => Color::from_rgb_u8(170, 205, 240),
         ThemeMode::Light => Color::from_rgb_u8(18, 87, 145),
     }
 }
 
 fn changed_label_color(theme: ThemeMode) -> Color {
     match theme {
-        ThemeMode::Dark => Color::from_rgb_u8(20, 151, 164),
+        ThemeMode::Dark => Color::from_rgb_u8(98, 224, 224),
         ThemeMode::Light => Color::from_rgb_u8(9, 131, 154),
     }
 }
 
 fn accent_color(theme: ThemeMode) -> Color {
     match theme {
-        ThemeMode::Dark => Color::from_rgb_u8(27, 129, 199),
+        ThemeMode::Dark => Color::from_rgb_u8(94, 198, 255),
         ThemeMode::Light => Color::from_rgb_u8(13, 117, 181),
     }
 }
 
 fn button_text_color(theme: ThemeMode) -> Color {
     match theme {
-        ThemeMode::Dark => Color::from_rgb_u8(7, 45, 85),
+        ThemeMode::Dark => Color::from_rgb_u8(8, 36, 22),
         ThemeMode::Light => Color::from_rgb_u8(9, 58, 103),
     }
 }
 
 fn badge_text_color(theme: ThemeMode) -> Color {
     match theme {
-        ThemeMode::Dark => Color::from_rgb_u8(16, 75, 111),
+        ThemeMode::Dark => Color::from_rgb_u8(220, 235, 250),
         ThemeMode::Light => Color::from_rgb_u8(18, 81, 116),
     }
 }
