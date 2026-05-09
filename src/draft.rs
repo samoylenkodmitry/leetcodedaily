@@ -405,7 +405,7 @@ impl PostDraft {
         self.problem_tldr.trim().to_string()
     }
 
-    pub fn rich_html(&self) -> String {
+    pub fn rich_html_with_image(&self, image_data_url: Option<&str>) -> String {
         let mut html = String::from("<article>");
         html.push_str(&format!(
             "<h1>{}</h1>",
@@ -423,6 +423,14 @@ impl PostDraft {
         if !self.reference_url.trim().is_empty() {
             let safe_url = escape_html(&self.reference_url);
             html.push_str(&format!("<p><a href=\"{safe_url}\">{safe_url}</a></p>"));
+        }
+
+        if let Some(data_url) = image_data_url {
+            html.push_str(&format!(
+                "<p><img src=\"{}\" alt=\"{}\"></p>",
+                escape_html(data_url),
+                escape_html(&self.date_or_placeholder()),
+            ));
         }
 
         push_optional_html_plain_link(&mut html, &self.youtube_url);
@@ -1299,7 +1307,7 @@ mod tests {
             rust_code: "fn demo() {}".to_string(),
         };
 
-        let html = draft.rich_html();
+        let html = draft.rich_html_with_image(None);
 
         assert!(html.contains("<h1>05.10.2025</h1>"));
         assert!(html.contains("<h4>Problem TLDR</h4>"));
@@ -1307,6 +1315,43 @@ mod tests {
         assert!(!html.contains("blog post</a>"));
         assert!(html.contains("language-kotlin"));
         assert!(html.contains("language-rust"));
+    }
+
+    #[test]
+    fn rich_html_with_image_places_image_above_youtube() {
+        let draft = PostDraft {
+            date: "05.10.2025".to_string(),
+            problem_title: "Demo".to_string(),
+            problem_url: String::new(),
+            difficulty: "medium".to_string(),
+            blog_post_url: String::new(),
+            substack_url: String::new(),
+            youtube_url: "https://youtu.be/demo".to_string(),
+            reference_url: String::new(),
+            telegram_text: String::new(),
+            problem_tldr: "TLDR".to_string(),
+            intuition: "Think".to_string(),
+            approach: "Do".to_string(),
+            time_complexity: "n".to_string(),
+            space_complexity: "1".to_string(),
+            kotlin_runtime_ms: "1".to_string(),
+            kotlin_code: "fun demo() {}".to_string(),
+            rust_runtime_ms: "1".to_string(),
+            rust_code: "fn demo() {}".to_string(),
+        };
+
+        let html = draft.rich_html_with_image(Some("data:image/webp;base64,QUJD"));
+        let img_pos = html
+            .find("<img src=\"data:image/webp;base64,QUJD\"")
+            .expect("img tag present");
+        let youtube_pos = html
+            .find("<a href=\"https://youtu.be/demo\">")
+            .expect("youtube link present");
+        assert!(
+            img_pos < youtube_pos,
+            "image must precede the youtube link"
+        );
+        assert!(!draft.rich_html_with_image(None).contains("<img"));
     }
 
     #[test]
@@ -1332,7 +1377,7 @@ mod tests {
             rust_code: "fn demo() {}".to_string(),
         };
 
-        let html = draft.rich_html();
+        let html = draft.rich_html_with_image(None);
         let fallback = draft.rich_text_fallback();
 
         assert!(html.contains(

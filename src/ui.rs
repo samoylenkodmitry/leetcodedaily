@@ -13,7 +13,8 @@ use crate::export::{
     compose_preview_plan,
 };
 use crate::export::{
-    PreviewFrame, PreviewState, render_preview_frame, save_preview_frame_as_webp, save_webp,
+    PreviewFrame, PreviewState, preview_webp_data_url, render_preview_frame,
+    save_preview_frame_as_webp, save_webp,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::publish::{ArchiveEdit, publish_blog_post};
@@ -5005,7 +5006,8 @@ fn copy_text_to_clipboard(text: String, success_message: String, status: Mutable
 }
 
 fn copy_rich_text_to_clipboard(draft: PostDraft, status: MutableState<String>) {
-    let html = draft.rich_html();
+    let image_data_url = preview_webp_data_url(&draft).ok();
+    let html = draft.rich_html_with_image(image_data_url.as_deref());
     let fallback = draft.rich_text_fallback();
 
     #[cfg(not(target_arch = "wasm32"))]

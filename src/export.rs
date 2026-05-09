@@ -213,6 +213,25 @@ pub(crate) fn save_preview_frame_as_webp(
     }
 }
 
+pub fn preview_webp_data_url(draft: &PostDraft) -> Result<String> {
+    let rendered = compose_card(draft)?;
+    let image = RgbaImage::from_raw(rendered.width(), rendered.height(), rendered.into_raw())
+        .ok_or_else(|| anyhow!("invalid RGBA frame buffer"))?;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use base64::Engine;
+        let bytes = encode_webp_bytes(&image)?;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        Ok(format!("data:image/webp;base64,{encoded}"))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        encode_webp_data_url(&image)
+    }
+}
+
 fn compose_card(draft: &PostDraft) -> Result<RgbaImage> {
     let assets = AssetPack::load()?;
     let plan = build_card_render_plan_with_assets(draft, &assets);
