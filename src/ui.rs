@@ -122,6 +122,7 @@ struct PublishBlogOutcome {
     preview: PreviewState,
     edit: BlogArchiveEdit,
     commit_sha: Option<String>,
+    pushed: bool,
 }
 
 #[derive(Clone)]
@@ -5286,9 +5287,12 @@ fn finish_long_action(
                     BlogArchiveEdit::Replaced => "replaced",
                 };
                 match outcome.commit_sha {
-                    Some(sha) => status.set(format!(
-                        "Blog post {action}, image copied, committed {sha}."
-                    )),
+                    Some(sha) => {
+                        let suffix = if outcome.pushed { " and pushed" } else { "" };
+                        status.set(format!(
+                            "Blog post {action}, image copied, committed {sha}{suffix}."
+                        ));
+                    }
                     None => status.set(format!(
                         "Blog post {action}; archive and image were already committed."
                     )),
@@ -5343,6 +5347,7 @@ fn publish_blog_result(draft: &PostDraft) -> std::result::Result<PublishBlogOutc
         preview,
         edit,
         commit_sha: result.commit_sha,
+        pushed: result.pushed,
     })
 }
 

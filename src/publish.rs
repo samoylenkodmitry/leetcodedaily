@@ -23,6 +23,7 @@ pub(crate) struct BlogPublishResult {
     pub image_path: PathBuf,
     pub edit: ArchiveEdit,
     pub commit_sha: Option<String>,
+    pub pushed: bool,
 }
 
 pub(crate) fn publish_blog_post(
@@ -37,6 +38,7 @@ pub(crate) fn publish_blog_post(
         .join(draft.suggested_export_filename());
 
     ensure_publish_preconditions(&repo, source_image_path)?;
+    git(&repo, ["pull", "--ff-only"])?;
 
     let archive = fs::read_to_string(&archive_path)
         .with_context(|| format!("reading blog archive {}", archive_path.display()))?;
@@ -87,11 +89,19 @@ pub(crate) fn publish_blog_post(
         )
     };
 
+    let pushed = if commit_sha.is_some() {
+        git(&repo, ["push"])?;
+        true
+    } else {
+        false
+    };
+
     Ok(BlogPublishResult {
         archive_path,
         image_path,
         edit,
         commit_sha,
+        pushed,
     })
 }
 
