@@ -414,6 +414,7 @@ fn App() {
         let busy_action = busy_action.clone();
         let pending_action = pending_action.clone();
         let status = status.clone();
+        let fields = fields.clone();
         let telegram_post_link = telegram_post_link.clone();
         move |scope| {
             let Some(action) = queued_action.clone() else {
@@ -430,6 +431,7 @@ fn App() {
                         compose_error.clone(),
                         busy_action.clone(),
                         pending_action.clone(),
+                        fields.clone(),
                         status.clone(),
                         telegram_post_link.clone(),
                     );
@@ -5334,6 +5336,7 @@ fn finish_long_action(
     compose_error: MutableState<String>,
     busy_action: MutableState<Option<LongAction>>,
     pending_action: MutableState<Option<PendingAction>>,
+    fields: EditorFields,
     status: MutableState<String>,
     telegram_post_link: MutableState<String>,
 ) {
@@ -5404,9 +5407,11 @@ fn finish_long_action(
         },
         LongActionResult::PostTelegram(result) => match result {
             Ok(outcome) => {
+                let link = outcome.link;
                 preview_state.set(outcome.preview);
-                telegram_post_link.set(outcome.link.clone());
-                status.set(format!("Telegram post published: {}", outcome.link));
+                telegram_post_link.set(link.clone());
+                fields.telegram_text.set_text(link.clone());
+                status.set(format!("Telegram post published and CTA updated: {link}"));
             }
             Err(error) => status.set(format!("Telegram post failed: {error}")),
         },
