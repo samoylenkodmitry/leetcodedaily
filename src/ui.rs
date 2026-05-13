@@ -30,8 +30,7 @@ use cranpose::DEFAULT_ALPHA;
 use cranpose::prelude::*;
 use cranpose::widgets::BasicTextFieldWithOptions;
 use cranpose_animation::{
-    AnimationSpec, RepeatMode, StartOffset, animateFloatAsState, infiniteRepeatable,
-    rememberInfiniteTransition,
+    AnimationSpec, Easing, RepeatMode, StartOffset, infiniteRepeatable, rememberInfiniteTransition,
 };
 use cranpose_core::MutableState;
 use cranpose_foundation::DrawScope;
@@ -46,7 +45,7 @@ use std::collections::HashMap;
 use std::sync::mpsc;
 use std::sync::{Mutex, OnceLock};
 #[cfg(not(target_arch = "wasm32"))]
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[cfg(not(target_arch = "wasm32"))]
 use std::{
     fs,
@@ -65,6 +64,10 @@ const APP_HEIGHT: u32 = 1560;
 const APP_BOTTOM_LIST_GAP: f32 = 50.0;
 const INTERACTIVE_QUEUE_CHIP_WIDTH: f32 = 214.0;
 const INTERACTIVE_QUEUE_CHIP_GAP: f32 = 10.0;
+const BUTTON_ACTIVITY_INDICATOR_WIDTH: f32 = 66.0;
+const BUTTON_ACTIVITY_INDICATOR_HEIGHT: f32 = 18.0;
+const LONG_ACTION_PREFLIGHT_MS: u64 = 1_500;
+const MIN_LONG_ACTION_BUSY_MS: u64 = 1_250;
 #[cfg(any(test, target_arch = "wasm32"))]
 const WEB_SURFACE_MAX_DIM: u32 = 1900;
 #[cfg(target_arch = "wasm32")]
@@ -422,7 +425,10 @@ fn App() {
             };
 
             scope.launch_background(
-                move |_| async move { run_long_action(action) },
+                move |_| async move {
+                    wait_before_long_action();
+                    run_long_action(action)
+                },
                 move |result| {
                     finish_long_action(
                         result,
@@ -1538,10 +1544,8 @@ fn InteractiveQueueChip(
     let action_busy = busy_action.value();
     let is_busy = long_action.is_some() && action_busy == long_action;
     let disabled = long_action.is_some() && action_busy.is_some();
-    let busy_pulse = if is_busy { busy_pulse() } else { 0.0 };
     let invokes_button = queue_item_invokes_button(&item_key);
-    let background =
-        interactive_queue_surface(theme, done, disabled, is_busy, busy_pulse, invokes_button);
+    let background = interactive_queue_surface(theme, done, disabled, is_busy, invokes_button);
     Button(
         glass_button_modifier(
             Modifier::empty()
@@ -1578,7 +1582,7 @@ fn InteractiveQueueChip(
             interactive_queue_content(
                 interactive_queue_icon(&item_key),
                 interactive_queue_label(&item_key, done, is_busy),
-                interactive_queue_text_style(theme, done, disabled, is_busy, busy_pulse),
+                interactive_queue_text_style(theme, done, disabled, is_busy),
                 theme,
                 is_busy,
             );
@@ -1595,7 +1599,6 @@ fn interactive_queue_content(
     busy: bool,
 ) {
     let icon_size = 24.0;
-    let label = if busy { format!("{label}...") } else { label };
     Row(
         icon_overlay_modifier(
             Modifier::empty().fill_max_width(),
@@ -1617,6 +1620,7 @@ fn interactive_queue_content(
                 1,
                 1,
             );
+            ButtonActivityIndicator(theme, busy);
         },
     );
 }
@@ -1766,9 +1770,8 @@ fn focus_action_button(
     let disabled = long_action.is_some() && action_busy.is_some();
     let count_key = action.count_key().to_string();
     let count = ui_preferences.value().button_count(&count_key);
-    let busy_pulse = if is_busy { busy_pulse() } else { 0.0 };
     let background = if is_busy {
-        button_surface(theme).with_alpha(0.72 + 0.24 * busy_pulse)
+        button_surface(theme).with_alpha(0.86)
     } else if disabled {
         disabled_button_surface(theme)
     } else {
@@ -1777,19 +1780,16 @@ fn focus_action_button(
     let style = if disabled {
         disabled_button_text_style(theme)
     } else {
-        focus_button_text_style(theme, busy_pulse)
+        focus_button_text_style(theme)
     };
-    let press_tick = useState(|| 0u64);
-    let press_lift = press_lift_value(press_tick.clone());
     Button(
-        glass_button_modifier_with_press(
+        glass_button_modifier(
             Modifier::empty().fill_max_width(),
             theme,
             !disabled,
             is_busy,
             background,
             14.0,
-            press_lift,
         )
         .height(64.0)
         .padding_symmetric(14.0, 16.0),
@@ -1797,7 +1797,6 @@ fn focus_action_button(
             if disabled {
                 return;
             }
-            press_tick.set(press_tick.value().wrapping_add(1));
             record_button_press(ui_preferences.clone(), &count_key);
             handle_action_button(
                 action,
@@ -3611,10 +3610,7 @@ fn draw_app_background<S: DrawScope + ?Sized>(scope: &mut S, theme: ThemeMode) {
         }
     } else {
         scope.draw_rect(Brush::radial_gradient(
-            vec![
-                Color::from_rgba_u8(46, 86, 148, 70),
-                Color::TRANSPARENT,
-            ],
+            vec![Color::from_rgba_u8(46, 86, 148, 70), Color::TRANSPARENT],
             Point::new(size.width * 0.5, size.height * 0.32),
             (size.width.max(size.height)) * 0.7,
         ));
@@ -4388,33 +4384,15 @@ fn glass_button_modifier(
     base: Color,
     radius: f32,
 ) -> Modifier {
-    glass_button_modifier_with_press(modifier, theme, enabled, active, base, radius, 0.0)
-}
-
-fn glass_button_modifier_with_press(
-    modifier: Modifier,
-    theme: ThemeMode,
-    enabled: bool,
-    active: bool,
-    base: Color,
-    radius: f32,
-    press_lift: f32,
-) -> Modifier {
     let shape = LayerShape::Rounded(RoundedCornerShape::uniform(radius));
     let shadow_alpha = if enabled { 0.64 } else { 0.18 };
-    let press = press_lift.clamp(0.0, 1.0);
     modifier
-        .graphics_layer_block(move |layer| {
-            layer.translation_y = 2.4 * press;
-            layer.scale_x = 1.0 - 0.018 * press;
-            layer.scale_y = 1.0 - 0.018 * press;
-        })
         .drop_shadow(shape, move |shadow| {
-            shadow.radius = (if active { 13.0 } else { 9.0 }) - 4.0 * press;
+            shadow.radius = if active { 13.0 } else { 9.0 };
             shadow.spread = if active { 1.0 } else { 0.0 };
-            shadow.offset = Point::new(0.0, (if active { 6.0 } else { 4.0 }) - 2.5 * press);
+            shadow.offset = Point::new(0.0, if active { 6.0 } else { 4.0 });
             shadow.color = shadow_color(theme);
-            shadow.alpha = shadow_alpha * (1.0 - 0.5 * press);
+            shadow.alpha = shadow_alpha;
         })
         .draw_behind(move |scope| {
             let size = scope.size();
@@ -4491,32 +4469,28 @@ fn primary_button(
 ) {
     let count = ui_preferences.value().button_count(count_key);
     let count_key = count_key.to_string();
-    let busy_pulse = if busy { busy_pulse() } else { 0.0 };
     let background = if busy {
-        button_surface(theme).with_alpha(0.66 + 0.26 * busy_pulse)
+        button_surface(theme).with_alpha(0.86)
     } else if disabled {
         disabled_button_surface(theme)
     } else {
         button_surface(theme)
     };
     let text_style = if busy {
-        busy_button_text_style(theme, busy_pulse)
+        busy_button_text_style(theme)
     } else if disabled {
         disabled_button_text_style(theme)
     } else {
         button_text_style(theme)
     };
-    let press_tick = useState(|| 0u64);
-    let press_lift = press_lift_value(press_tick.clone());
     Button(
-        glass_button_modifier_with_press(
+        glass_button_modifier(
             Modifier::empty().weight(1.0),
             theme,
             !disabled,
             busy,
             background,
             10.0,
-            press_lift,
         )
         .height(46.0)
         .padding_symmetric(8.0, 9.0),
@@ -4524,7 +4498,6 @@ fn primary_button(
             if disabled {
                 return;
             }
-            press_tick.set(press_tick.value().wrapping_add(1));
             record_button_press(ui_preferences.clone(), &count_key);
             on_click();
         },
@@ -4631,11 +4604,7 @@ fn button_content(
         icon_overlay_modifier(row_modifier, icon, icon_size, 0.0, theme, busy),
         RowSpec::default().horizontal_arrangement(LinearArrangement::spaced_by(4.0)),
         move || {
-            let label = if busy {
-                format!("{}...", label)
-            } else {
-                label.clone()
-            };
+            let label = label.clone();
             Spacer(Size::new(icon_size, 0.0));
             if expand_label {
                 BasicText(
@@ -4658,57 +4627,90 @@ fn button_content(
                     1,
                 );
             }
+            ButtonActivityIndicator(theme, busy);
             button_badge(count, theme);
         },
     );
 }
 
 #[composable]
-fn busy_pulse() -> f32 {
-    let transition = rememberInfiniteTransition("busy_button_pulse");
-    transition
+fn ButtonActivityIndicator(theme: ThemeMode, active: bool) {
+    // Keep this composable mounted while inactive. Cranpose issue #262 tracks
+    // late-created infinite transitions painting only their first frame.
+    let transition = rememberInfiniteTransition("button_activity_indicator");
+    let phase = transition
         .animateFloat(
-            0.35,
+            0.0,
             1.0,
             infiniteRepeatable(
-                AnimationSpec::linear(650),
+                AnimationSpec::tween(900, Easing::EaseInOut),
                 RepeatMode::Reverse,
                 StartOffset::default(),
             ),
-            "busy_button_pulse",
+            "button_activity_indicator_phase",
         )
-        .value()
-}
-
-#[composable]
-fn press_lift_value(press_tick: MutableState<u64>) -> f32 {
-    let press_target = useState(|| 0.0_f32);
-    cranpose_core::LaunchedEffect!(press_tick.value(), {
-        let press_target = press_target.clone();
-        let press_tick = press_tick.clone();
-        move |scope| {
-            if press_tick.value() == 0 {
-                return;
-            }
-            press_target.set(1.0);
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                let press_target = press_target.clone();
-                scope.launch_background(
-                    move |_token| async move {
-                        std::thread::sleep(std::time::Duration::from_millis(120));
+        .value();
+    let indicator_width = if active {
+        BUTTON_ACTIVITY_INDICATOR_WIDTH
+    } else {
+        0.0
+    };
+    ComposeBox(
+        Modifier::empty()
+            .size(Size::new(indicator_width, BUTTON_ACTIVITY_INDICATOR_HEIGHT))
+            .clip_to_bounds()
+            .draw_behind(move |scope| {
+                if !active {
+                    return;
+                }
+                let size = scope.size();
+                let phase = phase.clamp(0.0, 1.0);
+                let track_color = match theme {
+                    ThemeMode::Dark => Color::from_rgba_u8(150, 195, 240, 86),
+                    ThemeMode::Light => Color::from_rgba_u8(4, 73, 124, 78),
+                };
+                let highlight_start = match theme {
+                    ThemeMode::Dark => Color::from_rgba_u8(106, 226, 255, 245),
+                    ThemeMode::Light => Color::from_rgba_u8(0, 119, 216, 245),
+                };
+                let travel = (size.width - 24.0).max(0.0);
+                let marker_x = travel * phase;
+                let counter_x = travel * (1.0 - phase);
+                scope.draw_rect_at(
+                    Rect {
+                        x: 0.0,
+                        y: 7.0,
+                        width: size.width,
+                        height: 5.0,
                     },
-                    move |_| press_target.set(0.0),
+                    Brush::solid(track_color),
                 );
-            }
-            #[cfg(target_arch = "wasm32")]
-            {
-                let _ = scope;
-                press_target.set(0.0);
-            }
-        }
-    });
-    animateFloatAsState(press_target.value(), "press_lift").value()
+                scope.draw_rect_at(
+                    Rect {
+                        x: marker_x,
+                        y: 3.0,
+                        width: 24.0,
+                        height: 12.0,
+                    },
+                    Brush::horizontal_gradient(
+                        vec![highlight_start, Color::from_rgba_u8(255, 255, 255, 250)],
+                        marker_x,
+                        marker_x + 24.0,
+                    ),
+                );
+                scope.draw_rect_at(
+                    Rect {
+                        x: counter_x + 9.0,
+                        y: 0.0,
+                        width: 5.0,
+                        height: 18.0,
+                    },
+                    Brush::solid(Color::from_rgba_u8(62, 219, 111, 240)),
+                );
+            }),
+        BoxSpec::default(),
+        || {},
+    );
 }
 
 #[composable]
@@ -5304,7 +5306,9 @@ fn cleanup_capture_artifacts(draft_path: &Path, output_path: &Path) {
 }
 
 fn run_long_action(pending: PendingAction) -> LongActionResult {
-    match pending.action {
+    #[cfg(not(target_arch = "wasm32"))]
+    let started_at = Instant::now();
+    let result = match pending.action {
         LongAction::RefreshRasterPreview => {
             LongActionResult::RefreshRasterPreview(render_raster_preview_result(&pending.draft))
         }
@@ -5326,6 +5330,22 @@ fn run_long_action(pending: PendingAction) -> LongActionResult {
         LongAction::PostTelegramComment => LongActionResult::PostTelegramComment(
             post_telegram_comment_result(&pending.draft, &pending.telegram_post_link),
         ),
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    hold_long_action_busy_state(started_at);
+    result
+}
+
+fn wait_before_long_action() {
+    #[cfg(not(target_arch = "wasm32"))]
+    std::thread::sleep(Duration::from_millis(LONG_ACTION_PREFLIGHT_MS));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn hold_long_action_busy_state(started_at: Instant) {
+    let minimum = Duration::from_millis(MIN_LONG_ACTION_BUSY_MS);
+    if let Some(remaining) = minimum.checked_sub(started_at.elapsed()) {
+        std::thread::sleep(remaining);
     }
 }
 
@@ -6001,10 +6021,10 @@ fn button_text_style(theme: ThemeMode) -> TextStyle {
     }
 }
 
-fn focus_button_text_style(theme: ThemeMode, pulse: f32) -> TextStyle {
+fn focus_button_text_style(theme: ThemeMode) -> TextStyle {
     TextStyle {
         span_style: SpanStyle {
-            color: Some(button_text_color(theme).with_alpha(0.82 + 0.18 * pulse.max(0.0))),
+            color: Some(button_text_color(theme).with_alpha(0.82)),
             font_size: cranpose::text::TextUnit::Sp(15.0),
             font_weight: Some(cranpose::text::FontWeight::BOLD),
             ..SpanStyle::default()
@@ -6013,10 +6033,10 @@ fn focus_button_text_style(theme: ThemeMode, pulse: f32) -> TextStyle {
     }
 }
 
-fn busy_button_text_style(theme: ThemeMode, pulse: f32) -> TextStyle {
+fn busy_button_text_style(theme: ThemeMode) -> TextStyle {
     TextStyle {
         span_style: SpanStyle {
-            color: Some(button_text_color(theme).with_alpha(0.72 + 0.28 * pulse)),
+            color: Some(button_text_color(theme).with_alpha(0.72)),
             font_size: cranpose::text::TextUnit::Sp(10.0),
             font_weight: Some(cranpose::text::FontWeight::BOLD),
             ..SpanStyle::default()
@@ -6078,14 +6098,13 @@ fn interactive_queue_text_style(
     done: bool,
     disabled: bool,
     busy: bool,
-    pulse: f32,
 ) -> TextStyle {
     TextStyle {
         span_style: SpanStyle {
             color: Some(if disabled {
                 muted_text_color(theme)
             } else if done || busy {
-                button_text_color(theme).with_alpha(0.82 + 0.18 * pulse.max(0.0))
+                button_text_color(theme).with_alpha(0.82)
             } else {
                 primary_text_color(theme)
             }),
@@ -6210,11 +6229,10 @@ fn interactive_queue_surface(
     done: bool,
     disabled: bool,
     busy: bool,
-    pulse: f32,
     invokes_button: bool,
 ) -> Color {
     if busy {
-        return button_surface(theme).with_alpha(0.66 + 0.26 * pulse);
+        return button_surface(theme).with_alpha(0.66);
     }
     if disabled {
         return disabled_button_surface(theme);
