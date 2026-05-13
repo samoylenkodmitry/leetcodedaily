@@ -66,7 +66,7 @@ const INTERACTIVE_QUEUE_CHIP_WIDTH: f32 = 214.0;
 const INTERACTIVE_QUEUE_CHIP_GAP: f32 = 10.0;
 const BUTTON_ACTIVITY_INDICATOR_WIDTH: f32 = 66.0;
 const BUTTON_ACTIVITY_INDICATOR_HEIGHT: f32 = 18.0;
-const LONG_ACTION_PREFLIGHT_MS: u64 = 1_500;
+const ACTIVITY_INDICATOR_PREFLIGHT_MS: u64 = 1_500;
 const MIN_LONG_ACTION_BUSY_MS: u64 = 1_250;
 #[cfg(any(test, target_arch = "wasm32"))]
 const WEB_SURFACE_MAX_DIM: u32 = 1900;
@@ -426,7 +426,7 @@ fn App() {
 
             scope.launch_background(
                 move |_| async move {
-                    wait_before_long_action();
+                    show_activity_indicator_before_long_action();
                     run_long_action(action)
                 },
                 move |result| {
@@ -5336,9 +5336,12 @@ fn run_long_action(pending: PendingAction) -> LongActionResult {
     result
 }
 
-fn wait_before_long_action() {
+fn show_activity_indicator_before_long_action() {
+    // Cranpose issue #264 tracks this workaround. Without this preflight
+    // window, the desktop renderer can present the first busy frame and then
+    // stall while the save/render worker runs.
     #[cfg(not(target_arch = "wasm32"))]
-    std::thread::sleep(Duration::from_millis(LONG_ACTION_PREFLIGHT_MS));
+    std::thread::sleep(Duration::from_millis(ACTIVITY_INDICATOR_PREFLIGHT_MS));
 }
 
 #[cfg(not(target_arch = "wasm32"))]
