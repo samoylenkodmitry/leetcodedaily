@@ -30,7 +30,8 @@ use cranpose::DEFAULT_ALPHA;
 use cranpose::prelude::*;
 use cranpose::widgets::BasicTextFieldWithOptions;
 use cranpose_animation::{
-    AnimationSpec, Easing, RepeatMode, StartOffset, infiniteRepeatable, rememberInfiniteTransition,
+    AnimationSpec, Easing, RepeatMode, Spring, StartOffset, animateFloatAsState,
+    infiniteRepeatable, rememberInfiniteTransition, spring, tween,
 };
 use cranpose_core::MutableState;
 use cranpose_foundation::DrawScope;
@@ -66,6 +67,10 @@ const INTERACTIVE_QUEUE_CHIP_WIDTH: f32 = 214.0;
 const INTERACTIVE_QUEUE_CHIP_GAP: f32 = 10.0;
 const BUTTON_ACTIVITY_INDICATOR_WIDTH: f32 = 66.0;
 const BUTTON_ACTIVITY_INDICATOR_HEIGHT: f32 = 18.0;
+const BUTTON_PRESS_RELEASE_DURATION_MS: u64 = 180;
+const BUTTON_PRESS_SCALE_DELTA: f32 = 0.018;
+const BUTTON_PRESS_TRANSLATION_Y: f32 = 1.4;
+#[cfg(not(target_arch = "wasm32"))]
 const MIN_LONG_ACTION_BUSY_MS: u64 = 1_250;
 #[cfg(any(test, target_arch = "wasm32"))]
 const WEB_SURFACE_MAX_DIM: u32 = 1900;
@@ -94,6 +99,8 @@ enum ActionButtonId {
 enum LongAction {
     RefreshRasterPreview,
     RefreshCranposePreview,
+    #[cfg(not(target_arch = "wasm32"))]
+    CopyRichText,
     SaveRasterWebp,
     SaveCranposeWebp,
     PublishBlog,
@@ -113,6 +120,8 @@ struct PendingAction {
 enum LongActionResult {
     RefreshRasterPreview(std::result::Result<PreviewState, String>),
     RefreshCranposePreview(std::result::Result<PreviewState, String>),
+    #[cfg(not(target_arch = "wasm32"))]
+    CopyRichText(std::result::Result<(), String>),
     SaveRasterWebp(std::result::Result<PreviewState, String>),
     SaveCranposeWebp(std::result::Result<PreviewState, String>),
     PublishBlog(std::result::Result<PublishBlogOutcome, String>),
@@ -1542,8 +1551,9 @@ fn InteractiveQueueChip(
     let disabled = long_action.is_some() && action_busy.is_some();
     let invokes_button = queue_item_invokes_button(&item_key);
     let background = interactive_queue_surface(theme, done, disabled, is_busy, invokes_button);
+    let (button_spec, press) = animated_button_spec(!disabled, "interactive_queue_chip_press");
     Button(
-        glass_button_modifier(
+        glass_button_modifier_with_press(
             Modifier::empty()
                 .width(INTERACTIVE_QUEUE_CHIP_WIDTH)
                 .height(48.0),
@@ -1552,8 +1562,10 @@ fn InteractiveQueueChip(
             done || is_busy,
             background,
             10.0,
+            press,
         )
         .padding_symmetric(10.0, 8.0),
+        button_spec,
         {
             let item_key = item_key.clone();
             move || {
@@ -1778,17 +1790,20 @@ fn focus_action_button(
     } else {
         focus_button_text_style(theme)
     };
+    let (button_spec, press) = animated_button_spec(!disabled, "focus_action_button_press");
     Button(
-        glass_button_modifier(
+        glass_button_modifier_with_press(
             Modifier::empty().fill_max_width(),
             theme,
             !disabled,
             is_busy,
             background,
             14.0,
+            press,
         )
         .height(64.0)
         .padding_symmetric(14.0, 16.0),
+        button_spec,
         move || {
             if disabled {
                 return;
@@ -2120,6 +2135,8 @@ impl ActionButtonId {
         match self {
             Self::RefreshRasterPreview => Some(LongAction::RefreshRasterPreview),
             Self::RefreshCranposePreview => Some(LongAction::RefreshCranposePreview),
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::CopyRichText => Some(LongAction::CopyRichText),
             Self::SaveRasterWebp => Some(LongAction::SaveRasterWebp),
             Self::SaveCranposeWebp => Some(LongAction::SaveCranposeWebp),
             Self::PublishBlog => Some(LongAction::PublishBlog),
@@ -2135,6 +2152,8 @@ impl LongAction {
         match self {
             Self::RefreshRasterPreview => "Refresh Raster",
             Self::RefreshCranposePreview => "Refresh Cranpose",
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::CopyRichText => "Copy Rich Text",
             Self::SaveRasterWebp => "Save Raster WebP",
             Self::SaveCranposeWebp => "Save Cranpose WebP",
             Self::PublishBlog => "Publish Blog",
@@ -4137,16 +4156,19 @@ fn FieldSuggestion(
     theme: ThemeMode,
 ) {
     let icon = field.icon();
+    let (button_spec, press) = animated_button_spec(true, "field_suggestion_press");
     Button(
-        glass_button_modifier(
+        glass_button_modifier_with_press(
             Modifier::empty().fill_max_width(),
             theme,
             true,
             false,
             soft_button_surface(theme),
             11.0,
+            press,
         )
         .padding_symmetric(13.0, 11.0),
+        button_spec,
         move || {
             active_queue_target.set(Some(field.component_key()));
             status.set(format!("Current queue row: {}.", field.label()));
@@ -4380,26 +4402,72 @@ fn glass_button_modifier(
     base: Color,
     radius: f32,
 ) -> Modifier {
+    glass_button_modifier_with_press(modifier, theme, enabled, active, base, radius, 0.0)
+}
+
+#[composable]
+fn animated_button_spec(enabled: bool, label: &'static str) -> (ButtonSpec, f32) {
+    let interaction_source = rememberMutableInteractionSource();
+    let is_pressed = interaction_source.collectIsPressedAsState().value();
+    let target = if enabled && is_pressed { 1.0 } else { 0.0 };
+    let animation = if target > 0.0 {
+        spring(Spring::DampingRatioMediumBouncy, Spring::StiffnessMedium)
+    } else {
+        tween(
+            BUTTON_PRESS_RELEASE_DURATION_MS,
+            Easing::FastOutSlowInEasing,
+        )
+    };
+    let press = animateFloatAsState(target, animation, label)
+        .value()
+        .clamp(0.0, 1.0);
+
+    (
+        ButtonSpec::new().interaction_source(interaction_source),
+        press,
+    )
+}
+
+fn glass_button_modifier_with_press(
+    modifier: Modifier,
+    theme: ThemeMode,
+    enabled: bool,
+    active: bool,
+    base: Color,
+    radius: f32,
+    press: f32,
+) -> Modifier {
+    let press = if enabled { press.clamp(0.0, 1.0) } else { 0.0 };
     let shape = LayerShape::Rounded(RoundedCornerShape::uniform(radius));
     let shadow_alpha = if enabled { 0.64 } else { 0.18 };
+    let scale = 1.0 - press * BUTTON_PRESS_SCALE_DELTA;
+    let translation_y = press * BUTTON_PRESS_TRANSLATION_Y;
     modifier
+        .graphics_layer_block(move |layer| {
+            layer.scale_x = scale;
+            layer.scale_y = scale;
+            layer.translation_y = translation_y;
+        })
         .drop_shadow(shape, move |shadow| {
-            shadow.radius = if active { 13.0 } else { 9.0 };
-            shadow.spread = if active { 1.0 } else { 0.0 };
-            shadow.offset = Point::new(0.0, if active { 6.0 } else { 4.0 });
+            let base_radius = if active { 13.0 } else { 9.0 };
+            let base_spread = if active { 1.0 } else { 0.0 };
+            let base_offset = if active { 6.0 } else { 4.0 };
+            shadow.radius = (base_radius - press * 3.0).max(2.0);
+            shadow.spread = (base_spread - press * 0.45).max(0.0);
+            shadow.offset = Point::new(0.0, (base_offset - press * 1.8).max(1.0));
             shadow.color = shadow_color(theme);
-            shadow.alpha = shadow_alpha;
+            shadow.alpha = shadow_alpha * (1.0 - press * 0.24);
         })
         .draw_behind(move |scope| {
             let size = scope.size();
             let radii = CornerRadii::uniform(radius);
             let top = if enabled {
-                lighten_color(base, if active { 0.56 } else { 0.38 })
+                lighten_color(base, (if active { 0.56 } else { 0.38 }) - press * 0.08)
             } else {
                 base.with_alpha(0.5)
             };
             let bottom = if enabled {
-                darken_color(base, if active { 0.16 } else { 0.06 })
+                darken_color(base, (if active { 0.16 } else { 0.06 }) + press * 0.08)
             } else {
                 base.with_alpha(0.38)
             };
@@ -4443,11 +4511,11 @@ fn glass_button_modifier(
             );
         })
         .inner_shadow(shape, move |shadow| {
-            shadow.radius = 5.0;
+            shadow.radius = 5.0 + press * 2.0;
             shadow.spread = -1.0;
-            shadow.offset = Point::new(0.0, 1.0);
+            shadow.offset = Point::new(0.0, 1.0 + press);
             shadow.color = Color::from_rgba_u8(255, 255, 255, if active { 180 } else { 115 });
-            shadow.alpha = if enabled { 0.72 } else { 0.3 };
+            shadow.alpha = if enabled { 0.72 - press * 0.18 } else { 0.3 };
         })
         .rounded_corners(radius)
 }
@@ -4479,17 +4547,20 @@ fn primary_button(
     } else {
         button_text_style(theme)
     };
+    let (button_spec, press) = animated_button_spec(!disabled, "primary_button_press");
     Button(
-        glass_button_modifier(
+        glass_button_modifier_with_press(
             Modifier::empty().weight(1.0),
             theme,
             !disabled,
             busy,
             background,
             10.0,
+            press,
         )
         .height(46.0)
         .padding_symmetric(8.0, 9.0),
+        button_spec,
         move || {
             if disabled {
                 return;
@@ -4520,16 +4591,19 @@ fn subtle_button(
     on_click: impl FnMut() + 'static,
 ) {
     let count = ui_preferences.value().button_count(&count_key);
+    let (button_spec, press) = animated_button_spec(true, "subtle_button_press");
     Button(
-        glass_button_modifier(
+        glass_button_modifier_with_press(
             Modifier::empty(),
             theme,
             true,
             false,
             soft_button_surface(theme),
             9.0,
+            press,
         )
         .padding_symmetric(9.0, 7.0),
+        button_spec,
         move || {
             record_button_press(ui_preferences.clone(), &count_key);
             on_click();
@@ -4550,16 +4624,19 @@ fn subtle_button(
 
 #[composable]
 fn theme_button(label: String, theme: ThemeMode, on_click: impl FnMut() + 'static) {
+    let (button_spec, press) = animated_button_spec(true, "theme_button_press");
     Button(
-        glass_button_modifier(
+        glass_button_modifier_with_press(
             Modifier::empty(),
             theme,
             true,
             false,
             soft_button_surface(theme),
             9.0,
+            press,
         )
         .padding_symmetric(10.0, 7.0),
+        button_spec,
         on_click,
         move || {
             let label = label.clone();
@@ -5311,6 +5388,10 @@ fn run_long_action(pending: PendingAction) -> LongActionResult {
         LongAction::RefreshCranposePreview => {
             LongActionResult::RefreshCranposePreview(render_compose_preview_result(&pending.draft))
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        LongAction::CopyRichText => {
+            LongActionResult::CopyRichText(copy_rich_text_result(&pending.draft))
+        }
         LongAction::SaveRasterWebp => LongActionResult::SaveRasterWebp(
             save_webp(&pending.draft).map_err(|error| error.to_string()),
         ),
@@ -5372,6 +5453,11 @@ fn finish_long_action(
                 compose_error.set(error.clone());
                 status.set(format!("Cranpose preview failed: {error}"));
             }
+        },
+        #[cfg(not(target_arch = "wasm32"))]
+        LongActionResult::CopyRichText(result) => match result {
+            Ok(()) => status.set("Rich text copied to the clipboard.".to_string()),
+            Err(error) => status.set(format!("Rich text copy failed: {error}")),
         },
         LongActionResult::SaveRasterWebp(result) => match result {
             Ok(preview) => {
@@ -5443,6 +5529,14 @@ fn render_compose_preview_result(draft: &PostDraft) -> std::result::Result<Previ
     render_compose_preview_frame(draft)
         .map_err(|error| error.to_string())
         .and_then(|frame| PreviewState::from_frame(frame).map_err(|error| error.to_string()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn copy_rich_text_result(draft: &PostDraft) -> std::result::Result<(), String> {
+    let image_data_url = preview_webp_data_url(draft).ok();
+    let html = draft.rich_html_with_image(image_data_url.as_deref());
+    let fallback = draft.rich_text_fallback();
+    copy_rich_text(&html, &fallback).map_err(|error| error.to_string())
 }
 
 fn save_compose_webp_result(draft: &PostDraft) -> Result<PreviewState> {
@@ -6320,8 +6414,8 @@ mod tests {
 
     use super::{
         APP_HEIGHT, APP_WIDTH, ActionButtonId, EditorFieldId, FieldQueueCommand,
-        INTERACTIVE_QUEUE_CHIP_GAP, INTERACTIVE_QUEUE_CHIP_WIDTH, META_FIELDS, NextWorkItem,
-        WEB_SURFACE_MAX_DIM, compute_web_canvas_size, interactive_queue_label,
+        INTERACTIVE_QUEUE_CHIP_GAP, INTERACTIVE_QUEUE_CHIP_WIDTH, LongAction, META_FIELDS,
+        NextWorkItem, WEB_SURFACE_MAX_DIM, compute_web_canvas_size, interactive_queue_label,
         interactive_queue_next_key, interactive_queue_scroll_target,
         interactive_queue_selected_key, interactive_queue_should_auto_scroll,
         ordered_action_buttons, ordered_fields, parse_field_queue_key, queue_item_invokes_button,
@@ -6386,6 +6480,15 @@ mod tests {
         ));
         assert!(queue_item_invokes_button("field.problem_title.clear"));
         assert!(!queue_item_invokes_button("field.problem_title"));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn copy_rich_text_uses_long_action_pipeline_on_desktop() {
+        assert_eq!(
+            ActionButtonId::CopyRichText.long_action(),
+            Some(LongAction::CopyRichText)
+        );
     }
 
     #[test]
