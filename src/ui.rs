@@ -70,6 +70,7 @@ const BUTTON_ACTIVITY_INDICATOR_HEIGHT: f32 = 18.0;
 const BUTTON_PRESS_RELEASE_DURATION_MS: u64 = 180;
 const BUTTON_PRESS_SCALE_DELTA: f32 = 0.018;
 const BUTTON_PRESS_TRANSLATION_Y: f32 = 1.4;
+#[cfg(not(target_arch = "wasm32"))]
 const MIN_LONG_ACTION_BUSY_MS: u64 = 1_250;
 #[cfg(any(test, target_arch = "wasm32"))]
 const WEB_SURFACE_MAX_DIM: u32 = 1900;
@@ -98,6 +99,8 @@ enum ActionButtonId {
 enum LongAction {
     RefreshRasterPreview,
     RefreshCranposePreview,
+    #[cfg(not(target_arch = "wasm32"))]
+    CopyRichText,
     SaveRasterWebp,
     SaveCranposeWebp,
     PublishBlog,
@@ -117,6 +120,8 @@ struct PendingAction {
 enum LongActionResult {
     RefreshRasterPreview(std::result::Result<PreviewState, String>),
     RefreshCranposePreview(std::result::Result<PreviewState, String>),
+    #[cfg(not(target_arch = "wasm32"))]
+    CopyRichText(std::result::Result<(), String>),
     SaveRasterWebp(std::result::Result<PreviewState, String>),
     SaveCranposeWebp(std::result::Result<PreviewState, String>),
     PublishBlog(std::result::Result<PublishBlogOutcome, String>),
@@ -2130,6 +2135,8 @@ impl ActionButtonId {
         match self {
             Self::RefreshRasterPreview => Some(LongAction::RefreshRasterPreview),
             Self::RefreshCranposePreview => Some(LongAction::RefreshCranposePreview),
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::CopyRichText => Some(LongAction::CopyRichText),
             Self::SaveRasterWebp => Some(LongAction::SaveRasterWebp),
             Self::SaveCranposeWebp => Some(LongAction::SaveCranposeWebp),
             Self::PublishBlog => Some(LongAction::PublishBlog),
@@ -2145,6 +2152,8 @@ impl LongAction {
         match self {
             Self::RefreshRasterPreview => "Refresh Raster",
             Self::RefreshCranposePreview => "Refresh Cranpose",
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::CopyRichText => "Copy Rich Text",
             Self::SaveRasterWebp => "Save Raster WebP",
             Self::SaveCranposeWebp => "Save Cranpose WebP",
             Self::PublishBlog => "Publish Blog",
@@ -5379,6 +5388,10 @@ fn run_long_action(pending: PendingAction) -> LongActionResult {
         LongAction::RefreshCranposePreview => {
             LongActionResult::RefreshCranposePreview(render_compose_preview_result(&pending.draft))
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        LongAction::CopyRichText => {
+            LongActionResult::CopyRichText(copy_rich_text_result(&pending.draft))
+        }
         LongAction::SaveRasterWebp => LongActionResult::SaveRasterWebp(
             save_webp(&pending.draft).map_err(|error| error.to_string()),
         ),
@@ -5440,6 +5453,11 @@ fn finish_long_action(
                 compose_error.set(error.clone());
                 status.set(format!("Cranpose preview failed: {error}"));
             }
+        },
+        #[cfg(not(target_arch = "wasm32"))]
+        LongActionResult::CopyRichText(result) => match result {
+            Ok(()) => status.set("Rich text copied to the clipboard.".to_string()),
+            Err(error) => status.set(format!("Rich text copy failed: {error}")),
         },
         LongActionResult::SaveRasterWebp(result) => match result {
             Ok(preview) => {
@@ -5511,6 +5529,14 @@ fn render_compose_preview_result(draft: &PostDraft) -> std::result::Result<Previ
     render_compose_preview_frame(draft)
         .map_err(|error| error.to_string())
         .and_then(|frame| PreviewState::from_frame(frame).map_err(|error| error.to_string()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn copy_rich_text_result(draft: &PostDraft) -> std::result::Result<(), String> {
+    let image_data_url = preview_webp_data_url(draft).ok();
+    let html = draft.rich_html_with_image(image_data_url.as_deref());
+    let fallback = draft.rich_text_fallback();
+    copy_rich_text(&html, &fallback).map_err(|error| error.to_string())
 }
 
 fn save_compose_webp_result(draft: &PostDraft) -> Result<PreviewState> {
@@ -6388,8 +6414,8 @@ mod tests {
 
     use super::{
         APP_HEIGHT, APP_WIDTH, ActionButtonId, EditorFieldId, FieldQueueCommand,
-        INTERACTIVE_QUEUE_CHIP_GAP, INTERACTIVE_QUEUE_CHIP_WIDTH, META_FIELDS, NextWorkItem,
-        WEB_SURFACE_MAX_DIM, compute_web_canvas_size, interactive_queue_label,
+        INTERACTIVE_QUEUE_CHIP_GAP, INTERACTIVE_QUEUE_CHIP_WIDTH, LongAction, META_FIELDS,
+        NextWorkItem, WEB_SURFACE_MAX_DIM, compute_web_canvas_size, interactive_queue_label,
         interactive_queue_next_key, interactive_queue_scroll_target,
         interactive_queue_selected_key, interactive_queue_should_auto_scroll,
         ordered_action_buttons, ordered_fields, parse_field_queue_key, queue_item_invokes_button,
@@ -6454,6 +6480,15 @@ mod tests {
         ));
         assert!(queue_item_invokes_button("field.problem_title.clear"));
         assert!(!queue_item_invokes_button("field.problem_title"));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn copy_rich_text_uses_long_action_pipeline_on_desktop() {
+        assert_eq!(
+            ActionButtonId::CopyRichText.long_action(),
+            Some(LongAction::CopyRichText)
+        );
     }
 
     #[test]
