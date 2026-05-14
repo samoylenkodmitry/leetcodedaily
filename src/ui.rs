@@ -1554,6 +1554,7 @@ fn InteractiveQueueChip(
             10.0,
         )
         .padding_symmetric(10.0, 8.0),
+        ButtonSpec::default(),
         {
             let item_key = item_key.clone();
             move || {
@@ -1789,6 +1790,7 @@ fn focus_action_button(
         )
         .height(64.0)
         .padding_symmetric(14.0, 16.0),
+        ButtonSpec::default(),
         move || {
             if disabled {
                 return;
@@ -4147,6 +4149,7 @@ fn FieldSuggestion(
             11.0,
         )
         .padding_symmetric(13.0, 11.0),
+        ButtonSpec::default(),
         move || {
             active_queue_target.set(Some(field.component_key()));
             status.set(format!("Current queue row: {}.", field.label()));
@@ -4490,6 +4493,7 @@ fn primary_button(
         )
         .height(46.0)
         .padding_symmetric(8.0, 9.0),
+        ButtonSpec::default(),
         move || {
             if disabled {
                 return;
@@ -4530,6 +4534,7 @@ fn subtle_button(
             9.0,
         )
         .padding_symmetric(9.0, 7.0),
+        ButtonSpec::default(),
         move || {
             record_button_press(ui_preferences.clone(), &count_key);
             on_click();
@@ -4560,6 +4565,7 @@ fn theme_button(label: String, theme: ThemeMode, on_click: impl FnMut() + 'stati
             9.0,
         )
         .padding_symmetric(10.0, 7.0),
+        ButtonSpec::default(),
         on_click,
         move || {
             let label = label.clone();
