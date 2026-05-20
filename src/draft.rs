@@ -1347,10 +1347,7 @@ mod tests {
         let youtube_pos = html
             .find("<a href=\"https://youtu.be/demo\">")
             .expect("youtube link present");
-        assert!(
-            img_pos < youtube_pos,
-            "image must precede the youtube link"
-        );
+        assert!(img_pos < youtube_pos, "image must precede the youtube link");
         assert!(!draft.rich_html_with_image(None).contains("<img"));
     }
 
