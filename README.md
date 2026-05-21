@@ -1,6 +1,6 @@
 # LeetCode Daily Composer
 
-Desktop and web app built with `cranpose 0.1.3` for assembling daily LeetCode post markdown and rendering a shareable code card image.
+Desktop and web app built with `cranpose 0.1.6` for assembling daily LeetCode post markdown and rendering a shareable code card image.
 
 ## What It Does
 
