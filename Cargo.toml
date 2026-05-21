@@ -1,6 +1,6 @@
 [package]
 name = "leetcodedaily"
-version = "0.1.35"
+version = "0.1.36"
 edition = "2024"
 
 [lib]
@@ -19,11 +19,11 @@ imageproc = "0.26.2"
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 arboard = "3.6.1"
 base64 = "0.22.1"
-cranpose = { version = "0.1.6", default-features = false, features = ["desktop", "renderer-wgpu", "robot"] }
+cranpose = { version = "0.1.7", default-features = false, features = ["desktop", "renderer-wgpu", "robot"] }
 webp = "0.3.1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-cranpose = { version = "0.1.6", default-features = false, features = ["web", "renderer-wgpu"] }
+cranpose = { version = "0.1.7", default-features = false, features = ["web", "renderer-wgpu"] }
 js-sys = "0.3.98"
 wasm-bindgen = "0.2.121"
 wasm-bindgen-futures = "0.4.71"
@@ -33,6 +33,7 @@ web-sys = { version = "0.3.98", features = [
     "BlobPropertyBag",
     "Clipboard",
     "ClipboardItem",
+    "console",
     "Document",
     "Element",
     "HtmlCanvasElement",

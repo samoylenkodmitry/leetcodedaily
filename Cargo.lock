@@ -822,9 +822,9 @@ dependencies = [
 
 [[package]]
 name = "cranpose"
-version = "0.1.6"
+version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e705cdf4d134c54be89146aae3b321e6223f0a040f1c918504bad59539e8c39a"
+checksum = "07b23019441506f03a75126dc3b9e71511ab4537fdacd469ebcada3f76082178"
 dependencies = [
  "android-activity",
  "android_logger",
@@ -2358,7 +2358,7 @@ checksum = "7a79a3332a6609480d7d0c9eab957bca6b455b91bb84e66d19f5ff66294b85b8"
 
 [[package]]
 name = "leetcodedaily"
-version = "0.1.35"
+version = "0.1.36"
 dependencies = [
  "ab_glyph",
  "anyhow",
