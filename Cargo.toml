@@ -1,6 +1,6 @@
 [package]
 name = "leetcodedaily"
-version = "0.1.34"
+version = "0.1.35"
 edition = "2024"
 
 [lib]
@@ -10,9 +10,9 @@ crate-type = ["rlib", "cdylib"]
 ab_glyph = "0.2.32"
 anyhow = "1.0.102"
 chrono = "0.4.44"
-cranpose-animation = "0.1.6"
-cranpose-core = "0.1.6"
-cranpose-foundation = "0.1.6"
+cranpose-animation = "0.1.7"
+cranpose-core = "0.1.7"
+cranpose-foundation = "0.1.7"
 image = "0.25.10"
 imageproc = "0.26.2"
 
