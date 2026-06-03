@@ -32,7 +32,7 @@ jobs:
           cache-bin: false
 
       - name: Install wasm-bindgen CLI
-        run: cargo install wasm-bindgen-cli --version 0.2.121 --locked
+        run: cargo install wasm-bindgen-cli --version 0.2.122 --locked
 
       - name: Build site
         run: |
