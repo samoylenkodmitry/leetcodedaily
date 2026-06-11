@@ -514,9 +514,9 @@ dependencies = [
 
 [[package]]
 name = "cranpose"
-version = "0.1.13"
+version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e71bab42f54305b0bc62ecbfd88ad1665dbf887e7ed19c3cb1d533bd8e1aa681"
+checksum = "f6f23a8ef3138d0fcd1a4471a2063c606b62a7183662229a21713559079c6a87"
 dependencies = [
  "android-activity",
  "android_logger",
@@ -544,18 +544,18 @@ dependencies = [
 
 [[package]]
 name = "cranpose-animation"
-version = "0.1.13"
+version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f98293d1da769ce0bdc1ee92ac7585200fd2a3a49de601c5a4f4128b241685da"
+checksum = "7a759c95772fd3539a016acf2d592f6484f8e62f0d2331cfbee06ed365d4184b"
 dependencies = [
  "cranpose-core",
 ]
 
 [[package]]
 name = "cranpose-app-shell"
-version = "0.1.13"
+version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "24d101e46eba51302dac892c3b975a63a515088be5be59f9c9904879fa6c3534"
+checksum = "c90fb7999dab844551e7e74de4dc982d67d0707034ad9b1a1bc98f32144cc5a7"
 dependencies = [
  "arboard",
  "cranpose-core",
@@ -570,9 +570,9 @@ dependencies = [
 
 [[package]]
 name = "cranpose-core"
-version = "0.1.13"
+version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58ced23e1be347fcf3eb17ae542c9a2c018dd0a62f37871331937231709c04a2"
+checksum = "0652d828df099d925d71fcfbda71fb9b1e4ba6be6da3cbfaabfd4c74cd13bea0"
 dependencies = [
  "ahash",
  "futures-task",
@@ -585,9 +585,9 @@ dependencies = [
 
 [[package]]
 name = "cranpose-foundation"
-version = "0.1.13"
+version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f391f71cfe974e1dfa6e3cbafc3c6a589aad4bdcebd94a85fa9d82f265e2f16c"
+checksum = "382700e18bda989667081281147dda2879c86a31c95d587c6151a9a661f065e2"
 dependencies = [
  "cranpose-core",
  "cranpose-macros",
@@ -600,9 +600,9 @@ dependencies = [
 
 [[package]]
 name = "cranpose-macros"
-version = "0.1.13"
+version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56af062b5bb6acc5dad3c0a7f3cbf3034d518f449cd0b8d086bde5b5a13c59c1"
+checksum = "d1a19607f3c9f4768df2bd899eaab5d6d3cd1b83c612623d03e0ee96d8df5c6b"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -612,9 +612,9 @@ dependencies = [
 
 [[package]]
 name = "cranpose-platform-desktop-winit"
-version = "0.1.13"
+version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e11e8928ba557d5dbf2e61f9b96fc03821344d6aca3d7cd65a1c27a9e8fa2fa"
+checksum = "ebf332e60a782e26061203cef4f8fa236a5bcfb0bb3086c28dd247f7635db4ea"
 dependencies = [
  "cranpose-foundation",
  "cranpose-ui-graphics",
@@ -623,9 +623,9 @@ dependencies = [
 
 [[package]]
 name = "cranpose-platform-web"
-version = "0.1.13"
+version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9785ca2e9cf2b29bcaf845c7c96b8b2e5d86bf071e6ed11ae35c9fdea27b5da6"
+checksum = "541bbd36272ae7231e15320367b3c3a8c38155c39ea21399e9df88ff160ec028"
 dependencies = [
  "cranpose-foundation",
  "cranpose-ui-graphics",
@@ -633,9 +633,9 @@ dependencies = [
 
 [[package]]
 name = "cranpose-render-common"
-version = "0.1.13"
+version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "53664565fb54a15ebe05991730b156dd910f256dffd34973eaae8ac0dc780cea"
+checksum = "24eca5b39de5a7508b4814827c3a77e1e31d5a87bec943cd68c366f0378742c8"
 dependencies = [
  "ab_glyph",
  "cranpose-core",
@@ -649,9 +649,9 @@ dependencies = [
 
 [[package]]
 name = "cranpose-render-wgpu"
-version = "0.1.13"
+version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0410a06f6c6d9f5303b9cffd37f1b8549e05c9e9e295ac4406230c6e216d1f3f"
+checksum = "782b87a66ca33a506b61ec9f6d688c8082c5c533cc2a3ed4646d907f0bb959b0"
 dependencies = [
  "bytemuck",
  "cranpose-core",
@@ -667,9 +667,9 @@ dependencies = [
 
 [[package]]
 name = "cranpose-runtime-std"
-version = "0.1.13"
+version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e09de37137cff52ca2a1568aebee786030954a1444e9986c637354903bdda963"
+checksum = "85eb22f6e1a97ec3504ee8a89cb2920b9da2e9423f30e72baedba95b561c9f75"
 dependencies = [
  "cranpose-core",
  "web-time",
@@ -677,9 +677,9 @@ dependencies = [
 
 [[package]]
 name = "cranpose-services"
-version = "0.1.13"
+version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47668659be54f22ebb8a8b0a8ee83a824c71f08053731274dd97f141b4640947"
+checksum = "bcc4469ce89087237dc5dc737d05c7a3a139609262ff9488d47da92de33a3702"
 dependencies = [
  "cranpose-core",
  "cranpose-macros",
@@ -689,9 +689,9 @@ dependencies = [
 
 [[package]]
 name = "cranpose-ui"
-version = "0.1.13"
+version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "842d9c467986992200ffdcf14f58dfaaf21a0df3e38bea86a96b7e41cdc86840"
+checksum = "42359116ad42c316c06a678cc6d2d2d9929095e3a6f6ea09c265d855dd5c5297"
 dependencies = [
  "cranpose-animation",
  "cranpose-core",
@@ -708,18 +708,18 @@ dependencies = [
 
 [[package]]
 name = "cranpose-ui-graphics"
-version = "0.1.13"
+version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d00127d29f3062ee91700997e0a966f30889d0a059ddf4b7814fd7cd866eabe8"
+checksum = "a686c48d029b34f5a493d1b16ab4f2b85e0e06b51fd552e6071c71c0b94b9586"
 dependencies = [
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "cranpose-ui-layout"
-version = "0.1.13"
+version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20ca0c0fff6830a0eb2b0c028ab2e7ab7753a47cff6e121dbf98335470807433"
+checksum = "68147aafd5c7e3a605071820fb635d570f9935e780a3a18f960f342c5c09afcf"
 dependencies = [
  "cranpose-core",
  "cranpose-ui-graphics",
@@ -1401,7 +1401,7 @@ checksum = "7a79a3332a6609480d7d0c9eab957bca6b455b91bb84e66d19f5ff66294b85b8"
 
 [[package]]
 name = "leetcodedaily"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "ab_glyph",
  "anyhow",

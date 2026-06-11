@@ -4708,21 +4708,26 @@ fn button_content(
 
 #[composable]
 fn ButtonActivityIndicator(theme: ThemeMode, active: bool) {
-    // Keep this composable mounted while inactive. Cranpose issue #262 tracks
-    // late-created infinite transitions painting only their first frame.
-    let transition = rememberInfiniteTransition("button_activity_indicator");
-    let phase = transition
-        .animateFloat(
-            0.0,
-            1.0,
-            infiniteRepeatable(
-                AnimationSpec::tween(900, Easing::EaseInOut),
-                RepeatMode::Reverse,
-                StartOffset::default(),
-            ),
-            "button_activity_indicator_phase",
-        )
-        .value();
+    // Only run the infinite transition while the indicator is active: an
+    // always-running transition keeps the frame loop animating forever and
+    // burns a full GPU at idle. Late-created infinite transitions advance
+    // correctly since Cranpose 0.1.6 (issue #262).
+    let phase = if active {
+        rememberInfiniteTransition("button_activity_indicator")
+            .animateFloat(
+                0.0,
+                1.0,
+                infiniteRepeatable(
+                    AnimationSpec::tween(900, Easing::EaseInOut),
+                    RepeatMode::Reverse,
+                    StartOffset::default(),
+                ),
+                "button_activity_indicator_phase",
+            )
+            .value()
+    } else {
+        0.0
+    };
     let indicator_width = if active {
         BUTTON_ACTIVITY_INDICATOR_WIDTH
     } else {
