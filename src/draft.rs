@@ -76,16 +76,11 @@ pub fn load_initial_draft() -> PostDraft {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum ThemeMode {
+    #[default]
     Dark,
     Light,
-}
-
-impl Default for ThemeMode {
-    fn default() -> Self {
-        Self::Dark
-    }
 }
 
 impl ThemeMode {
@@ -545,7 +540,7 @@ pub fn persist_autosave(draft: &PostDraft) -> Result<()> {
             .with_context(|| format!("writing autosave temp file {}", temp_path.display()))?;
         fs::rename(&temp_path, &path)
             .with_context(|| format!("moving autosave into place at {}", path.display()))?;
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -581,7 +576,7 @@ pub fn persist_ui_preferences(preferences: &UiPreferences) -> Result<()> {
             .with_context(|| format!("writing UI preferences temp file {}", temp_path.display()))?;
         fs::rename(&temp_path, &path)
             .with_context(|| format!("moving UI preferences into place at {}", path.display()))?;
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -610,7 +605,7 @@ pub(crate) fn read_draft_snapshot(path: &Path) -> Result<PostDraft> {
 pub fn autosave_destination_label() -> String {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        return format!("Autosave: {}", autosave_path().display());
+        format!("Autosave: {}", autosave_path().display())
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -636,7 +631,7 @@ fn load_autosave() -> Result<Option<PostDraft>> {
         }
         let encoded = fs::read_to_string(&path)
             .with_context(|| format!("reading autosave file {}", path.display()))?;
-        return Ok(Some(decode_autosave(&encoded)?.with_today_date()));
+        Ok(Some(decode_autosave(&encoded)?.with_today_date()))
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -661,7 +656,7 @@ fn try_load_ui_preferences() -> Result<Option<UiPreferences>> {
         }
         let encoded = fs::read_to_string(&path)
             .with_context(|| format!("reading UI preferences file {}", path.display()))?;
-        return Ok(Some(decode_ui_preferences(&encoded)?));
+        Ok(Some(decode_ui_preferences(&encoded)?))
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -886,9 +881,9 @@ fn set_autosave_field(draft: &mut PostDraft, name: &str, value: &str) {
 fn autosave_path() -> PathBuf {
     #[cfg(test)]
     {
-        return std::env::temp_dir()
+        std::env::temp_dir()
             .join("leetcodedaily-tests")
-            .join("autosave.draft");
+            .join("autosave.draft")
     }
 
     #[cfg(not(test))]
@@ -902,9 +897,9 @@ fn autosave_path() -> PathBuf {
 fn ui_preferences_path() -> PathBuf {
     #[cfg(test)]
     {
-        return std::env::temp_dir()
+        std::env::temp_dir()
             .join("leetcodedaily-tests")
-            .join("ui-preferences.draft");
+            .join("ui-preferences.draft")
     }
 
     #[cfg(not(test))]

@@ -195,10 +195,10 @@ pub(crate) fn save_preview_frame_as_webp(
         fs::write(&export_path, &bytes)
             .with_context(|| format!("saving WebP to {}", export_path.display()))?;
 
-        return Ok(PreviewState {
+        Ok(PreviewState {
             bitmap: preview.bitmap,
             last_saved_webp_path: Some(export_path.display().to_string()),
-        });
+        })
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -263,16 +263,18 @@ fn compose_card(draft: &PostDraft) -> Result<RgbaImage> {
     }
 
     let body_color = rgba(170, 176, 187, 255);
-    draw_centered_lines(
+    draw_text_lines(
         &mut text_layer,
         body_color,
-        plan.tldr.x,
-        plan.tldr.y,
-        plan.tldr.width,
-        PxScale::from(plan.tldr.font_size),
+        TextLineLayout {
+            x: plan.tldr.x,
+            y: plan.tldr.y,
+            centered_width: Some(plan.tldr.width),
+            scale: PxScale::from(plan.tldr.font_size),
+            lines: &plan.tldr.lines,
+            line_height: plan.tldr.line_height,
+        },
         &assets.sans_font,
-        &plan.tldr.lines,
-        plan.tldr.line_height,
     );
 
     let text_overlay = DynamicImage::ImageRgba8(text_layer)
@@ -424,61 +426,51 @@ fn draw_code_panel(canvas: &mut RgbaImage, assets: &AssetPack, plan: &CodeRender
         &assets.mono_font,
         &format!("// {}", plan.runtime),
     );
-    draw_wrapped_lines(
+    draw_text_lines(
         canvas,
         code_color,
-        plan.text_x,
-        plan.code_y,
-        PxScale::from(plan.code_font_size),
+        TextLineLayout {
+            x: plan.text_x,
+            y: plan.code_y,
+            centered_width: None,
+            scale: PxScale::from(plan.code_font_size),
+            lines: &plan.lines,
+            line_height: plan.code_line_height,
+        },
         &assets.mono_font,
-        &plan.lines,
-        plan.code_line_height,
     );
 }
 
-fn draw_centered_lines(
-    canvas: &mut RgbaImage,
-    color: Rgba<u8>,
+struct TextLineLayout<'a> {
     x: i32,
     y: i32,
-    width: u32,
+    /// Center each line within this width; `None` keeps lines left-aligned.
+    centered_width: Option<u32>,
     scale: PxScale,
-    font: &FontArc,
-    lines: &[String],
+    lines: &'a [String],
     line_height: i32,
+}
+
+fn draw_text_lines(
+    canvas: &mut RgbaImage,
+    color: Rgba<u8>,
+    layout: TextLineLayout,
+    font: &FontArc,
 ) {
-    for (index, line) in lines.iter().enumerate() {
-        let line_width = measured_text_width(font, scale, line);
-        let line_x = x + (width.saturating_sub(line_width) / 2) as i32;
+    for (index, line) in layout.lines.iter().enumerate() {
+        let line_x = match layout.centered_width {
+            Some(width) => {
+                let line_width = measured_text_width(font, layout.scale, line);
+                layout.x + (width.saturating_sub(line_width) / 2) as i32
+            }
+            None => layout.x,
+        };
         draw_text_supersampled(
             canvas,
             color,
             line_x,
-            y + line_height * index as i32,
-            scale,
-            font,
-            line,
-        );
-    }
-}
-
-fn draw_wrapped_lines(
-    canvas: &mut RgbaImage,
-    color: Rgba<u8>,
-    x: i32,
-    y: i32,
-    scale: PxScale,
-    font: &FontArc,
-    lines: &[String],
-    line_height: i32,
-) {
-    for (index, line) in lines.iter().enumerate() {
-        draw_text_supersampled(
-            canvas,
-            color,
-            x,
-            y + line_height * index as i32,
-            scale,
+            layout.y + layout.line_height * index as i32,
+            layout.scale,
             font,
             line,
         );
