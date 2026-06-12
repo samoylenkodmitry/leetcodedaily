@@ -70,6 +70,9 @@ pub fn run_cli() -> Result<()> {
             "unknown command-line flag: {}",
             flag.to_string_lossy()
         )),
-        None => Ok(ui::run()),
+        None => {
+            ui::run();
+            Ok(())
+        }
     }
 }
