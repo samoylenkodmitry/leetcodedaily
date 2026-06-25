@@ -127,6 +127,9 @@ struct ActionStates {
     action_request_counter: MutableState<u64>,
     busy_action: MutableState<Option<LongAction>>,
     active_queue_target: MutableState<Option<String>>,
+    /// Session-only set of queue keys the user chose to skip. Not persisted, so
+    /// a skipped action reappears on the next launch and is never recorded.
+    skipped_queue: MutableState<Vec<String>>,
 }
 
 /// Handles for the raster/cranpose preview pipelines.
@@ -431,6 +434,7 @@ fn App() {
     let action_request_counter = useState(|| 0u64);
     let busy_action = useState(|| None::<LongAction>);
     let active_queue_target = useState(|| None::<String>);
+    let skipped_queue = useState(Vec::<String>::new);
     let actions = ActionStates {
         status,
         telegram_post_link,
@@ -439,6 +443,7 @@ fn App() {
         action_request_counter,
         busy_action,
         active_queue_target,
+        skipped_queue,
     };
     let previews = PreviewStates {
         preview_state,
@@ -700,20 +705,26 @@ fn ActionsCard(
                 let draft = PostDraft::from_fields(&fields);
                 let preview = preview_state.value();
                 let latest_telegram_link = telegram_post_link.value();
-                let current_queue = ui_preferences.value().interactive_queue().to_vec();
+                let skipped = actions.skipped_queue.value();
+                let mut excluded_queue = ui_preferences.value().interactive_queue().to_vec();
+                excluded_queue.extend(skipped.iter().cloned());
                 let next_queue_key =
-                    interactive_queue_next_key(&session.startup_interactive_queue, &current_queue);
+                    interactive_queue_next_key(&session.startup_interactive_queue, &excluded_queue);
                 let next_item = next_queue_key
                     .as_deref()
                     .and_then(next_work_item_from_queue_key)
                     .unwrap_or_else(|| {
-                        recommended_next_work(
+                        recommended_next_work_excluding(
                             &draft,
                             &preview,
                             &latest_telegram_link,
                             &session.layout_preferences,
+                            &skipped,
                         )
                     });
+                let skip_key = next_queue_key
+                    .clone()
+                    .unwrap_or_else(|| next_work_item_key(next_item));
                 let next_title = next_queue_key
                     .as_deref()
                     .map(|key| interactive_queue_label(key, false, false));
@@ -729,6 +740,7 @@ fn ActionsCard(
                                 NextWorkPanel(
                                     next_item,
                                     next_title.clone(),
+                                    skip_key.clone(),
                                     fields.clone(),
                                     actions,
                                     theme,
@@ -756,6 +768,7 @@ fn ActionsCard(
                                 NextWorkPanel(
                                     next_item,
                                     next_title.clone(),
+                                    skip_key.clone(),
                                     fields.clone(),
                                     actions,
                                     theme,
@@ -942,6 +955,7 @@ fn StatusStrip(message: String, theme: ThemeMode) {
 fn NextWorkPanel(
     next_item: NextWorkItem,
     title_override: Option<String>,
+    skip_key: String,
     fields: EditorFields,
     actions: ActionStates,
     theme: ThemeMode,
@@ -950,6 +964,7 @@ fn NextWorkPanel(
     let ActionStates {
         status,
         active_queue_target,
+        skipped_queue,
         ..
     } = actions;
     let modifier = if compact {
@@ -961,6 +976,7 @@ fn NextWorkPanel(
     glass_panel(modifier, theme, 18.0, 18.0, {
         let fields = fields.clone();
         let title = title.clone();
+        let skip_key = skip_key.clone();
         move || {
             Row(
                 Modifier::empty().fill_max_width(),
@@ -968,6 +984,7 @@ fn NextWorkPanel(
                 {
                     let fields = fields.clone();
                     let row_title = title.clone();
+                    let skip_key = skip_key.clone();
                     move || {
                         HeroTile(next_item.stage(), theme);
                         Column(
@@ -977,19 +994,53 @@ fn NextWorkPanel(
                             {
                                 let fields = fields.clone();
                                 let title = row_title.clone();
+                                let skip_key = skip_key.clone();
                                 move || {
                                     Row(
                                         Modifier::empty().fill_max_width(),
-                                        RowSpec::default().horizontal_arrangement(
-                                            LinearArrangement::SpaceBetween,
-                                        ),
-                                        move || {
-                                            Text("Now", Modifier::empty(), eyebrow_style(theme));
-                                            Text(
-                                                next_item.stage().label(),
-                                                Modifier::empty(),
-                                                stage_label_style(theme),
-                                            );
+                                        RowSpec::default()
+                                            .horizontal_arrangement(LinearArrangement::SpaceBetween)
+                                            .vertical_alignment(
+                                                VerticalAlignment::CenterVertically,
+                                            ),
+                                        {
+                                            let skip_key = skip_key.clone();
+                                            let skip_label = title.clone();
+                                            move || {
+                                                Text(
+                                                    "Now",
+                                                    Modifier::empty(),
+                                                    eyebrow_style(theme),
+                                                );
+                                                Row(
+                                                    Modifier::empty(),
+                                                    RowSpec::default()
+                                                        .horizontal_arrangement(
+                                                            LinearArrangement::spaced_by(10.0),
+                                                        )
+                                                        .vertical_alignment(
+                                                            VerticalAlignment::CenterVertically,
+                                                        ),
+                                                    {
+                                                        let skip_key = skip_key.clone();
+                                                        let skip_label = skip_label.clone();
+                                                        move || {
+                                                            Text(
+                                                                next_item.stage().label(),
+                                                                Modifier::empty(),
+                                                                stage_label_style(theme),
+                                                            );
+                                                            skip_work_button(
+                                                                skip_key.clone(),
+                                                                skip_label.clone(),
+                                                                skipped_queue,
+                                                                status,
+                                                                theme,
+                                                            );
+                                                        }
+                                                    },
+                                                );
+                                            }
                                         },
                                     );
                                     Text(
@@ -1792,15 +1843,36 @@ fn component_sort_key(
     }
 }
 
+/// Queue key a [`NextWorkItem`] maps to, used to match it against the skipped set.
+fn next_work_item_key(item: NextWorkItem) -> String {
+    match item {
+        NextWorkItem::Action(action) => action.count_key().to_string(),
+        NextWorkItem::Field(field) => field.component_key(),
+    }
+}
+
+#[cfg(test)]
 fn recommended_next_work(
     draft: &PostDraft,
     preview: &PreviewState,
     telegram_link: &str,
     preferences: &UiPreferences,
 ) -> NextWorkItem {
+    recommended_next_work_excluding(draft, preview, telegram_link, preferences, &[])
+}
+
+/// Like [`recommended_next_work`], but skips any work item whose key is in
+/// `skipped`, so the hero tile advances past items the user dismissed this session.
+fn recommended_next_work_excluding(
+    draft: &PostDraft,
+    preview: &PreviewState,
+    telegram_link: &str,
+    preferences: &UiPreferences,
+    skipped: &[String],
+) -> NextWorkItem {
     work_queue(draft, preview, telegram_link, preferences)
         .into_iter()
-        .next()
+        .find(|item| !skipped.contains(&next_work_item_key(*item)))
         .unwrap_or(NextWorkItem::Action(ActionButtonId::CopyBlog))
 }
 
@@ -4025,6 +4097,54 @@ fn theme_button(label: String, theme: ThemeMode, on_click: impl FnMut() + 'stati
     );
 }
 
+/// Small "Skip" button on the hero tile. Drops the current expected action for
+/// this session only and lets the next item surface, without recording anything.
+#[composable]
+fn skip_work_button(
+    skip_key: String,
+    label: String,
+    skipped_queue: MutableState<Vec<String>>,
+    status: MutableState<String>,
+    theme: ThemeMode,
+) {
+    let (button_spec, press) = animated_button_spec(true, "skip_work_button_press");
+    Button(
+        glass_button_modifier_with_press(
+            Modifier::empty(),
+            theme,
+            true,
+            false,
+            soft_button_surface(theme),
+            9.0,
+            press,
+        )
+        .padding_symmetric(10.0, 6.0),
+        button_spec,
+        move || {
+            skip_work_item(skipped_queue, status, &skip_key, &label);
+        },
+        move || {
+            Text("Skip", Modifier::empty(), subtle_button_text_style(theme));
+        },
+    );
+}
+
+/// Records a transient skip: appends the key to the session-only skipped set so
+/// next-item selection moves past it. Nothing is persisted or counted.
+fn skip_work_item(
+    skipped_queue: MutableState<Vec<String>>,
+    status: MutableState<String>,
+    skip_key: &str,
+    label: &str,
+) {
+    let mut skipped = skipped_queue.value();
+    if !skipped.iter().any(|key| key == skip_key) {
+        skipped.push(skip_key.to_string());
+        skipped_queue.set(skipped);
+    }
+    status.set(format!("Skipped {label} for now."));
+}
+
 #[composable]
 fn button_content(
     icon: UiIcon,
@@ -5655,9 +5775,9 @@ mod tests {
         INTERACTIVE_QUEUE_CHIP_GAP, INTERACTIVE_QUEUE_CHIP_WIDTH, LongAction, META_FIELDS,
         NextWorkItem, WEB_SURFACE_MAX_DIM, compute_web_canvas_size, interactive_queue_label,
         interactive_queue_next_key, interactive_queue_scroll_target,
-        interactive_queue_selected_key, interactive_queue_should_auto_scroll,
+        interactive_queue_selected_key, interactive_queue_should_auto_scroll, next_work_item_key,
         ordered_action_buttons, ordered_fields, parse_field_queue_key, queue_item_invokes_button,
-        recommended_next_work,
+        recommended_next_work, recommended_next_work_excluding,
     };
 
     #[test]
@@ -5820,5 +5940,33 @@ mod tests {
         let next = recommended_next_work(&draft, &preview, "", &UiPreferences::default());
 
         assert_eq!(next, NextWorkItem::Action(ActionButtonId::SaveRasterWebp));
+    }
+
+    #[test]
+    fn next_work_item_key_matches_action_and_field_keys() {
+        assert_eq!(
+            next_work_item_key(NextWorkItem::Field(EditorFieldId::ProblemTitle)),
+            "field.problem_title"
+        );
+        assert_eq!(
+            next_work_item_key(NextWorkItem::Action(ActionButtonId::SaveRasterWebp)),
+            ActionButtonId::SaveRasterWebp.count_key()
+        );
+    }
+
+    #[test]
+    fn skipping_recommended_item_advances_to_next() {
+        let draft = PostDraft::default();
+        let preview = PreviewState::placeholder();
+        let preferences = UiPreferences::default();
+
+        let first = recommended_next_work_excluding(&draft, &preview, "", &preferences, &[]);
+        assert_eq!(first, NextWorkItem::Action(ActionButtonId::SaveRasterWebp));
+
+        // Skipping the current item surfaces the next one without touching the draft.
+        let skipped = vec![next_work_item_key(first)];
+        let next = recommended_next_work_excluding(&draft, &preview, "", &preferences, &skipped);
+        assert_ne!(next, first);
+        assert_eq!(next, NextWorkItem::Action(ActionButtonId::CopyBlog));
     }
 }
