@@ -4,3 +4,4 @@ __pycache__/
 dist
 output/*.png
 output/*.webp
+output/*.html
