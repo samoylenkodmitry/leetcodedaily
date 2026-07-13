@@ -784,6 +784,13 @@ fn decode_ui_preferences(encoded: &str) -> Result<UiPreferences> {
         set_ui_preference_field(&mut preferences, name, value);
     }
 
+    // Migration: saves from before the manual-queue split only had the working
+    // `interactive_queue`. Carry it over as the replay queue so an existing
+    // queue is preserved on first upgrade instead of starting empty.
+    if preferences.remembered_queue.is_empty() {
+        preferences.remembered_queue = preferences.interactive_queue.clone();
+    }
+
     Ok(preferences)
 }
 
@@ -1521,6 +1528,21 @@ mod tests {
         assert!(preferences.interactive_queue().is_empty());
         assert_eq!(
             preferences.remembered_queue(),
+            ["copy.blog".to_string(), "post.telegram".to_string()]
+        );
+    }
+
+    #[test]
+    fn decode_migrates_legacy_queue_into_remembered() {
+        // A save from before the split has a working queue but no remembered one.
+        let mut legacy = UiPreferences::default();
+        legacy.record_interactive_queue_item("copy.blog");
+        legacy.record_interactive_queue_item("post.telegram");
+        assert!(legacy.remembered_queue().is_empty());
+
+        let decoded = decode_ui_preferences(&encode_ui_preferences(&legacy)).expect("decode");
+        assert_eq!(
+            decoded.remembered_queue(),
             ["copy.blog".to_string(), "post.telegram".to_string()]
         );
     }
