@@ -521,6 +521,7 @@ fn App() {
                                                 preview_state,
                                                 theme,
                                                 compact,
+                                                workspace_scroll_state.clone(),
                                             );
                                             let viewport_scroll_state =
                                                 workspace_scroll_state.clone();
@@ -622,6 +623,9 @@ fn GuidedWorkspace(
     PreviewCard(previews.preview_state, previews.preview_loading, theme);
 }
 
+/// Workspace scroll offset (px) past which the tall header collapses.
+const HEADER_COLLAPSE_THRESHOLD: f32 = 96.0;
+
 #[composable]
 fn ActionsCard(
     fields: EditorFields,
@@ -630,6 +634,7 @@ fn ActionsCard(
     preview_state: MutableState<PreviewState>,
     theme: ThemeMode,
     compact: bool,
+    scroll_state: ScrollState,
 ) {
     let ActionStates {
         status,
@@ -637,6 +642,10 @@ fn ActionsCard(
         ui_preferences,
         ..
     } = actions;
+    let collapsed = cranpose_core::derivedStateOf(move || {
+        scroll_state.value() > HEADER_COLLAPSE_THRESHOLD
+    })
+    .value();
     Column(
         Modifier::empty().fill_max_width(),
         ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(14.0)),
@@ -644,14 +653,6 @@ fn ActionsCard(
             let fields = fields.clone();
             let session = session.clone();
             move || {
-                HeaderBar(
-                    session.autosave_destination.clone(),
-                    ui_preferences,
-                    status,
-                    theme,
-                    compact,
-                );
-
                 let draft = PostDraft::from_fields(&fields);
                 let preview = preview_state.value();
                 let latest_telegram_link = telegram_post_link.value();
@@ -678,6 +679,27 @@ fn ActionsCard(
                 let next_title = next_queue_key
                     .as_deref()
                     .map(|key| interactive_queue_label(key, false, false));
+
+                if collapsed {
+                    CollapsedHeader(
+                        next_item,
+                        next_title.clone(),
+                        status.value(),
+                        fields.clone(),
+                        actions,
+                        theme,
+                    );
+                    return;
+                }
+
+                HeaderBar(
+                    session.autosave_destination.clone(),
+                    ui_preferences,
+                    status,
+                    theme,
+                    compact,
+                );
+
                 if compact {
                     Column(
                         Modifier::empty().fill_max_width(),
@@ -762,6 +784,110 @@ fn ActionsCard(
             }
         },
     );
+}
+
+/// Thin header shown when the workspace is scrolled: a scaled-down hero (stage
+/// badge, next-action title, fire-glow button) plus the live status line.
+#[composable]
+fn CollapsedHeader(
+    next_item: NextWorkItem,
+    next_title: Option<String>,
+    status_message: String,
+    fields: EditorFields,
+    actions: ActionStates,
+    theme: ThemeMode,
+) {
+    let title = next_title.unwrap_or_else(|| next_item.title());
+    let stage = next_item.stage();
+    let hero = match next_item {
+        NextWorkItem::Field(field) => HeroButton::Field(field),
+        NextWorkItem::Action(action) => HeroButton::Action(action),
+    };
+    let content_height = match next_item {
+        NextWorkItem::Action(_) => 60.0,
+        NextWorkItem::Field(_) => 48.0,
+    };
+    glass_panel(Modifier::empty().fill_max_width(), theme, 14.0, 12.0, {
+        let fields = fields.clone();
+        move || {
+            let fields = fields.clone();
+            let title = title.clone();
+            let status_message = status_message.clone();
+            Row(
+                Modifier::empty().fill_max_width(),
+                RowSpec::default()
+                    .horizontal_arrangement(LinearArrangement::spaced_by(14.0))
+                    .vertical_alignment(VerticalAlignment::CenterVertically),
+                move || {
+                    ReferenceIcon(stage.icon(), Size::new(38.0, 38.0), theme, true);
+                    Column(
+                        Modifier::empty().weight(1.4),
+                        ColumnSpec::default()
+                            .vertical_arrangement(LinearArrangement::spaced_by(3.0)),
+                        {
+                            let title = title.clone();
+                            let status_message = status_message.clone();
+                            move || {
+                                Row(
+                                    Modifier::empty(),
+                                    RowSpec::default()
+                                        .horizontal_arrangement(LinearArrangement::spaced_by(8.0))
+                                        .vertical_alignment(VerticalAlignment::CenterVertically),
+                                    move || {
+                                        Text("Now", Modifier::empty(), eyebrow_style(theme));
+                                        Text(
+                                            stage.label(),
+                                            Modifier::empty(),
+                                            stage_label_style(theme),
+                                        );
+                                    },
+                                );
+                                BasicText(
+                                    title.clone(),
+                                    Modifier::empty().fill_max_width(),
+                                    heading_style(17.0, theme),
+                                    TextOverflow::Ellipsis,
+                                    false,
+                                    1,
+                                    1,
+                                );
+                                let status_message = status_message.clone();
+                                Row(
+                                    Modifier::empty().fill_max_width(),
+                                    RowSpec::default()
+                                        .horizontal_arrangement(LinearArrangement::spaced_by(8.0))
+                                        .vertical_alignment(VerticalAlignment::CenterVertically),
+                                    move || {
+                                        StatusDot(true, theme);
+                                        BasicText(
+                                            status_message.clone(),
+                                            Modifier::empty().weight(1.0),
+                                            accent_style(theme),
+                                            TextOverflow::Ellipsis,
+                                            false,
+                                            1,
+                                            1,
+                                        );
+                                    },
+                                );
+                            }
+                        },
+                    );
+                    let fields_btn = fields.clone();
+                    ComposeBox(Modifier::empty().weight(1.0), BoxSpec::default(), move || {
+                        hero_fire_glow(
+                            hero,
+                            content_height,
+                            12.0,
+                            fields_btn.clone(),
+                            actions,
+                            theme,
+                        );
+                    });
+                },
+            );
+        }
+    });
 }
 
 #[composable]
