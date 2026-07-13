@@ -1210,6 +1210,10 @@ fn QueueCurrentEditorField(
 ) {
     let state = field_state(&fields, field);
     let saved_text = state.text();
+    if field == EditorFieldId::Difficulty {
+        DifficultyField(state, saved_text, status, ui_preferences, theme);
+        return;
+    }
     let (min_lines, max_lines) = field.queue_line_bounds();
     labeled_field(
         FieldSpec {
@@ -2335,6 +2339,16 @@ fn EditorField(
     ui_preferences: MutableState<UiPreferences>,
     theme: ThemeMode,
 ) {
+    if field == EditorFieldId::Difficulty {
+        DifficultyField(
+            field_state(&fields, field),
+            saved_field_text(&saved_draft, field),
+            status,
+            ui_preferences,
+            theme,
+        );
+        return;
+    }
     let (min_lines, max_lines) = field.editor_line_bounds();
     labeled_field(
         FieldSpec {
@@ -2350,6 +2364,127 @@ fn EditorField(
         status,
         ui_preferences,
         theme,
+    );
+}
+
+const DIFFICULTY_OPTIONS: [(&str, &str); 3] =
+    [("Easy", "easy"), ("Medium", "medium"), ("Hard", "hard")];
+
+/// Difficulty picker rendered as a three-way Easy/Medium/Hard segmented toggle.
+/// The chosen option is stored back into the field as lowercase text.
+#[composable]
+fn DifficultyField(
+    state: TextFieldState,
+    saved_text: String,
+    status: MutableState<String>,
+    ui_preferences: MutableState<UiPreferences>,
+    theme: ThemeMode,
+) {
+    let current_text = state.text();
+    track_field_interaction("difficulty", current_text.clone(), ui_preferences);
+    let selected = current_text.trim().to_ascii_lowercase();
+    let is_changed = current_text != saved_text;
+    ComposeBox(
+        glass_panel_modifier(Modifier::empty().fill_max_width(), theme, 12.0)
+            .padding_symmetric(12.0, 10.0),
+        BoxSpec::default(),
+        move || {
+            let state = state.clone();
+            let selected = selected.clone();
+            Row(
+                icon_overlay_modifier(
+                    Modifier::empty().fill_max_width(),
+                    UiIcon::Difficulty,
+                    44.0,
+                    0.0,
+                    theme,
+                    false,
+                ),
+                RowSpec::default().horizontal_arrangement(LinearArrangement::spaced_by(16.0)),
+                move || {
+                    Spacer(Size::new(44.0, 0.0));
+                    let state = state.clone();
+                    let selected = selected.clone();
+                    Column(
+                        Modifier::empty().weight(1.0),
+                        ColumnSpec::default()
+                            .vertical_arrangement(LinearArrangement::spaced_by(6.0)),
+                        move || {
+                            Text(
+                                "Difficulty",
+                                Modifier::empty(),
+                                label_style(theme, is_changed),
+                            );
+                            let state = state.clone();
+                            let selected = selected.clone();
+                            Row(
+                                Modifier::empty().fill_max_width(),
+                                RowSpec::default()
+                                    .horizontal_arrangement(LinearArrangement::spaced_by(8.0)),
+                                move || {
+                                    for (label, value) in DIFFICULTY_OPTIONS {
+                                        DifficultySegment(
+                                            label,
+                                            value,
+                                            selected == value,
+                                            state.clone(),
+                                            status,
+                                            theme,
+                                        );
+                                    }
+                                },
+                            );
+                        },
+                    );
+                },
+            );
+        },
+    );
+}
+
+#[composable]
+fn DifficultySegment(
+    label: &'static str,
+    value: &'static str,
+    selected: bool,
+    state: TextFieldState,
+    status: MutableState<String>,
+    theme: ThemeMode,
+) {
+    let (button_spec, press) = animated_button_spec(true, "difficulty_segment_press");
+    let surface = if selected {
+        button_surface(theme)
+    } else {
+        soft_button_surface(theme)
+    };
+    let mut text_style = if selected {
+        focus_button_text_style(theme)
+    } else {
+        subtle_button_text_style(theme)
+    };
+    text_style.paragraph_style.text_align = cranpose::text::TextAlign::Center;
+    Button(
+        glass_button_modifier_with_press(
+            Modifier::empty().weight(1.0),
+            theme,
+            true,
+            selected,
+            surface,
+            10.0,
+            press,
+        )
+        .padding_symmetric(12.0, 11.0),
+        button_spec,
+        move || {
+            if state.text().trim().eq_ignore_ascii_case(value) {
+                return;
+            }
+            state.set_text(value.to_string());
+            status.set(format!("Difficulty set to {value}."));
+        },
+        move || {
+            Text(label, Modifier::empty().fill_max_width(), text_style.clone());
+        },
     );
 }
 
@@ -3944,6 +4079,9 @@ fn labeled_field(
     } = spec;
     let current_text = state.text();
     track_field_interaction(field_id, current_text.clone(), ui_preferences);
+    if field_is_numeric(field_id) {
+        enforce_numeric_input(state.clone(), current_text.clone());
+    }
     let is_changed = current_text != saved_text;
     let icon = UiIcon::for_field_id(field_id);
     let input_box_modifier = {
@@ -4097,6 +4235,26 @@ fn track_field_interaction(
             }
             last_text.set(current_text);
             record_component_interaction(ui_preferences, &component_key);
+        }
+    });
+}
+
+/// Fields whose contents must stay strictly numeric (digits only).
+fn field_is_numeric(field_id: &str) -> bool {
+    matches!(field_id, "kotlin_runtime_ms" | "rust_runtime_ms")
+}
+
+/// Reactively strips any non-digit character the user types into a numeric
+/// field, so runtime (ms) inputs can only ever hold a plain number.
+#[composable]
+fn enforce_numeric_input(state: TextFieldState, current_text: String) {
+    cranpose_core::LaunchedEffect!(current_text.clone(), {
+        let current_text = current_text.clone();
+        move |_scope| {
+            let filtered: String = current_text.chars().filter(char::is_ascii_digit).collect();
+            if filtered != current_text {
+                state.set_text(filtered);
+            }
         }
     });
 }

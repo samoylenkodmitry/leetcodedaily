@@ -304,7 +304,7 @@ impl PostDraft {
         push_plain_complexity_section(&mut lines, &self.time_complexity, &self.space_complexity);
         push_markdown_section(&mut lines, "#### Code", self.reference_url.trim());
 
-        finalize_markdown(lines)
+        sanitize_youtube_symbols(&finalize_markdown(lines))
     }
 
     pub fn blog_template(&self) -> String {
@@ -1015,6 +1015,13 @@ fn finalize_markdown(mut lines: Vec<String>) -> String {
     format!("{}\n", lines.join("\n"))
 }
 
+/// YouTube rejects `<` and `>` in descriptions, so spell them out. Applied only
+/// to the generated YouTube text — blog/Telegram output and code keep the raw
+/// symbols.
+fn sanitize_youtube_symbols(text: &str) -> String {
+    text.replace('<', "lesser").replace('>', "bigger")
+}
+
 fn push_optional_html_link(html: &mut String, label: &str, url: &str) {
     let safe_url = url.trim();
     if !safe_url.is_empty() {
@@ -1264,6 +1271,20 @@ mod tests {
         assert!(telegram.contains("# 23.04.2026"));
         assert!(telegram.contains("Sum of distances to each occurrence"));
         assert!(!telegram.contains("#### Problem TLDR"));
+    }
+
+    #[test]
+    fn youtube_template_spells_out_angle_brackets() {
+        let mut draft = PostDraft::default();
+        draft.approach = "keep if a < b and b > c".to_string();
+
+        let youtube = draft.youtube_template();
+        assert!(!youtube.contains('<'));
+        assert!(!youtube.contains('>'));
+        assert!(youtube.contains("keep if a lesser b and b bigger c"));
+
+        // Other outputs keep the raw comparison operators.
+        assert!(draft.leetcode_template().contains("keep if a < b and b > c"));
     }
 
     #[test]
