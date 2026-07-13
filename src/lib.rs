@@ -24,20 +24,6 @@ pub fn run_cli() -> Result<()> {
     let _ = args.next();
 
     match args.next() {
-        Some(flag) if flag == "--capture-compose-preview" => {
-            let draft_path = args
-                .next()
-                .ok_or_else(|| anyhow!("missing draft snapshot path"))?;
-            let output_path = args
-                .next()
-                .ok_or_else(|| anyhow!("missing output image path"))?;
-            if args.next().is_some() {
-                return Err(anyhow!(
-                    "unexpected extra arguments for compose capture mode"
-                ));
-            }
-            ui::run_compose_capture_cli(Path::new(&draft_path), Path::new(&output_path))
-        }
         Some(flag) if flag == "--capture-app-screenshot" => {
             let first = args
                 .next()

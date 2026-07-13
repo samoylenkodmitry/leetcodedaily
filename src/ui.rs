@@ -5,16 +5,8 @@ use crate::draft::{
     load_initial_draft, load_ui_preferences, persist_autosave, persist_ui_preferences,
     startup_status_message,
 };
-#[cfg(not(target_arch = "wasm32"))]
-use crate::draft::{read_draft_snapshot, write_draft_snapshot};
-#[cfg(not(target_arch = "wasm32"))]
 use crate::export::{
-    CardRenderPlan, CodeRenderPlan, ComposePreviewAssets, compose_preview_assets,
-    compose_preview_plan,
-};
-use crate::export::{
-    PreviewFrame, PreviewState, preview_webp_data_url, render_preview_frame,
-    save_preview_frame_as_webp, save_webp,
+    PreviewFrame, PreviewState, preview_webp_data_url, render_preview_frame, save_webp,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::publish::{ArchiveEdit, publish_blog_post};
@@ -80,7 +72,6 @@ const WEB_CANVAS_MARGIN: f64 = 48.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum ActionButtonId {
     RefreshRasterPreview,
-    RefreshCranposePreview,
     CopyLeetcode,
     CopyYoutube,
     CopyBlog,
@@ -89,7 +80,6 @@ enum ActionButtonId {
     CopySubtitle,
     CopyRichText,
     SaveRasterWebp,
-    SaveCranposeWebp,
     PublishBlog,
     PostTelegram,
     PostTelegramComment,
@@ -98,11 +88,9 @@ enum ActionButtonId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum LongAction {
     RefreshRasterPreview,
-    RefreshCranposePreview,
     #[cfg(not(target_arch = "wasm32"))]
     CopyRichText,
     SaveRasterWebp,
-    SaveCranposeWebp,
     PublishBlog,
     PostTelegram,
     PostTelegramComment,
@@ -132,14 +120,11 @@ struct ActionStates {
     skipped_queue: MutableState<Vec<String>>,
 }
 
-/// Handles for the raster/cranpose preview pipelines.
+/// Handles for the raster preview pipeline.
 #[derive(Clone, Copy, PartialEq)]
 struct PreviewStates {
     preview_state: MutableState<PreviewState>,
     preview_loading: MutableState<bool>,
-    compose_preview_state: MutableState<PreviewState>,
-    compose_loading: MutableState<bool>,
-    compose_error: MutableState<String>,
 }
 
 /// Startup-time snapshots of the editing session, loaded once in [`App`].
@@ -167,11 +152,9 @@ struct FieldSpec {
 #[derive(Clone)]
 enum LongActionResult {
     RefreshRasterPreview(std::result::Result<PreviewState, String>),
-    RefreshCranposePreview(std::result::Result<PreviewState, String>),
     #[cfg(not(target_arch = "wasm32"))]
     CopyRichText(std::result::Result<(), String>),
     SaveRasterWebp(std::result::Result<PreviewState, String>),
-    SaveCranposeWebp(std::result::Result<PreviewState, String>),
     PublishBlog(std::result::Result<PublishBlogOutcome, String>),
     PostTelegram(std::result::Result<TelegramPostOutcome, String>),
     PostTelegramComment(std::result::Result<String, String>),
@@ -204,7 +187,6 @@ enum EditorFieldId {
     ProblemTitle,
     ProblemUrl,
     Difficulty,
-    BlogPostUrl,
     SubstackUrl,
     YoutubeUrl,
     ReferenceUrl,
@@ -248,8 +230,6 @@ enum UiIcon {
     Comment,
     Blog,
     Refresh,
-    RefreshAlt,
-    CranposeSave,
     Document,
     Leetcode,
     Substack,
@@ -267,7 +247,7 @@ enum UiIcon {
     Generic,
 }
 
-const ACTION_BUTTONS: [ActionButtonId; 14] = [
+const ACTION_BUTTONS: [ActionButtonId; 12] = [
     ActionButtonId::CopyLeetcode,
     ActionButtonId::CopyYoutube,
     ActionButtonId::CopyBlog,
@@ -276,21 +256,18 @@ const ACTION_BUTTONS: [ActionButtonId; 14] = [
     ActionButtonId::CopySubtitle,
     ActionButtonId::CopyRichText,
     ActionButtonId::RefreshRasterPreview,
-    ActionButtonId::RefreshCranposePreview,
     ActionButtonId::SaveRasterWebp,
-    ActionButtonId::SaveCranposeWebp,
     ActionButtonId::PublishBlog,
     ActionButtonId::PostTelegram,
     ActionButtonId::PostTelegramComment,
 ];
 
 #[cfg(test)]
-const META_FIELDS: [EditorFieldId; 9] = [
+const META_FIELDS: [EditorFieldId; 8] = [
     EditorFieldId::Date,
     EditorFieldId::ProblemTitle,
     EditorFieldId::ProblemUrl,
     EditorFieldId::Difficulty,
-    EditorFieldId::BlogPostUrl,
     EditorFieldId::SubstackUrl,
     EditorFieldId::YoutubeUrl,
     EditorFieldId::ReferenceUrl,
@@ -312,7 +289,7 @@ const CODE_FIELDS: [EditorFieldId; 4] = [
     EditorFieldId::RustCode,
 ];
 
-const WORKFLOW_FIELDS: [EditorFieldId; 18] = [
+const WORKFLOW_FIELDS: [EditorFieldId; 17] = [
     EditorFieldId::ProblemTitle,
     EditorFieldId::ProblemUrl,
     EditorFieldId::Difficulty,
@@ -325,7 +302,6 @@ const WORKFLOW_FIELDS: [EditorFieldId; 18] = [
     EditorFieldId::KotlinCode,
     EditorFieldId::RustRuntimeMs,
     EditorFieldId::RustCode,
-    EditorFieldId::BlogPostUrl,
     EditorFieldId::SubstackUrl,
     EditorFieldId::YoutubeUrl,
     EditorFieldId::ReferenceUrl,
@@ -425,9 +401,6 @@ fn App() {
     let autosave_destination = remember(autosave_destination_label).with(|label| label.clone());
     let preview_state = useState(PreviewState::placeholder);
     let preview_loading = useState(|| false);
-    let compose_preview_state = useState(PreviewState::placeholder);
-    let compose_loading = useState(|| false);
-    let compose_error = useState(String::new);
     let telegram_post_link = useState(String::new);
     let status = useState(startup_status_message);
     let pending_action = useState(|| None::<PendingAction>);
@@ -448,9 +421,6 @@ fn App() {
     let previews = PreviewStates {
         preview_state,
         preview_loading,
-        compose_preview_state,
-        compose_loading,
-        compose_error,
     };
     let session = EditorSession {
         saved_draft,
@@ -459,7 +429,6 @@ fn App() {
         autosave_destination,
     };
     let current_draft = PostDraft::from_fields(&fields);
-    let markdown_preview = current_draft.blog_template();
     let queued_action = pending_action.value();
     let theme = ui_preferences.value().theme;
     let queue_reset_done = useState(|| false);
@@ -511,19 +480,16 @@ fn App() {
         {
             let scroll_state = scroll_state.clone();
             let fields = fields.clone();
-            let markdown_preview = markdown_preview.clone();
             let session = session.clone();
             move || {
                 Column(Modifier::empty().fill_max_size(), ColumnSpec::default(), {
                     let scroll_state = scroll_state.clone();
                     let fields = fields.clone();
-                    let markdown_preview = markdown_preview.clone();
                     let session = session.clone();
                     move || {
                         BoxWithConstraints(Modifier::empty().fill_max_width().weight(1.0), {
                             let scroll_state = scroll_state.clone();
                             let fields = fields.clone();
-                            let markdown_preview = markdown_preview.clone();
                             let session = session.clone();
                             move |scope| {
                                 let compact = scope.max_width().0 < 1120.0;
@@ -545,7 +511,6 @@ fn App() {
                                         .vertical_arrangement(LinearArrangement::spaced_by(14.0)),
                                     {
                                         let fields = fields.clone();
-                                        let markdown_preview = markdown_preview.clone();
                                         let session = session.clone();
                                         let workspace_scroll_state = scroll_state.clone();
                                         move || {
@@ -566,7 +531,6 @@ fn App() {
                                                     .padding_each(0.0, 12.0, 0.0, 0.0),
                                                 {
                                                     let fields = fields.clone();
-                                                    let markdown_preview = markdown_preview.clone();
                                                     let session = session.clone();
                                                     move |viewport_scope| {
                                                         let viewport_width =
@@ -584,8 +548,6 @@ fn App() {
                                                             BoxSpec::default(),
                                                             {
                                                                 let fields = fields.clone();
-                                                                let markdown_preview =
-                                                                    markdown_preview.clone();
                                                                 let session = session.clone();
                                                                 let viewport_scroll_state =
                                                                     viewport_scroll_state.clone();
@@ -609,15 +571,11 @@ fn App() {
                                                                 ),
                                                                 {
                                                                     let fields = fields.clone();
-                                                                    let markdown_preview =
-                                                                        markdown_preview.clone();
                                                                     let session = session.clone();
                                                                     move || {
                                                                         GuidedWorkspace(
                                                                             fields.clone(),
                                                                             previews,
-                                                                            markdown_preview
-                                                                                .clone(),
                                                                             session.clone(),
                                                                             actions,
                                                                             theme,
@@ -652,7 +610,6 @@ fn App() {
 fn GuidedWorkspace(
     fields: EditorFields,
     previews: PreviewStates,
-    markdown_preview: String,
     session: EditorSession,
     actions: ActionStates,
     theme: ThemeMode,
@@ -663,13 +620,6 @@ fn GuidedWorkspace(
     Spacer(Size::new(0.0, 82.0));
     CodeCard(fields, session, actions, theme);
     PreviewCard(previews.preview_state, previews.preview_loading, theme);
-    ComposePreviewCard(
-        previews.compose_preview_state,
-        previews.compose_loading,
-        previews.compose_error,
-        theme,
-    );
-    MarkdownCard(markdown_preview, theme);
 }
 
 #[composable]
@@ -1617,7 +1567,6 @@ fn field_state(fields: &EditorFields, field: EditorFieldId) -> TextFieldState {
         EditorFieldId::ProblemTitle => fields.problem_title.clone(),
         EditorFieldId::ProblemUrl => fields.problem_url.clone(),
         EditorFieldId::Difficulty => fields.difficulty.clone(),
-        EditorFieldId::BlogPostUrl => fields.blog_post_url.clone(),
         EditorFieldId::SubstackUrl => fields.substack_url.clone(),
         EditorFieldId::YoutubeUrl => fields.youtube_url.clone(),
         EditorFieldId::ReferenceUrl => fields.reference_url.clone(),
@@ -1678,9 +1627,7 @@ fn handle_action_button(action: ActionButtonId, fields: EditorFields, actions: A
         ),
         ActionButtonId::CopyRichText => copy_rich_text_to_clipboard(draft, status),
         ActionButtonId::RefreshRasterPreview
-        | ActionButtonId::RefreshCranposePreview
         | ActionButtonId::SaveRasterWebp
-        | ActionButtonId::SaveCranposeWebp
         | ActionButtonId::PublishBlog
         | ActionButtonId::PostTelegram
         | ActionButtonId::PostTelegramComment => {}
@@ -1729,7 +1676,6 @@ impl ActionButtonId {
     fn icon(self) -> UiIcon {
         match self {
             Self::RefreshRasterPreview => UiIcon::Refresh,
-            Self::RefreshCranposePreview => UiIcon::RefreshAlt,
             Self::CopyLeetcode => UiIcon::Code,
             Self::CopyYoutube => UiIcon::Youtube,
             Self::CopyBlog => UiIcon::Document,
@@ -1738,7 +1684,6 @@ impl ActionButtonId {
             Self::CopySubtitle => UiIcon::Subtitle,
             Self::CopyRichText => UiIcon::RichText,
             Self::SaveRasterWebp => UiIcon::Save,
-            Self::SaveCranposeWebp => UiIcon::CranposeSave,
             Self::PublishBlog => UiIcon::Blog,
             Self::PostTelegram => UiIcon::Telegram,
             Self::PostTelegramComment => UiIcon::Comment,
@@ -1748,7 +1693,6 @@ impl ActionButtonId {
     fn label(self) -> &'static str {
         match self {
             Self::RefreshRasterPreview => "Refresh Raster",
-            Self::RefreshCranposePreview => "Refresh Cranpose",
             Self::CopyLeetcode => "Copy LeetCode",
             Self::CopyYoutube => "Copy YouTube",
             Self::CopyBlog => "Copy Blog",
@@ -1757,7 +1701,6 @@ impl ActionButtonId {
             Self::CopySubtitle => "Copy Subtitle",
             Self::CopyRichText => "Copy Rich Text",
             Self::SaveRasterWebp => "Save Raster WebP",
-            Self::SaveCranposeWebp => "Save Cranpose WebP",
             Self::PublishBlog => "Publish Blog",
             Self::PostTelegram => "Post Telegram",
             Self::PostTelegramComment => "Post TG Comment",
@@ -1767,7 +1710,6 @@ impl ActionButtonId {
     fn count_key(self) -> &'static str {
         match self {
             Self::RefreshRasterPreview => "preview.raster",
-            Self::RefreshCranposePreview => "preview.cranpose",
             Self::CopyLeetcode => "copy.leetcode",
             Self::CopyYoutube => "copy.youtube",
             Self::CopyBlog => "copy.blog",
@@ -1776,7 +1718,6 @@ impl ActionButtonId {
             Self::CopySubtitle => "copy.subtitle",
             Self::CopyRichText => "copy.rich_text",
             Self::SaveRasterWebp => "save.raster_webp",
-            Self::SaveCranposeWebp => "save.cranpose_webp",
             Self::PublishBlog => "publish.blog",
             Self::PostTelegram => "post.telegram",
             Self::PostTelegramComment => "post.telegram_comment",
@@ -1786,11 +1727,9 @@ impl ActionButtonId {
     fn long_action(self) -> Option<LongAction> {
         match self {
             Self::RefreshRasterPreview => Some(LongAction::RefreshRasterPreview),
-            Self::RefreshCranposePreview => Some(LongAction::RefreshCranposePreview),
             #[cfg(not(target_arch = "wasm32"))]
             Self::CopyRichText => Some(LongAction::CopyRichText),
             Self::SaveRasterWebp => Some(LongAction::SaveRasterWebp),
-            Self::SaveCranposeWebp => Some(LongAction::SaveCranposeWebp),
             Self::PublishBlog => Some(LongAction::PublishBlog),
             Self::PostTelegram => Some(LongAction::PostTelegram),
             Self::PostTelegramComment => Some(LongAction::PostTelegramComment),
@@ -1803,11 +1742,9 @@ impl LongAction {
     fn label(self) -> &'static str {
         match self {
             Self::RefreshRasterPreview => "Refresh Raster",
-            Self::RefreshCranposePreview => "Refresh Cranpose",
             #[cfg(not(target_arch = "wasm32"))]
             Self::CopyRichText => "Copy Rich Text",
             Self::SaveRasterWebp => "Save Raster WebP",
-            Self::SaveCranposeWebp => "Save Cranpose WebP",
             Self::PublishBlog => "Publish Blog",
             Self::PostTelegram => "Post Telegram",
             Self::PostTelegramComment => "Post TG Comment",
@@ -2046,7 +1983,6 @@ fn field_needs_attention(field: EditorFieldId, draft: &PostDraft) -> bool {
         EditorFieldId::RustRuntimeMs => draft.rust_runtime_ms.trim().is_empty(),
         EditorFieldId::RustCode => draft.rust_code.trim().is_empty(),
         EditorFieldId::Date
-        | EditorFieldId::BlogPostUrl
         | EditorFieldId::SubstackUrl
         | EditorFieldId::YoutubeUrl
         | EditorFieldId::ReferenceUrl
@@ -2069,8 +2005,7 @@ fn field_stage(field: EditorFieldId) -> WorkStage {
         | EditorFieldId::KotlinCode
         | EditorFieldId::RustRuntimeMs
         | EditorFieldId::RustCode => WorkStage::Code,
-        EditorFieldId::BlogPostUrl
-        | EditorFieldId::SubstackUrl
+        EditorFieldId::SubstackUrl
         | EditorFieldId::YoutubeUrl
         | EditorFieldId::ReferenceUrl
         | EditorFieldId::TelegramText => WorkStage::Ship,
@@ -2079,10 +2014,9 @@ fn field_stage(field: EditorFieldId) -> WorkStage {
 
 fn action_stage(action: ActionButtonId) -> WorkStage {
     match action {
-        ActionButtonId::RefreshRasterPreview
-        | ActionButtonId::RefreshCranposePreview
-        | ActionButtonId::SaveRasterWebp
-        | ActionButtonId::SaveCranposeWebp => WorkStage::Review,
+        ActionButtonId::RefreshRasterPreview | ActionButtonId::SaveRasterWebp => {
+            WorkStage::Review
+        }
         ActionButtonId::PublishBlog
         | ActionButtonId::PostTelegram
         | ActionButtonId::PostTelegramComment => WorkStage::Ship,
@@ -2200,301 +2134,6 @@ fn PreviewCard(
 }
 
 #[composable]
-fn ComposePreviewCard(
-    compose_preview_state: MutableState<PreviewState>,
-    compose_loading: MutableState<bool>,
-    compose_error: MutableState<String>,
-    theme: ThemeMode,
-) {
-    section_card(theme, {
-        move || {
-            Column(
-                Modifier::empty().fill_max_width(),
-                ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(14.0)),
-                {
-                    move || {
-                        let preview = compose_preview_state.value();
-                        let error = compose_error.value();
-                        Text(
-                            "Cranpose Preview",
-                            Modifier::empty(),
-                            heading_style(28.0, theme),
-                        );
-                        if compose_loading.value() {
-                            Text(
-                                "Preparing Cranpose preview in the background...",
-                                Modifier::empty(),
-                                accent_style(theme),
-                            );
-                        } else if !error.is_empty() {
-                            Text(error.clone(), Modifier::empty(), body_style(theme));
-                        }
-                        ComposeBox(
-                            Modifier::empty()
-                                .size(Size {
-                                    width: 1200.0,
-                                    height: 675.0,
-                                })
-                                .background(panel_surface(theme))
-                                .rounded_corners(8.0)
-                                .padding(18.0),
-                            BoxSpec::default().content_alignment(Alignment::CENTER),
-                            move || {
-                                if !compose_loading.value() && !error.is_empty() {
-                                    Text(
-                                        error.clone(),
-                                        Modifier::empty().fill_max_width(),
-                                        body_style(theme),
-                                    );
-                                } else {
-                                    Image(
-                                        BitmapPainter(preview.bitmap.clone()),
-                                        Some("Cranpose preview".to_string()),
-                                        Modifier::empty().fill_max_size().rounded_corners(8.0),
-                                        Alignment::CENTER,
-                                        ContentScale::Fit,
-                                        DEFAULT_ALPHA,
-                                        None,
-                                    );
-                                }
-                            },
-                        );
-                    }
-                },
-            );
-        }
-    });
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[composable]
-fn CranposeCaptureSurface(
-    compose_assets: ComposePreviewAssets,
-    compose_plan: CardRenderPlan,
-    scale: f32,
-) {
-    ComposeBox(Modifier::empty().fill_max_size(), BoxSpec::default(), {
-        let compose_assets = compose_assets.clone();
-        let compose_plan = compose_plan.clone();
-        move || {
-            let background = compose_assets.background.clone();
-            let qr = compose_assets.qr.clone();
-            let compose_plan = compose_plan.clone();
-            Image(
-                BitmapPainter(background),
-                Some("Cranpose card background".to_string()),
-                Modifier::empty().fill_max_size(),
-                Alignment::CENTER,
-                ContentScale::Crop,
-                DEFAULT_ALPHA,
-                None,
-            );
-
-            Image(
-                BitmapPainter(qr),
-                Some("QR overlay".to_string()),
-                Modifier::empty()
-                    .absolute_offset(
-                        scale_x(compose_plan.qr.x, scale),
-                        scale_y(compose_plan.qr.y, scale),
-                    )
-                    .size(scaled_size(
-                        compose_plan.qr.width,
-                        compose_plan.qr.height,
-                        scale,
-                    ))
-                    .rounded_corners(18.0 * scale),
-                Alignment::CENTER,
-                ContentScale::Fit,
-                DEFAULT_ALPHA * 0.72,
-                None,
-            );
-
-            ComposeBox(
-                Modifier::empty()
-                    .absolute_offset(
-                        scale_x(compose_plan.panel.x, scale),
-                        scale_y(compose_plan.panel.y, scale),
-                    )
-                    .size(scaled_size(
-                        compose_plan.panel.width,
-                        compose_plan.panel.height,
-                        scale,
-                    ))
-                    .background(Color::from_rgba_u8(5, 8, 14, 210))
-                    .rounded_corners(46.0 * scale)
-                    .padding(compose_plan.panel_padding as f32 * scale),
-                BoxSpec::default(),
-                {
-                    let compose_plan = compose_plan.clone();
-                    move || {
-                        CranposePanelContent(compose_plan.clone(), scale);
-                    }
-                },
-            );
-        }
-    });
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[composable]
-fn CranposePanelContent(compose_plan: CardRenderPlan, scale: f32) {
-    Column(Modifier::empty().fill_max_size(), ColumnSpec::default(), {
-        let compose_plan = compose_plan.clone();
-        move || {
-            Spacer(Size::new(
-                0.0,
-                compose_plan.code_group_top_offset as f32 * scale,
-            ));
-            ComposeBox(
-                Modifier::empty().fill_max_width(),
-                BoxSpec::default().content_alignment(Alignment::CENTER),
-                {
-                    let compose_plan = compose_plan.clone();
-                    move || {
-                        Column(
-                            Modifier::empty().width(compose_plan.shared_text_width as f32 * scale),
-                            ColumnSpec::default().vertical_arrangement(
-                                LinearArrangement::spaced_by(compose_plan.code_gap as f32 * scale),
-                            ),
-                            {
-                                let code_blocks = compose_plan.code_blocks.clone();
-                                move || {
-                                    for code_block in code_blocks.clone() {
-                                        CranposeCodeBlockCard(code_block, scale);
-                                    }
-                                }
-                            },
-                        );
-                    }
-                },
-            );
-            ComposeBox(
-                Modifier::empty().fill_max_width().weight(1.0),
-                BoxSpec::default(),
-                || {},
-            );
-            ComposeBox(
-                Modifier::empty().fill_max_width(),
-                BoxSpec::default().content_alignment(Alignment::CENTER),
-                {
-                    let compose_plan = compose_plan.clone();
-                    move || {
-                        ComposeBox(
-                            Modifier::empty().width(compose_plan.tldr.width as f32 * scale),
-                            BoxSpec::default(),
-                            {
-                                let tldr = compose_plan.tldr.clone();
-                                move || {
-                                    CranposeTldrBlock(tldr.clone(), scale);
-                                }
-                            },
-                        );
-                    }
-                },
-            );
-        }
-    });
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[composable]
-fn CranposeCodeBlockCard(code_block: CodeRenderPlan, scale: f32) {
-    Column(Modifier::empty().fill_max_width(), ColumnSpec::default(), {
-        let code_block = code_block.clone();
-        move || {
-            Text(
-                format!("// {}", code_block.language),
-                Modifier::empty(),
-                preview_code_label_style(code_block.label_font_size * scale),
-            );
-            Spacer(Size::new(0.0, 4.0 * scale));
-            Text(
-                format!("// {}", code_block.runtime),
-                Modifier::empty(),
-                preview_runtime_style(code_block.label_font_size * scale),
-            );
-            Spacer(Size::new(0.0, 14.0 * scale));
-            let line_gap =
-                ((code_block.code_line_height as f32 - code_block.code_font_size).max(0.0)) * scale;
-            for (index, line) in code_block.lines.iter().enumerate() {
-                Text(
-                    line.clone(),
-                    Modifier::empty(),
-                    preview_code_style(
-                        code_block.code_font_size * scale,
-                        code_block.code_line_height as f32 * scale,
-                    ),
-                );
-                if index + 1 < code_block.lines.len() && line_gap > 0.0 {
-                    Spacer(Size::new(0.0, line_gap));
-                }
-            }
-        }
-    });
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[composable]
-fn CranposeTldrBlock(tldr: crate::export::TextRenderPlan, scale: f32) {
-    Column(Modifier::empty().fill_max_width(), ColumnSpec::default(), {
-        let tldr = tldr.clone();
-        move || {
-            let line_gap = ((tldr.line_height as f32 - tldr.font_size).max(0.0)) * scale;
-            for (index, line) in tldr.lines.iter().enumerate() {
-                Text(
-                    line.clone(),
-                    Modifier::empty().fill_max_width(),
-                    preview_tldr_style(tldr.font_size * scale, tldr.line_height as f32 * scale),
-                );
-                if index + 1 < tldr.lines.len() && line_gap > 0.0 {
-                    Spacer(Size::new(0.0, line_gap));
-                }
-            }
-        }
-    });
-}
-
-#[composable]
-fn MarkdownCard(markdown_preview: String, theme: ThemeMode) {
-    section_card(theme, {
-        let markdown_preview = markdown_preview.clone();
-        move || {
-            Column(
-                Modifier::empty().fill_max_width(),
-                ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(12.0)),
-                {
-                    let markdown_preview = markdown_preview.clone();
-                    move || {
-                        let markdown_content = markdown_preview.clone();
-                        Text(
-                            "Blog Template Preview",
-                            Modifier::empty(),
-                            heading_style(28.0, theme),
-                        );
-                        ComposeBox(
-                            Modifier::empty()
-                                .fill_max_width()
-                                .background(panel_surface(theme))
-                                .rounded_corners(8.0)
-                                .padding(18.0),
-                            BoxSpec::default(),
-                            move || {
-                                Text(
-                                    markdown_content.clone(),
-                                    Modifier::empty().fill_max_width(),
-                                    code_text_style(18.0, theme),
-                                );
-                            },
-                        );
-                    }
-                },
-            );
-        }
-    });
-}
-
-#[composable]
 fn ProblemMetaCard(
     fields: EditorFields,
     session: EditorSession,
@@ -2530,7 +2169,6 @@ fn ProblemMetaCard(
                                     EditorFieldId::SubstackUrl,
                                     EditorFieldId::Date,
                                     EditorFieldId::Difficulty,
-                                    EditorFieldId::BlogPostUrl,
                                 ],
                                 fields.clone(),
                                 saved_draft.clone(),
@@ -2568,7 +2206,6 @@ fn ProblemMetaCard(
                                                 EditorFieldId::SubstackUrl,
                                                 EditorFieldId::Date,
                                                 EditorFieldId::Difficulty,
-                                                EditorFieldId::BlogPostUrl,
                                             ],
                                             fields.clone(),
                                             saved_draft.clone(),
@@ -2734,7 +2371,6 @@ impl EditorFieldId {
             Self::ProblemTitle => "Problem Title",
             Self::ProblemUrl => "Problem URL",
             Self::Difficulty => "Difficulty",
-            Self::BlogPostUrl => "Blog Post URL",
             Self::SubstackUrl => "Substack URL",
             Self::YoutubeUrl => "YouTube URL",
             Self::ReferenceUrl => "Reference URL",
@@ -2757,7 +2393,6 @@ impl EditorFieldId {
             Self::ProblemTitle => "problem_title",
             Self::ProblemUrl => "problem_url",
             Self::Difficulty => "difficulty",
-            Self::BlogPostUrl => "blog_post_url",
             Self::SubstackUrl => "substack_url",
             Self::YoutubeUrl => "youtube_url",
             Self::ReferenceUrl => "reference_url",
@@ -2820,7 +2455,6 @@ fn saved_field_text(draft: &PostDraft, field: EditorFieldId) -> String {
         EditorFieldId::ProblemTitle => draft.problem_title.clone(),
         EditorFieldId::ProblemUrl => draft.problem_url.clone(),
         EditorFieldId::Difficulty => draft.difficulty.clone(),
-        EditorFieldId::BlogPostUrl => draft.blog_post_url.clone(),
         EditorFieldId::SubstackUrl => draft.substack_url.clone(),
         EditorFieldId::YoutubeUrl => draft.youtube_url.clone(),
         EditorFieldId::ReferenceUrl => draft.reference_url.clone(),
@@ -3396,7 +3030,6 @@ impl UiIcon {
     fn sheet_index(self) -> u32 {
         match self {
             Self::AppLogo => 0,
-            Self::CranposeSave => 1,
             Self::Save => 2,
             Self::Code => 3,
             Self::Telegram => 4,
@@ -3407,7 +3040,6 @@ impl UiIcon {
             Self::Comment => 9,
             Self::Blog => 10,
             Self::Refresh => 11,
-            Self::RefreshAlt => 12,
             Self::Document => 14,
             Self::Leetcode => 15,
             Self::Substack => 16,
@@ -3433,7 +3065,6 @@ impl UiIcon {
                 | Self::Blog
                 | Self::Web
                 | Self::Refresh
-                | Self::RefreshAlt
                 | Self::StagePrepare
                 | Self::StageWrite
                 | Self::StageCode
@@ -3454,13 +3085,10 @@ impl UiIcon {
             Self::Telegram => Color::from_rgb_u8(45, 169, 230),
             Self::Substack => Color::from_rgb_u8(255, 116, 43),
             Self::StageReview | Self::Title => Color::from_rgb_u8(247, 177, 20),
-            Self::RefreshAlt => Color::from_rgb_u8(155, 73, 218),
             Self::StageShip => Color::from_rgb_u8(139, 169, 188),
             Self::Comment => Color::from_rgb_u8(109, 205, 58),
             Self::RichText => Color::from_rgb_u8(48, 143, 177),
-            Self::CranposeSave | Self::Document | Self::Subtitle => {
-                Color::from_rgb_u8(38, 151, 226)
-            }
+            Self::Document | Self::Subtitle => Color::from_rgb_u8(38, 151, 226),
             Self::Leetcode => Color::from_rgb_u8(248, 177, 48),
             Self::Blog | Self::Web => Color::from_rgb_u8(42, 162, 231),
             Self::Refresh => Color::from_rgb_u8(92, 196, 57),
@@ -4567,106 +4195,6 @@ fn copy_rich_text_to_clipboard(draft: PostDraft, status: MutableState<String>) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn render_compose_preview_frame(draft: &PostDraft) -> std::result::Result<PreviewFrame, String> {
-    // The Cranpose headless helper currently drops non-image layers for this
-    // capture surface on desktop, leaving a background-only preview. Keep the
-    // user-facing preview/export path on the same renderer used by Card Preview.
-    render_preview_frame(draft)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[allow(dead_code)]
-fn render_compose_preview_frame_with_helper(
-    draft: &PostDraft,
-) -> std::result::Result<PreviewFrame, String> {
-    let (draft_path, output_path) = compose_capture_paths();
-    let result = (|| -> Result<PreviewFrame> {
-        write_draft_snapshot(&draft_path, draft)?;
-        let command_output = Command::new(
-            std::env::current_exe().context("resolving current executable for compose capture")?,
-        )
-        .arg("--capture-compose-preview")
-        .arg(&draft_path)
-        .arg(&output_path)
-        .output()
-        .context("launching compose capture helper")?;
-
-        if !command_output.status.success() {
-            let stderr = String::from_utf8_lossy(&command_output.stderr);
-            let message = stderr.trim();
-            return Err(anyhow::anyhow!(if message.is_empty() {
-                "compose capture helper exited unsuccessfully".to_string()
-            } else {
-                format!("compose capture helper failed: {message}")
-            }));
-        }
-
-        let image = image::open(&output_path)
-            .with_context(|| format!("reading compose capture image {}", output_path.display()))?
-            .to_rgba8();
-        Ok(PreviewFrame {
-            width: image.width(),
-            height: image.height(),
-            pixels: image.into_raw(),
-        })
-    })();
-
-    cleanup_capture_artifacts(&draft_path, &output_path);
-    result.map_err(|error| error.to_string())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub fn run_compose_capture_cli(draft_path: &Path, output_path: &Path) -> Result<()> {
-    let draft = read_draft_snapshot(draft_path)?;
-    let compose_assets = compose_preview_assets()?;
-    let compose_plan = compose_preview_plan(&draft)?;
-    let (tx, rx) = mpsc::channel::<std::result::Result<PreviewFrame, String>>();
-
-    let launch_result = AppLauncher::new()
-        .with_title("LeetCode Daily Cranpose Capture")
-        .with_size(1600, 900)
-        .with_fonts(crate::assets::APP_FONTS)
-        .with_headless(true)
-        .with_test_driver({
-            let tx = tx.clone();
-            move |robot| {
-                let result = (|| -> std::result::Result<PreviewFrame, String> {
-                    robot.wait_for_idle()?;
-                    robot.pump_frames(4)?;
-                    let screenshot = robot.screenshot_with_scale(1.0)?;
-                    robot.exit()?;
-                    Ok(PreviewFrame {
-                        width: screenshot.width,
-                        height: screenshot.height,
-                        pixels: screenshot.pixels,
-                    })
-                })();
-                let _ = tx.send(result);
-            }
-        })
-        .try_run({
-            let compose_assets = compose_assets.clone();
-            let compose_plan = compose_plan.clone();
-            move || {
-                CranposeCaptureSurface(compose_assets.clone(), compose_plan.clone(), 1.0);
-            }
-        });
-
-    launch_result.map_err(|error| anyhow::anyhow!(error.to_string()))?;
-
-    let frame = rx
-        .recv_timeout(Duration::from_secs(20))
-        .map_err(|error| anyhow::anyhow!("timed out waiting for Cranpose capture: {error}"))?
-        .map_err(anyhow::Error::msg)?;
-    let image = RgbaImage::from_raw(frame.width, frame.height, frame.pixels)
-        .ok_or_else(|| anyhow::anyhow!("invalid RGBA frame from Cranpose capture"))?;
-    image
-        .save_with_format(output_path, ImageFormat::Png)
-        .with_context(|| format!("writing compose capture image {}", output_path.display()))?;
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 pub fn run_app_capture_cli(output_path: &Path, size: Option<(u32, u32)>) -> Result<()> {
     let (tx, rx) = mpsc::channel::<std::result::Result<PreviewFrame, String>>();
     let (width, height) = size.unwrap_or((APP_WIDTH, APP_HEIGHT));
@@ -4706,30 +4234,6 @@ pub fn run_app_capture_cli(output_path: &Path, size: Option<(u32, u32)>) -> Resu
     Ok(())
 }
 
-#[cfg(target_arch = "wasm32")]
-fn render_compose_preview_frame(_draft: &PostDraft) -> std::result::Result<PreviewFrame, String> {
-    Err("Cranpose preview capture is desktop-only right now.".to_string())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn compose_capture_paths() -> (PathBuf, PathBuf) {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let base = std::env::temp_dir().join(format!(
-        "leetcodedaily-compose-{}-{nonce}",
-        std::process::id()
-    ));
-    (base.with_extension("draft"), base.with_extension("png"))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn cleanup_capture_artifacts(draft_path: &Path, output_path: &Path) {
-    let _ = fs::remove_file(draft_path);
-    let _ = fs::remove_file(output_path);
-}
-
 fn run_long_action(pending: PendingAction) -> LongActionResult {
     #[cfg(not(target_arch = "wasm32"))]
     let started_at = Instant::now();
@@ -4737,18 +4241,12 @@ fn run_long_action(pending: PendingAction) -> LongActionResult {
         LongAction::RefreshRasterPreview => {
             LongActionResult::RefreshRasterPreview(render_raster_preview_result(&pending.draft))
         }
-        LongAction::RefreshCranposePreview => {
-            LongActionResult::RefreshCranposePreview(render_compose_preview_result(&pending.draft))
-        }
         #[cfg(not(target_arch = "wasm32"))]
         LongAction::CopyRichText => {
             LongActionResult::CopyRichText(copy_rich_text_result(&pending.draft))
         }
         LongAction::SaveRasterWebp => LongActionResult::SaveRasterWebp(
             save_webp(&pending.draft).map_err(|error| error.to_string()),
-        ),
-        LongAction::SaveCranposeWebp => LongActionResult::SaveCranposeWebp(
-            save_compose_webp_result(&pending.draft).map_err(|error| error.to_string()),
         ),
         LongAction::PublishBlog => {
             LongActionResult::PublishBlog(publish_blog_result(&pending.draft))
@@ -4779,12 +4277,7 @@ fn finish_long_action(
     actions: ActionStates,
     fields: EditorFields,
 ) {
-    let PreviewStates {
-        preview_state,
-        compose_preview_state,
-        compose_error,
-        ..
-    } = previews;
+    let PreviewStates { preview_state, .. } = previews;
     let ActionStates {
         status,
         telegram_post_link,
@@ -4801,17 +4294,6 @@ fn finish_long_action(
             }
             Err(error) => status.set(format!("Raster preview failed: {error}")),
         },
-        LongActionResult::RefreshCranposePreview(result) => match result {
-            Ok(preview) => {
-                compose_preview_state.set(preview);
-                compose_error.set(String::new());
-                status.set("Cranpose preview refreshed.".to_string());
-            }
-            Err(error) => {
-                compose_error.set(error.clone());
-                status.set(format!("Cranpose preview failed: {error}"));
-            }
-        },
         #[cfg(not(target_arch = "wasm32"))]
         LongActionResult::CopyRichText(result) => match result {
             Ok(()) => status.set("Rich text copied to the clipboard.".to_string()),
@@ -4827,17 +4309,6 @@ fn finish_long_action(
                 status.set(format!("Raster WebP saved to {saved_to}"));
             }
             Err(error) => status.set(format!("Saving raster WebP failed: {error}")),
-        },
-        LongActionResult::SaveCranposeWebp(result) => match result {
-            Ok(preview) => {
-                let saved_to = preview
-                    .last_saved_webp_path
-                    .clone()
-                    .unwrap_or_else(|| "~/Downloads".to_string());
-                preview_state.set(preview);
-                status.set(format!("Cranpose WebP saved to {saved_to}"));
-            }
-            Err(error) => status.set(format!("Saving Cranpose WebP failed: {error}")),
         },
         LongActionResult::PublishBlog(result) => match result {
             Ok(outcome) => {
@@ -4883,23 +4354,12 @@ fn render_raster_preview_result(draft: &PostDraft) -> std::result::Result<Previe
         .and_then(|frame| PreviewState::from_frame(frame).map_err(|error| error.to_string()))
 }
 
-fn render_compose_preview_result(draft: &PostDraft) -> std::result::Result<PreviewState, String> {
-    render_compose_preview_frame(draft)
-        .map_err(|error| error.to_string())
-        .and_then(|frame| PreviewState::from_frame(frame).map_err(|error| error.to_string()))
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 fn copy_rich_text_result(draft: &PostDraft) -> std::result::Result<(), String> {
     let image_data_url = preview_webp_data_url(draft).ok();
     let html = draft.rich_html_with_image(image_data_url.as_deref());
     let fallback = draft.rich_text_fallback();
     copy_rich_text(&html, &fallback).map_err(|error| error.to_string())
-}
-
-fn save_compose_webp_result(draft: &PostDraft) -> Result<PreviewState> {
-    let frame = render_compose_preview_frame(draft).map_err(anyhow::Error::msg)?;
-    save_preview_frame_as_webp(frame, draft)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -5236,24 +4696,6 @@ fn track_web_promise(
     });
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn scale_x(value: i32, scale: f32) -> f32 {
-    value as f32 * scale
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn scale_y(value: i32, scale: f32) -> f32 {
-    value as f32 * scale
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn scaled_size(width: u32, height: u32, scale: f32) -> Size {
-    Size {
-        width: width as f32 * scale,
-        height: height as f32 * scale,
-    }
-}
-
 fn panel_brush(theme: ThemeMode, size: Size) -> Brush {
     match theme {
         ThemeMode::Dark => Brush::linear_gradient_range(
@@ -5568,74 +5010,6 @@ fn badge_text_style(theme: ThemeMode) -> TextStyle {
             ..SpanStyle::default()
         },
         paragraph_style: ParagraphStyle::default(),
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn preview_code_label_style(size: f32) -> TextStyle {
-    TextStyle {
-        span_style: SpanStyle {
-            color: Some(Color::from_rgb_u8(148, 229, 255)),
-            font_size: cranpose::text::TextUnit::Sp(size.max(10.0)),
-            font_weight: Some(cranpose::text::FontWeight::BOLD),
-            font_family: Some(cranpose::text::FontFamily::Monospace),
-            ..SpanStyle::default()
-        },
-        paragraph_style: ParagraphStyle {
-            line_height: cranpose::text::TextUnit::Sp((size * 1.04).max(size)),
-            ..ParagraphStyle::default()
-        },
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn preview_runtime_style(size: f32) -> TextStyle {
-    TextStyle {
-        span_style: SpanStyle {
-            color: Some(Color::from_rgb_u8(255, 180, 78)),
-            font_size: cranpose::text::TextUnit::Sp(size.max(10.0)),
-            font_weight: Some(cranpose::text::FontWeight::SEMI_BOLD),
-            font_family: Some(cranpose::text::FontFamily::Monospace),
-            ..SpanStyle::default()
-        },
-        paragraph_style: ParagraphStyle {
-            line_height: cranpose::text::TextUnit::Sp((size * 1.04).max(size)),
-            ..ParagraphStyle::default()
-        },
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn preview_code_style(size: f32, line_height: f32) -> TextStyle {
-    TextStyle {
-        span_style: SpanStyle {
-            color: Some(Color::from_rgb_u8(242, 246, 250)),
-            font_size: cranpose::text::TextUnit::Sp(size.max(8.0)),
-            font_weight: Some(cranpose::text::FontWeight::MEDIUM),
-            font_family: Some(cranpose::text::FontFamily::Monospace),
-            ..SpanStyle::default()
-        },
-        paragraph_style: ParagraphStyle {
-            line_height: cranpose::text::TextUnit::Sp(line_height.max(size)),
-            ..ParagraphStyle::default()
-        },
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn preview_tldr_style(size: f32, line_height: f32) -> TextStyle {
-    TextStyle {
-        span_style: SpanStyle {
-            color: Some(Color::from_rgb_u8(170, 176, 187)),
-            font_size: cranpose::text::TextUnit::Sp(size.max(10.0)),
-            font_weight: Some(cranpose::text::FontWeight::MEDIUM),
-            ..SpanStyle::default()
-        },
-        paragraph_style: ParagraphStyle {
-            text_align: cranpose::text::TextAlign::Center,
-            line_height: cranpose::text::TextUnit::Sp(line_height.max(size)),
-            ..ParagraphStyle::default()
-        },
     }
 }
 

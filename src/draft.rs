@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::fs;
 #[cfg(not(target_arch = "wasm32"))]
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 const DEFAULT_REFERENCE_URL: &str = "https://dmitrysamoylenko.com/2023/07/14/leetcode_daily.html";
 #[cfg(target_arch = "wasm32")]
@@ -587,19 +587,6 @@ pub fn persist_ui_preferences(preferences: &UiPreferences) -> Result<()> {
             .map_err(|error| anyhow!("saving UI preferences to local storage failed: {error:?}"))?;
         Ok(())
     }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn write_draft_snapshot(path: &Path, draft: &PostDraft) -> Result<()> {
-    fs::write(path, encode_autosave(draft))
-        .with_context(|| format!("writing draft snapshot {}", path.display()))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn read_draft_snapshot(path: &Path) -> Result<PostDraft> {
-    let encoded = fs::read_to_string(path)
-        .with_context(|| format!("reading draft snapshot {}", path.display()))?;
-    decode_autosave(&encoded)
 }
 
 pub fn autosave_destination_label() -> String {

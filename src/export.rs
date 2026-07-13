@@ -53,13 +53,6 @@ pub struct PreviewState {
     pub last_saved_webp_path: Option<String>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Clone, PartialEq)]
-pub(crate) struct ComposePreviewAssets {
-    pub background: ImageBitmap,
-    pub qr: ImageBitmap,
-}
-
 #[derive(Clone, PartialEq)]
 pub(crate) struct CardRenderPlan {
     pub panel: BoxArea,
@@ -129,40 +122,6 @@ pub fn render_preview_frame(draft: &PostDraft) -> std::result::Result<PreviewFra
             pixels: rendered.into_raw(),
         })
         .map_err(|error| error.to_string())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn compose_preview_assets() -> Result<ComposePreviewAssets> {
-    static CACHE: OnceLock<std::result::Result<ComposePreviewAssets, String>> = OnceLock::new();
-
-    match CACHE.get_or_init(|| {
-        let assets = AssetPack::load().map_err(|error| error.to_string())?;
-        let background =
-            assets
-                .background
-                .resize_to_fill(CANVAS_WIDTH, CANVAS_HEIGHT, FilterType::Lanczos3);
-        let qr = DynamicImage::ImageRgba8(tint_alpha(
-            &assets
-                .qr
-                .resize_exact(170, 170, FilterType::Lanczos3)
-                .to_rgba8(),
-            0.72,
-        ));
-        Ok(ComposePreviewAssets {
-            background: image_bitmap_from_dynamic(&background)
-                .map_err(|error| error.to_string())?,
-            qr: image_bitmap_from_dynamic(&qr).map_err(|error| error.to_string())?,
-        })
-    }) {
-        Ok(assets) => Ok(assets.clone()),
-        Err(message) => Err(anyhow!(message.clone())),
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn compose_preview_plan(draft: &PostDraft) -> Result<CardRenderPlan> {
-    let assets = AssetPack::load()?;
-    Ok(build_card_render_plan_with_assets(draft, &assets))
 }
 
 pub fn save_webp(draft: &PostDraft) -> Result<PreviewState> {
@@ -756,13 +715,6 @@ fn rgba(r: u8, g: u8, b: u8, a: u8) -> Rgba<u8> {
 fn image_bitmap_from(image: &RgbaImage) -> Result<ImageBitmap> {
     ImageBitmap::from_rgba8(image.width(), image.height(), image.clone().into_raw())
         .map_err(|error| anyhow!("converting preview into ImageBitmap failed: {error}"))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn image_bitmap_from_dynamic(image: &DynamicImage) -> Result<ImageBitmap> {
-    let rgba = image.to_rgba8();
-    ImageBitmap::from_rgba8(rgba.width(), rgba.height(), rgba.into_raw())
-        .map_err(|error| anyhow!("converting asset into ImageBitmap failed: {error}"))
 }
 
 fn placeholder_frame() -> Result<PreviewFrame> {
