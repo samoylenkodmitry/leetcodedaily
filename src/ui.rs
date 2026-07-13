@@ -5,9 +5,9 @@ use crate::draft::{
     load_initial_draft, load_ui_preferences, persist_autosave, persist_ui_preferences,
     startup_status_message,
 };
-use crate::export::{
-    PreviewFrame, PreviewState, preview_webp_data_url, render_preview_frame, save_webp,
-};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::export::PreviewFrame;
+use crate::export::{PreviewState, preview_webp_data_url, render_preview_frame, save_webp};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::publish::{ArchiveEdit, publish_blog_post};
 #[cfg(not(target_arch = "wasm32"))]
