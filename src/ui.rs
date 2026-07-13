@@ -555,7 +555,7 @@ fn App() {
                                                                 move || {
                                                                     Column(
                                                                 Modifier::empty()
-                                                                    .fill_max_size()
+                                                                    .fill_max_width()
                                                                     .vertical_scroll(
                                                                         viewport_scroll_state
                                                                             .clone(),
@@ -642,9 +642,9 @@ fn ActionsCard(
         ui_preferences,
         ..
     } = actions;
-    let collapsed =
-        cranpose_core::derivedStateOf(move || scroll_state.value() > HEADER_COLLAPSE_THRESHOLD)
-            .value();
+    // `value()` is reactive, so ActionsCard recomposes as the workspace scrolls
+    // and the header flips between full and collapsed at the threshold.
+    let collapsed = scroll_state.value() > HEADER_COLLAPSE_THRESHOLD;
     Column(
         Modifier::empty().fill_max_width(),
         ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(14.0)),
@@ -678,6 +678,10 @@ fn ActionsCard(
                 let next_title = next_queue_key
                     .as_deref()
                     .map(|key| interactive_queue_label(key, false, false));
+                let next_action = match next_item {
+                    NextWorkItem::Action(action) => Some(action),
+                    NextWorkItem::Field(_) => None,
+                };
 
                 if collapsed {
                     CollapsedHeader(
@@ -723,6 +727,7 @@ fn ActionsCard(
                                     actions,
                                     theme,
                                     true,
+                                    next_action,
                                 );
                             }
                         },
@@ -751,6 +756,7 @@ fn ActionsCard(
                                     actions,
                                     theme,
                                     false,
+                                    next_action,
                                 );
                             }
                         },
@@ -977,6 +983,7 @@ fn QuickActionsPanel(
     actions: ActionStates,
     theme: ThemeMode,
     compact: bool,
+    next_action: Option<ActionButtonId>,
 ) {
     let modifier = if compact {
         Modifier::empty().fill_max_width()
@@ -995,7 +1002,13 @@ fn QuickActionsPanel(
                     let fields = fields.clone();
                     move || {
                         Text("Quick Actions", Modifier::empty(), panel_title_style(theme));
-                        ActionButtons(fields.clone(), session.clone(), actions, theme);
+                        ActionButtons(
+                            fields.clone(),
+                            session.clone(),
+                            actions,
+                            theme,
+                            next_action,
+                        );
                     }
                 },
             );
@@ -1037,8 +1050,9 @@ fn StatusStrip(message: String, theme: ThemeMode) {
 // border drawn around the hero "next action" button via an offscreen runtime
 // shader.
 
-/// Extra space around the wrapped button where the flame is painted.
-const HERO_FIRE_BAND: f32 = 22.0;
+/// Extra space around the wrapped button where the flame is painted. Kept tight
+/// so the flame hugs the button outline instead of floating around it.
+const HERO_FIRE_BAND: f32 = 13.0;
 
 const HERO_FIRE_WGSL_PREAMBLE: &str = r#"
 struct VertexOutput {
@@ -1357,14 +1371,14 @@ fn hero_fire_glow(
                             resolution_w: outer_w,
                             resolution_h: outer_h,
                             time: time.value(),
-                            band_width: 13.0,
+                            band_width: 16.0,
                             corner_radius,
                             contour_w: content_w,
                             contour_h: content_height,
-                            smoke_scale: 1.0,
-                            intensity: 0.95,
-                            smoke_opacity: 0.9,
-                            core_scale: 1.0,
+                            smoke_scale: 0.7,
+                            intensity: 1.15,
+                            smoke_opacity: 0.7,
+                            core_scale: 1.35,
                             color_tint: [1.3, 0.7, 0.25],
                         })),
                         compositing_strategy: CompositingStrategy::Offscreen,
@@ -1539,6 +1553,24 @@ fn InteractiveQueuePanel(
         ..
     } = actions;
     if queue.is_empty() {
+        glass_panel(Modifier::empty().fill_max_width(), theme, 14.0, 10.0, move || {
+            Column(
+                Modifier::empty().fill_max_width(),
+                ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(6.0)),
+                move || {
+                    Text(
+                        "Saved Queue (replays on launch)",
+                        Modifier::empty(),
+                        eyebrow_style(theme),
+                    );
+                    Text(
+                        "No saved queue yet. Build one below in New Actions Queue, then press Remember queue.",
+                        Modifier::empty(),
+                        muted_style(theme),
+                    );
+                },
+            );
+        });
         return;
     }
 
@@ -1819,8 +1851,13 @@ fn SessionQueueChip(
     theme: ThemeMode,
 ) {
     let label = interactive_queue_label(&item_key, false, false);
+    // A flat rounded surface (no drop shadow) so the horizontal scroll's clip
+    // never crops a shadow on the left/bottom edges.
     ComposeBox(
-        glass_panel_modifier(Modifier::empty(), theme, 9.0).padding_symmetric(8.0, 4.0),
+        Modifier::empty()
+            .background(soft_button_surface(theme))
+            .rounded_corners(9.0)
+            .padding_symmetric(8.0, 5.0),
         BoxSpec::default(),
         move || {
             let label = label.clone();
@@ -2053,6 +2090,7 @@ fn ActionButtons(
     session: EditorSession,
     actions: ActionStates,
     theme: ThemeMode,
+    next_action: Option<ActionButtonId>,
 ) {
     let ordered_actions = ordered_action_buttons(&session.layout_preferences);
     BoxWithConstraints(Modifier::empty().fill_max_width(), {
@@ -2085,7 +2123,13 @@ fn ActionButtons(
                                 move || {
                                     let fields = fields.clone();
                                     ForEach(&row_actions, move |action| {
-                                        ActionButton(*action, fields.clone(), actions, theme);
+                                        ActionButton(
+                                            *action,
+                                            fields.clone(),
+                                            actions,
+                                            theme,
+                                            next_action,
+                                        );
                                     });
                                 },
                             );
@@ -2103,21 +2147,111 @@ fn ActionButton(
     fields: EditorFields,
     actions: ActionStates,
     theme: ThemeMode,
+    next_action: Option<ActionButtonId>,
 ) {
     let action_busy = actions.busy_action.value();
     let long_action = action.long_action();
     let is_busy = long_action.is_some() && action_busy == long_action;
     let disabled = long_action.is_some() && action_busy.is_some();
+    // The action currently recommended by the hero glows here too, so the "do
+    // this next" cue follows the button wherever it appears.
+    if next_action == Some(action) {
+        glow_grid_button(action, disabled, is_busy, fields, actions, theme);
+        return;
+    }
     primary_button(
         action,
         actions.ui_preferences,
         theme,
         disabled,
         is_busy,
+        false,
         move || {
             handle_action_button(action, fields.clone(), actions);
         },
     );
+}
+
+/// A Quick Actions grid button wrapped in the same fire-shader glow as the hero,
+/// used to highlight the current recommended action in the grid.
+#[composable]
+fn glow_grid_button(
+    action: ActionButtonId,
+    disabled: bool,
+    is_busy: bool,
+    fields: EditorFields,
+    actions: ActionStates,
+    theme: ThemeMode,
+) {
+    let transition = rememberInfiniteTransition("grid_fire");
+    let time = transition.animateFloat(
+        0.0,
+        1.0,
+        infiniteRepeatable(
+            AnimationSpec::linear(60_000),
+            RepeatMode::Restart,
+            StartOffset::default(),
+        ),
+        "grid_fire_t",
+    );
+    BoxWithConstraints(Modifier::empty().weight(1.0), {
+        let fields = fields.clone();
+        move |scope| {
+            let outer_w = scope.max_width().0.max(1.0);
+            let content_h = 46.0;
+            let band = 9.0;
+            let outer_h = content_h + 2.0 * band;
+            let content_w = (outer_w - 2.0 * band).max(1.0);
+            let fields = fields.clone();
+            ComposeBox(
+                Modifier::empty().size(Size::new(outer_w, outer_h)).graphics_layer(
+                    move || GraphicsLayer {
+                        render_effect: Some(fire_shader_effect(&FireShaderParams {
+                            resolution_w: outer_w,
+                            resolution_h: outer_h,
+                            time: time.value(),
+                            band_width: 13.0,
+                            corner_radius: 10.0,
+                            contour_w: content_w,
+                            contour_h: content_h,
+                            smoke_scale: 0.6,
+                            intensity: 1.1,
+                            smoke_opacity: 0.6,
+                            core_scale: 1.3,
+                            color_tint: [1.3, 0.7, 0.25],
+                        })),
+                        compositing_strategy: CompositingStrategy::Offscreen,
+                        ..Default::default()
+                    },
+                ),
+                BoxSpec::default().content_alignment(Alignment::CENTER),
+                {
+                    let fields = fields.clone();
+                    move || {
+                        let fields = fields.clone();
+                        ComposeBox(
+                            Modifier::empty().size(Size::new(content_w, content_h)),
+                            BoxSpec::default().content_alignment(Alignment::CENTER),
+                            move || {
+                                let fields = fields.clone();
+                                primary_button(
+                                    action,
+                                    actions.ui_preferences,
+                                    theme,
+                                    disabled,
+                                    is_busy,
+                                    true,
+                                    move || {
+                                        handle_action_button(action, fields.clone(), actions);
+                                    },
+                                );
+                            },
+                        );
+                    }
+                },
+            );
+        }
+    });
 }
 
 #[composable]
@@ -4460,12 +4594,18 @@ fn primary_button(
     theme: ThemeMode,
     disabled: bool,
     busy: bool,
+    fill_width: bool,
     on_click: impl FnMut() + 'static,
 ) {
     let icon = action.icon();
     let label = action.label();
     let count = ui_preferences.value().button_count(action.count_key());
     let count_key = action.count_key().to_string();
+    let base = if fill_width {
+        Modifier::empty().fill_max_width()
+    } else {
+        Modifier::empty().weight(1.0)
+    };
     let background = if busy {
         button_surface(theme).with_alpha(0.86)
     } else if disabled {
@@ -4482,17 +4622,9 @@ fn primary_button(
     };
     let (button_spec, press) = animated_button_spec(!disabled, "primary_button_press");
     Button(
-        glass_button_modifier_with_press(
-            Modifier::empty().weight(1.0),
-            theme,
-            !disabled,
-            busy,
-            background,
-            10.0,
-            press,
-        )
-        .height(46.0)
-        .padding_symmetric(8.0, 9.0),
+        glass_button_modifier_with_press(base, theme, !disabled, busy, background, 10.0, press)
+            .height(46.0)
+            .padding_symmetric(8.0, 9.0),
         button_spec,
         move || {
             if disabled {
