@@ -24,6 +24,15 @@ pub fn run_cli() -> Result<()> {
     let _ = args.next();
 
     match args.next() {
+        Some(flag) if flag == "--robot" => {
+            let scenario = args
+                .next()
+                .ok_or_else(|| anyhow!("missing robot scenario name"))?;
+            let output_dir = args
+                .next()
+                .ok_or_else(|| anyhow!("missing robot output directory"))?;
+            ui::run_robot_cli(&scenario.to_string_lossy(), Path::new(&output_dir))
+        }
         Some(flag) if flag == "--capture-app-screenshot" => {
             let first = args
                 .next()

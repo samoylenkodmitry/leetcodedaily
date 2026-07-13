@@ -623,8 +623,11 @@ fn GuidedWorkspace(
     PreviewCard(previews.preview_state, previews.preview_loading, theme);
 }
 
-/// Workspace scroll offset (px) past which the tall header collapses.
-const HEADER_COLLAPSE_THRESHOLD: f32 = 96.0;
+/// Scroll offset (px) past which the tall header collapses, and the lower
+/// offset it must fall back under to expand again. The gap is hysteresis: it
+/// stops the header oscillating when a collapse/expand itself shifts the layout.
+const HEADER_COLLAPSE_THRESHOLD: f32 = 150.0;
+const HEADER_EXPAND_THRESHOLD: f32 = 44.0;
 
 #[composable]
 fn ActionsCard(
@@ -642,9 +645,19 @@ fn ActionsCard(
         ui_preferences,
         ..
     } = actions;
-    // `value()` is reactive, so ActionsCard recomposes as the workspace scrolls
-    // and the header flips between full and collapsed at the threshold.
-    let collapsed = scroll_state.value() > HEADER_COLLAPSE_THRESHOLD;
+    // `value()` is reactive, so ActionsCard recomposes as the workspace scrolls.
+    // A latched state with two thresholds (hysteresis) prevents the header from
+    // flickering between full/collapsed near a single boundary.
+    let collapse_latch = useState(|| false);
+    let scroll = scroll_state.value();
+    let collapsed = if collapse_latch.value() {
+        scroll > HEADER_EXPAND_THRESHOLD
+    } else {
+        scroll > HEADER_COLLAPSE_THRESHOLD
+    };
+    if collapsed != collapse_latch.value() {
+        collapse_latch.set(collapsed);
+    }
     Column(
         Modifier::empty().fill_max_width(),
         ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(14.0)),
@@ -1777,20 +1790,18 @@ fn SessionQueuePanel(actions: ActionStates, theme: ThemeMode) {
         ..
     } = actions;
     let session_queue = ui_preferences.value().interactive_queue().to_vec();
-    let scroll_state = remember(|| ScrollState::new(0.0)).with(|state| state.clone());
     // Shared drag state: Some((dragged_index, horizontal_offset_px)).
     let drag = useState(|| None::<(usize, f32)>);
+    let stride = SESSION_CHIP_W + INTERACTIVE_QUEUE_CHIP_GAP;
     glass_panel(Modifier::empty().fill_max_width(), theme, 14.0, 10.0, {
         let session_queue = session_queue.clone();
         move || {
             let session_queue = session_queue.clone();
-            let scroll_state = scroll_state.clone();
             Column(
                 Modifier::empty().fill_max_width(),
                 ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(9.0)),
                 move || {
                     let session_queue = session_queue.clone();
-                    let scroll_state = scroll_state.clone();
                     Row(
                         Modifier::empty().fill_max_width(),
                         RowSpec::default()
@@ -1806,33 +1817,106 @@ fn SessionQueuePanel(actions: ActionStates, theme: ThemeMode) {
                     );
                     if session_queue.is_empty() {
                         Text(
-                            "Actions you take collect here. Press Remember to save them as your replay queue.",
+                            "Actions you take collect here. Drag chips to reorder, then press Remember to save them as your replay queue.",
                             Modifier::empty(),
                             muted_style(theme),
                         );
                     } else {
                         let len = session_queue.len();
-                        Row(
+                        // A single drag handler on the full-width container. Because
+                        // the container spans the whole drag range, the pointer never
+                        // slips off it mid-drag (a per-chip handler froze once the
+                        // chip translated out from under the cursor).
+                        ComposeBox(
                             Modifier::empty()
                                 .fill_max_width()
-                                .height(46.0)
+                                .height(48.0)
                                 .clip_to_bounds()
-                                .horizontal_scroll(scroll_state.clone(), false),
-                            RowSpec::default()
-                                .horizontal_arrangement(LinearArrangement::spaced_by(
-                                    INTERACTIVE_QUEUE_CHIP_GAP,
-                                ))
-                                .vertical_alignment(VerticalAlignment::CenterVertically),
-                            move || {
-                                for (index, item_key) in session_queue.iter().enumerate() {
-                                    SessionQueueChip(
-                                        index,
-                                        len,
-                                        item_key.clone(),
-                                        drag,
-                                        status,
-                                        ui_preferences,
-                                        theme,
+                                .pointer_input(len, {
+                                    move |scope: PointerInputScope| async move {
+                                        scope
+                                            .await_pointer_event_scope(|await_scope| async move {
+                                                let mut idx = 0usize;
+                                                let mut start_x = 0.0f32;
+                                                let mut dragging = false;
+                                                loop {
+                                                    let event =
+                                                        await_scope.await_pointer_event().await;
+                                                    match event.kind {
+                                                        PointerEventKind::Down => {
+                                                            idx = ((event.position.x / stride)
+                                                                .floor()
+                                                                as usize)
+                                                                .min(len.saturating_sub(1));
+                                                            start_x = event.global_position.x;
+                                                            dragging = false;
+                                                        }
+                                                        PointerEventKind::Move => {
+                                                            let dx =
+                                                                event.global_position.x - start_x;
+                                                            if dx.abs() > 6.0 {
+                                                                dragging = true;
+                                                            }
+                                                            if dragging {
+                                                                drag.set(Some((idx, dx)));
+                                                                event.consume();
+                                                            }
+                                                        }
+                                                        PointerEventKind::Up
+                                                        | PointerEventKind::Cancel => {
+                                                            if dragging {
+                                                                let dx = event.global_position.x
+                                                                    - start_x;
+                                                                let delta =
+                                                                    (dx / stride).round() as i64;
+                                                                let target = (idx as i64 + delta)
+                                                                    .clamp(0, len as i64 - 1)
+                                                                    as usize;
+                                                                if target != idx {
+                                                                    session_queue_move(
+                                                                        ui_preferences,
+                                                                        idx,
+                                                                        target,
+                                                                    );
+                                                                }
+                                                            }
+                                                            drag.set(None);
+                                                            dragging = false;
+                                                        }
+                                                        _ => {}
+                                                    }
+                                                }
+                                            })
+                                            .await;
+                                    }
+                                }),
+                            BoxSpec::default(),
+                            {
+                                let session_queue = session_queue.clone();
+                                move || {
+                                    let session_queue = session_queue.clone();
+                                    Row(
+                                        Modifier::empty().fill_max_width(),
+                                        RowSpec::default()
+                                            .horizontal_arrangement(LinearArrangement::spaced_by(
+                                                INTERACTIVE_QUEUE_CHIP_GAP,
+                                            ))
+                                            .vertical_alignment(VerticalAlignment::CenterVertically),
+                                        move || {
+                                            for (index, item_key) in
+                                                session_queue.iter().enumerate()
+                                            {
+                                                SessionQueueChip(
+                                                    index,
+                                                    len,
+                                                    item_key.clone(),
+                                                    drag,
+                                                    status,
+                                                    ui_preferences,
+                                                    theme,
+                                                );
+                                            }
+                                        },
                                     );
                                 }
                             },
@@ -1844,9 +1928,9 @@ fn SessionQueuePanel(actions: ActionStates, theme: ThemeMode) {
     });
 }
 
-/// Nominal chip stride (width + gap) used to translate a horizontal drag
-/// distance into a number of positions to move.
-const SESSION_CHIP_STRIDE: f32 = 150.0;
+/// Fixed chip width; a constant width lets the container drag handler map a
+/// pointer x-position to a chip index.
+const SESSION_CHIP_W: f32 = 210.0;
 
 #[composable]
 fn SessionQueueChip(
@@ -1863,71 +1947,28 @@ fn SessionQueueChip(
         Some((i, dx)) if i == index => Some(dx),
         _ => None,
     };
-    // A flat rounded surface (no drop shadow) so the horizontal scroll's clip
-    // never crops a shadow on the left/bottom edges. While dragged, the chip
-    // follows the pointer and lifts slightly.
+    // Flat, fixed-width rounded surface. While dragged it follows the pointer
+    // and lifts slightly.
     let mut surface = Modifier::empty()
+        .width(SESSION_CHIP_W)
         .background(soft_button_surface(theme))
         .rounded_corners(9.0);
     if let Some(dx) = drag_dx {
         surface = surface.graphics_layer_block(move |layer| {
             layer.translation_x = dx;
-            layer.scale_x = 1.05;
-            layer.scale_y = 1.05;
+            layer.scale_x = 1.04;
+            layer.scale_y = 1.04;
         });
     }
     ComposeBox(
-        surface.padding_symmetric(8.0, 5.0).pointer_input(index, {
-            move |scope: PointerInputScope| async move {
-                scope
-                    .await_pointer_event_scope(|await_scope| async move {
-                        let mut start_x = 0.0f32;
-                        let mut dragging = false;
-                        loop {
-                            let event = await_scope.await_pointer_event().await;
-                            match event.kind {
-                                PointerEventKind::Down => {
-                                    start_x = event.global_position.x;
-                                    dragging = false;
-                                }
-                                PointerEventKind::Move => {
-                                    let dx = event.global_position.x - start_x;
-                                    if dx.abs() > 6.0 {
-                                        dragging = true;
-                                    }
-                                    if dragging {
-                                        drag.set(Some((index, dx)));
-                                        event.consume();
-                                    }
-                                }
-                                PointerEventKind::Up | PointerEventKind::Cancel => {
-                                    if dragging {
-                                        let dx = event.global_position.x - start_x;
-                                        let delta = (dx / SESSION_CHIP_STRIDE).round() as i64;
-                                        let target = (index as i64 + delta)
-                                            .clamp(0, len as i64 - 1)
-                                            as usize;
-                                        if target != index {
-                                            session_queue_move(ui_preferences, index, target);
-                                        }
-                                    }
-                                    drag.set(None);
-                                    dragging = false;
-                                }
-                                _ => {}
-                            }
-                        }
-                    })
-                    .await;
-            }
-        }),
+        surface.padding_symmetric(8.0, 5.0),
         BoxSpec::default(),
         move || {
             let label = label.clone();
             Row(
-                Modifier::empty(),
+                Modifier::empty().fill_max_width(),
                 RowSpec::default()
-                    .horizontal_arrangement(LinearArrangement::spaced_by(6.0))
+                    .horizontal_arrangement(LinearArrangement::spaced_by(5.0))
                     .vertical_alignment(VerticalAlignment::CenterVertically),
                 move || {
                     Text("⠿", Modifier::empty(), muted_style(theme));
@@ -1936,7 +1977,15 @@ fn SessionQueueChip(
                             session_queue_swap(ui_preferences, index, index - 1);
                         });
                     }
-                    Text(label.clone(), Modifier::empty(), queue_text_style(theme));
+                    BasicText(
+                        label.clone(),
+                        Modifier::empty().weight(1.0),
+                        queue_text_style(theme),
+                        TextOverflow::Ellipsis,
+                        false,
+                        1,
+                        1,
+                    );
                     if index + 1 < len {
                         queue_edit_button("›", theme, move || {
                             session_queue_swap(ui_preferences, index, index + 1);
@@ -2275,62 +2324,77 @@ fn glow_grid_button(
         ),
         "grid_fire_t",
     );
-    BoxWithConstraints(Modifier::empty().weight(1.0), {
+    let content_h = 46.0f32;
+    let band = 9.0f32;
+    let outer_h = content_h + 2.0 * band;
+    // The WEIGHTED element is this outer ComposeBox, which participates in the
+    // Row's weight distribution normally (a weighted BoxWithConstraints does not
+    // and grabs the whole row). BoxWithConstraints lives inside it with
+    // fill_max_size, so it measures the real cell width for the flame while the
+    // cell itself never overflows its neighbours.
+    ComposeBox(Modifier::empty().weight(1.0).height(outer_h), BoxSpec::default(), {
         let fields = fields.clone();
-        move |scope| {
-            let outer_w = scope.max_width().0.max(1.0);
-            let content_h = 46.0;
-            let band = 9.0;
-            let outer_h = content_h + 2.0 * band;
-            let content_w = (outer_w - 2.0 * band).max(1.0);
+        move || {
             let fields = fields.clone();
-            ComposeBox(
-                Modifier::empty().size(Size::new(outer_w, outer_h)).graphics_layer(
-                    move || GraphicsLayer {
-                        render_effect: Some(fire_shader_effect(&FireShaderParams {
-                            resolution_w: outer_w,
-                            resolution_h: outer_h,
-                            time: time.value(),
-                            band_width: 13.0,
-                            corner_radius: 10.0,
-                            contour_w: content_w,
-                            contour_h: content_h,
-                            smoke_scale: 0.6,
-                            intensity: 1.1,
-                            smoke_opacity: 0.6,
-                            core_scale: 1.3,
-                            color_tint: [1.3, 0.7, 0.25],
-                        })),
-                        compositing_strategy: CompositingStrategy::Offscreen,
-                        ..Default::default()
-                    },
-                ),
-                BoxSpec::default().content_alignment(Alignment::CENTER),
-                {
+            BoxWithConstraints(Modifier::empty().fill_max_size(), {
+                let fields = fields.clone();
+                move |scope| {
+                    let outer_w = scope.max_width().0.max(1.0);
+                    let content_w = (outer_w - 2.0 * band).max(1.0);
                     let fields = fields.clone();
-                    move || {
-                        let fields = fields.clone();
-                        ComposeBox(
-                            Modifier::empty().size(Size::new(content_w, content_h)),
-                            BoxSpec::default().content_alignment(Alignment::CENTER),
+                    ComposeBox(
+                        Modifier::empty().fill_max_size().graphics_layer(move || GraphicsLayer {
+                            render_effect: Some(fire_shader_effect(&FireShaderParams {
+                                resolution_w: outer_w,
+                                resolution_h: outer_h,
+                                time: time.value(),
+                                band_width: 13.0,
+                                corner_radius: 10.0,
+                                contour_w: content_w,
+                                contour_h: content_h,
+                                smoke_scale: 0.6,
+                                intensity: 1.1,
+                                smoke_opacity: 0.6,
+                                core_scale: 1.3,
+                                color_tint: [1.3, 0.7, 0.25],
+                            })),
+                            compositing_strategy: CompositingStrategy::Offscreen,
+                            ..Default::default()
+                        }),
+                        BoxSpec::default().content_alignment(Alignment::CENTER),
+                        {
+                            let fields = fields.clone();
                             move || {
                                 let fields = fields.clone();
-                                primary_button(
-                                    action,
-                                    actions.ui_preferences,
-                                    theme,
-                                    disabled,
-                                    is_busy,
-                                    true,
+                                ComposeBox(
+                                    Modifier::empty()
+                                        .fill_max_width()
+                                        .padding_symmetric(band, band),
+                                    BoxSpec::default().content_alignment(Alignment::CENTER),
                                     move || {
-                                        handle_action_button(action, fields.clone(), actions);
+                                        let fields = fields.clone();
+                                        primary_button(
+                                            action,
+                                            actions.ui_preferences,
+                                            theme,
+                                            disabled,
+                                            is_busy,
+                                            true,
+                                            move || {
+                                                handle_action_button(
+                                                    action,
+                                                    fields.clone(),
+                                                    actions,
+                                                );
+                                            },
+                                        );
                                     },
                                 );
-                            },
-                        );
-                    }
-                },
-            );
+                            }
+                        },
+                    );
+                }
+            });
         }
     });
 }
@@ -5332,6 +5396,79 @@ pub fn run_app_capture_cli(output_path: &Path, size: Option<(u32, u32)>) -> Resu
     image
         .save_with_format(output_path, ImageFormat::Png)
         .with_context(|| format!("writing app screenshot {}", output_path.display()))?;
+    Ok(())
+}
+
+/// Headless robot harness used to validate interaction behaviour (drag, scroll)
+/// by driving the real app and dumping screenshots to `output_dir`.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn run_robot_cli(scenario: &str, output_dir: &Path) -> Result<()> {
+    let _ = fs::create_dir_all(output_dir);
+    let (tx, rx) = mpsc::channel::<std::result::Result<(), String>>();
+    let scenario = scenario.to_string();
+    let output_dir = output_dir.to_path_buf();
+
+    let launch_result = launcher_with_size(APP_WIDTH, APP_HEIGHT)
+        .with_headless(true)
+        .with_test_driver({
+            let tx = tx.clone();
+            move |robot| {
+                let result = (|| -> std::result::Result<(), String> {
+                    let save = |name: &str, w: u32, h: u32, px: Vec<u8>| -> std::result::Result<(), String> {
+                        let img = RgbaImage::from_raw(w, h, px).ok_or("bad frame")?;
+                        img.save_with_format(output_dir.join(format!("{name}.png")), ImageFormat::Png)
+                            .map_err(|e| e.to_string())
+                    };
+                    robot.wait_for_idle()?;
+                    robot.pump_frames(6)?;
+                    let s = robot.screenshot_with_scale(1.0)?;
+                    save("00_before", s.width, s.height, s.pixels)?;
+                    match scenario.as_str() {
+                        "drag" => {
+                            robot.mouse_move(150.0, 585.0)?;
+                            robot.mouse_down()?;
+                            robot.mouse_move(230.0, 585.0)?;
+                            robot.pump_frames(3)?;
+                            let s = robot.screenshot_with_scale(1.0)?;
+                            save("01_drag_80px", s.width, s.height, s.pixels)?;
+                            robot.mouse_move(430.0, 585.0)?;
+                            robot.pump_frames(3)?;
+                            let s = robot.screenshot_with_scale(1.0)?;
+                            save("02_drag_280px", s.width, s.height, s.pixels)?;
+                            robot.mouse_up()?;
+                            robot.pump_frames(4)?;
+                            let s = robot.screenshot_with_scale(1.0)?;
+                            save("03_after", s.width, s.height, s.pixels)?;
+                        }
+                        "scroll" => {
+                            robot.mouse_move(720.0, 1050.0)?;
+                            for i in 0..10u32 {
+                                robot.mouse_scroll_and_wait_for_frame(0.0, -48.0)?;
+                                robot.pump_frames(1)?;
+                                let s = robot.screenshot_with_scale(1.0)?;
+                                save(&format!("dn_{i:02}"), s.width, s.height, s.pixels)?;
+                            }
+                            for i in 0..10u32 {
+                                robot.mouse_scroll_and_wait_for_frame(0.0, 48.0)?;
+                                robot.pump_frames(1)?;
+                                let s = robot.screenshot_with_scale(1.0)?;
+                                save(&format!("up_{i:02}"), s.width, s.height, s.pixels)?;
+                            }
+                        }
+                        _ => {}
+                    }
+                    robot.exit()?;
+                    Ok(())
+                })();
+                let _ = tx.send(result);
+            }
+        })
+        .try_run(App);
+
+    launch_result.map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    rx.recv_timeout(Duration::from_secs(180))
+        .map_err(|error| anyhow::anyhow!("robot scenario timed out: {error}"))?
+        .map_err(anyhow::Error::msg)?;
     Ok(())
 }
 
