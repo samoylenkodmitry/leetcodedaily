@@ -27,6 +27,7 @@ use cranpose_animation::{
 };
 use cranpose_core::MutableState;
 use cranpose_foundation::DrawScope;
+use cranpose_foundation::PointerButtons;
 use cranpose_foundation::text::{TextFieldLineLimits, TextFieldState};
 #[cfg(not(target_arch = "wasm32"))]
 use image::ImageFormat;
@@ -460,6 +461,15 @@ fn App() {
             let _ = persist_ui_preferences(&preferences);
         }
     });
+
+    // Keep the shader-flame animations running. The flames advance off the frame
+    // clock, but cranpose's desktop event loop only stays in continuous-render
+    // (`ControlFlow::Poll`) mode while `should_render()` is true — and a bare
+    // frame-clock loop (like `rememberInfiniteTransition`'s) does not keep it
+    // true, so when the app is idle it renders ~once and the flames freeze until
+    // the next input. AnimationPump invalidates a tiny composition scope every
+    // frame, which keeps the loop hot so every flame keeps animating.
+    AnimationPump();
 
     cranpose_core::LaunchedEffect!(current_draft.clone(), {
         let draft = current_draft.clone();
@@ -1173,10 +1183,6 @@ fn StatusStrip(message: String, theme: ThemeMode) {
 // border drawn around the hero "next action" button via an offscreen runtime
 // shader.
 
-/// Extra space around the wrapped button where the flame is painted. Kept tight
-/// so the flame hugs the button outline instead of floating around it.
-const HERO_FIRE_BAND: f32 = 13.0;
-
 const HERO_FIRE_WGSL_PREAMBLE: &str = r#"
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -1449,6 +1455,121 @@ fn fire_shader_effect(p: &FireShaderParams) -> RenderEffect {
     RenderEffect::runtime_shader(shader)
 }
 
+/// A transparent fire-border overlay of an exact size. Sized with fill_max_width
+/// plus an explicit (measured) height, it renders correctly and matches the
+/// element it is stacked over — so it never changes layout and hugs the bounds.
+///
+/// The animation frame is read as `time.get()` *inside* the graphics_layer
+/// closure. That closure runs under `observe_draw_reads`, so the read subscribes
+/// the draw node directly: when the infinite transition ticks, the runtime
+/// schedules a draw-repass for just this layer and re-renders it — no
+/// recomposition needed. Reading the frame in the composable body instead only
+/// subscribes the recompose scope, which is throttled/cached when the element
+/// lives inside a scroll container (that was the "animates only while scrolling"
+/// bug). This mirrors how the cranpose desktop-demo's shader rect animates.
+#[composable]
+fn FireBorderOverlay(corner_radius: f32, height: f32) {
+    let transition = rememberInfiniteTransition("fire_border");
+    let time = transition.animateFloat(
+        0.0,
+        1.0,
+        infiniteRepeatable(
+            AnimationSpec::linear(60_000),
+            RepeatMode::Restart,
+            StartOffset::default(),
+        ),
+        "fire_border_t",
+    );
+    // Read the frame in the BODY so this composable recomposes each tick (which
+    // keeps the frame flowing alongside AnimationPump).
+    let frame = time.value();
+    let height = height.max(1.0);
+    // How far the flame overhangs the element on every side. The layer texture is
+    // grown by this much so the outward glow has room and is not clipped.
+    let pad = 13.0f32;
+    BoxWithConstraints(
+        Modifier::empty().fill_max_width().height(height),
+        move |scope| {
+            let w = scope.max_width().0.max(1.0);
+            let outer_w = w + 2.0 * pad;
+            let outer_h = height + 2.0 * pad;
+            // Force the shader to re-render every frame. Cranpose caches the raster
+            // of a scroll's content, keyed on a content hash that excludes shader
+            // uniforms (see render_hash.rs) — so an animated shader inside a scroll
+            // reuses its cached (frozen) pixels. The content hash DOES include the
+            // layer's alpha (graph_hash.rs), so nudging alpha by a hair each frame
+            // forces a cache miss and a real re-raster with the new time. Unlike a
+            // bounds nudge this costs no relayout, and the change is far below
+            // perceptible (~0.3% opacity).
+            let anim_alpha = 1.0 - (frame * 240.0).fract() * 0.003;
+            // `required_size` makes the flame layer bigger than the element and
+            // lets it overflow, while the parent is still reported the element-sized
+            // (coerced) bounds — so the flame sits OUTSIDE the element edge without
+            // shifting layout. cranpose places the oversized child at the parent's
+            // top-left, overflowing to the bottom-right (alignment/offset can't move
+            // it — they act on the coerced size, which already equals the parent).
+            // So we recentre the overhang with a render-time `translation` of -pad on
+            // the graphics_layer, which shifts the drawn pixels without touching
+            // layout. The contour is the element bounds, centred in the larger
+            // texture, so the band straddles the edge and its glow bleeds outward.
+            ComposeBox(
+                Modifier::empty()
+                    .required_size(Size::new(outer_w, outer_h))
+                    .graphics_layer(move || GraphicsLayer {
+                        render_effect: Some(fire_shader_effect(&FireShaderParams {
+                            resolution_w: outer_w,
+                            resolution_h: outer_h,
+                            time: frame,
+                            band_width: 14.0,
+                            corner_radius,
+                            contour_w: w,
+                            contour_h: height,
+                            smoke_scale: 0.5,
+                            intensity: 1.15,
+                            smoke_opacity: 0.5,
+                            core_scale: 1.3,
+                            color_tint: [1.3, 0.7, 0.25],
+                        })),
+                        alpha: anim_alpha,
+                        translation_x: -pad,
+                        translation_y: -pad,
+                        compositing_strategy: CompositingStrategy::Offscreen,
+                        ..Default::default()
+                    }),
+                BoxSpec::default(),
+                || {},
+            );
+        },
+    );
+}
+
+/// A zero-size, invisible composable that drives continuous rendering so the
+/// shader-flame animations never freeze. Each frame it bumps a state that it
+/// reads itself, invalidating only this leaf scope. That keeps the desktop event
+/// loop's `should_render()` true (→ `ControlFlow::Poll`), so the frame clock the
+/// flames animate off of keeps ticking even when the app is otherwise idle. The
+/// recompose is confined to this one leaf; the rest of the tree is untouched.
+#[composable]
+fn AnimationPump() {
+    let tick = useState(|| 0u64);
+    // Read the tick so this scope subscribes and recomposes when it changes.
+    let _ = tick.value();
+    cranpose_core::LaunchedEffectAsync!((), move |scope| {
+        Box::pin(async move {
+            let clock = scope.runtime().frame_clock();
+            let mut n = 0u64;
+            loop {
+                if !scope.is_active() {
+                    break;
+                }
+                clock.next_frame().await;
+                n = n.wrapping_add(1);
+                tick.set(n);
+            }
+        })
+    });
+}
+
 /// The hero "next action" button to render inside the flame border.
 #[derive(Clone, Copy, PartialEq)]
 enum HeroButton {
@@ -1456,9 +1577,10 @@ enum HeroButton {
     Action(ActionButtonId),
 }
 
-/// Wraps the hero "next action" button in an animated flame border. The button
-/// is inset by [`HERO_FIRE_BAND`] so the fire has room to breathe. Used for both
-/// the action CTA and the field-edit suggestion, in every hero layout.
+/// Wraps the hero "next action" button in an animated flame border. The flame is
+/// a transparent overlay stacked over the measured button, so it never changes
+/// layout and always hugs the button's bounds. Used for both the action CTA and
+/// the field-edit suggestion, in every hero layout.
 #[composable]
 fn hero_fire_glow(
     hero: HeroButton,
@@ -1468,70 +1590,42 @@ fn hero_fire_glow(
     actions: ActionStates,
     theme: ThemeMode,
 ) {
-    let transition = rememberInfiniteTransition("hero_fire");
-    let time = transition.animateFloat(
-        0.0,
-        1.0,
-        infiniteRepeatable(
-            AnimationSpec::linear(60_000),
-            RepeatMode::Restart,
-            StartOffset::default(),
-        ),
-        "hero_fire_t",
-    );
-    BoxWithConstraints(Modifier::empty().fill_max_width(), {
-        let fields = fields.clone();
-        move |scope| {
-            let outer_w = scope.max_width().0.max(1.0);
-            let outer_h = content_height + 2.0 * HERO_FIRE_BAND;
-            let content_w = (outer_w - 2.0 * HERO_FIRE_BAND).max(1.0);
+    let _ = content_height;
+    let button_h = useState(|| 0.0f32);
+    ComposeBox(
+        Modifier::empty().fill_max_width(),
+        BoxSpec::default().content_alignment(Alignment::TOP_START),
+        {
             let fields = fields.clone();
-            ComposeBox(
-                Modifier::empty()
-                    .size(Size::new(outer_w, outer_h))
-                    .graphics_layer(move || GraphicsLayer {
-                        render_effect: Some(fire_shader_effect(&FireShaderParams {
-                            resolution_w: outer_w,
-                            resolution_h: outer_h,
-                            time: time.value(),
-                            band_width: 16.0,
-                            corner_radius,
-                            contour_w: content_w,
-                            contour_h: content_height,
-                            smoke_scale: 0.7,
-                            intensity: 1.15,
-                            smoke_opacity: 0.7,
-                            core_scale: 1.35,
-                            color_tint: [1.3, 0.7, 0.25],
-                        })),
-                        compositing_strategy: CompositingStrategy::Offscreen,
-                        ..Default::default()
+            move || {
+                let fields = fields.clone();
+                ComposeBox(
+                    Modifier::empty().fill_max_width().draw_behind(move |draw| {
+                        let h = draw.size().height;
+                        if (button_h.get_non_reactive() - h).abs() > 0.5 {
+                            button_h.set(h);
+                        }
                     }),
-                BoxSpec::default().content_alignment(Alignment::CENTER),
-                {
-                    let fields = fields.clone();
-                    move || {
-                        let fields = fields.clone();
-                        ComposeBox(
-                            Modifier::empty().size(Size::new(content_w, content_height)),
-                            BoxSpec::default().content_alignment(Alignment::CENTER),
-                            move || match hero {
-                                HeroButton::Field(field) => FieldSuggestion(
-                                    field,
-                                    actions.active_queue_target,
-                                    actions.status,
-                                    theme,
-                                ),
-                                HeroButton::Action(action) => {
-                                    focus_action_button(action, fields.clone(), actions, theme)
-                                }
-                            },
-                        );
-                    }
-                },
-            );
-        }
-    });
+                    BoxSpec::default(),
+                    move || match hero {
+                        HeroButton::Field(field) => FieldSuggestion(
+                            field,
+                            actions.active_queue_target,
+                            actions.status,
+                            theme,
+                        ),
+                        HeroButton::Action(action) => {
+                            focus_action_button(action, fields.clone(), actions, theme)
+                        }
+                    },
+                );
+                let h = button_h.value();
+                if h > 1.0 {
+                    FireBorderOverlay(corner_radius, h);
+                }
+            }
+        },
+    );
 }
 
 #[composable]
@@ -1791,7 +1885,7 @@ fn InteractiveQueuePanel(
                                 Row(
                                     Modifier::empty()
                                         .fill_max_width()
-                                        .height(72.0)
+                                        .height(60.0)
                                         .clip_to_bounds()
                                         .horizontal_scroll(scroll_state.clone(), false),
                                     RowSpec::default()
@@ -1913,15 +2007,22 @@ fn SessionQueuePanel(actions: ActionStates, theme: ThemeMode) {
     // Shared drag state: Some((dragged_index, horizontal_offset_px)).
     let drag = useState(|| None::<(usize, f32)>);
     let stride = SESSION_CHIP_W + INTERACTIVE_QUEUE_CHIP_GAP;
+    // Horizontal scroll for long queues. The scroll modifier's own gesture is
+    // disabled (guard returns false); we drive the offset ourselves from the one
+    // pointer handler so wheel-pan and drag-reorder never fight each other.
+    let scroll_state = remember(|| ScrollState::new(0.0)).with(|state| state.clone());
     glass_panel(Modifier::empty().fill_max_width(), theme, 14.0, 10.0, {
         let session_queue = session_queue.clone();
+        let scroll_state = scroll_state.clone();
         move || {
             let session_queue = session_queue.clone();
+            let scroll_state = scroll_state.clone();
             Column(
                 Modifier::empty().fill_max_width(),
                 ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(9.0)),
                 move || {
                     let session_queue = session_queue.clone();
+                    let scroll_state = scroll_state.clone();
                     Row(
                         Modifier::empty().fill_max_width(),
                         RowSpec::default()
@@ -1943,88 +2044,137 @@ fn SessionQueuePanel(actions: ActionStates, theme: ThemeMode) {
                         );
                     } else {
                         let len = session_queue.len();
-                        // A single drag handler on the full-width container. Because
-                        // the container spans the whole drag range, the pointer never
-                        // slips off it mid-drag (a per-chip handler froze once the
-                        // chip translated out from under the cursor).
+                        // A single pointer handler on the full-width container owns
+                        // both gestures: a click-drag reorders chips (live), and the
+                        // mouse wheel pans the row when it overflows. Because the
+                        // container spans the whole range, the pointer never slips off
+                        // it mid-drag (a per-chip handler froze once the chip
+                        // translated out from under the cursor).
                         ComposeBox(
                             Modifier::empty()
                                 .fill_max_width()
                                 .height(48.0)
                                 .clip_to_bounds()
                                 .pointer_input(len, {
-                                    move |scope: PointerInputScope| async move {
-                                        scope
-                                            .await_pointer_event_scope(|await_scope| async move {
-                                                let mut idx = 0usize;
-                                                let mut start_x = 0.0f32;
-                                                let mut dragging = false;
-                                                // Only an actual press starts a drag; bare hover
-                                                // moves must never touch a chip.
-                                                let mut pressed = false;
-                                                loop {
-                                                    let event =
-                                                        await_scope.await_pointer_event().await;
-                                                    match event.kind {
-                                                        PointerEventKind::Down => {
-                                                            idx = ((event.position.x / stride)
-                                                                .floor()
-                                                                as usize)
-                                                                .min(len.saturating_sub(1));
-                                                            start_x = event.global_position.x;
-                                                            dragging = false;
-                                                            pressed = true;
-                                                        }
-                                                        PointerEventKind::Move => {
-                                                            if !pressed {
-                                                                continue;
-                                                            }
-                                                            let dx =
-                                                                event.global_position.x - start_x;
-                                                            if dx.abs() > 6.0 {
-                                                                dragging = true;
-                                                            }
-                                                            if dragging {
-                                                                drag.set(Some((idx, dx)));
-                                                                event.consume();
-                                                            }
-                                                        }
-                                                        PointerEventKind::Up
-                                                        | PointerEventKind::Cancel => {
-                                                            pressed = false;
-                                                            if dragging {
-                                                                let dx = event.global_position.x
-                                                                    - start_x;
-                                                                let delta =
-                                                                    (dx / stride).round() as i64;
-                                                                let target = (idx as i64 + delta)
-                                                                    .clamp(0, len as i64 - 1)
-                                                                    as usize;
-                                                                if target != idx {
-                                                                    session_queue_move(
-                                                                        ui_preferences,
-                                                                        idx,
-                                                                        target,
-                                                                    );
+                                    let scroll_state = scroll_state.clone();
+                                    move |scope: PointerInputScope| {
+                                        let scroll_state = scroll_state.clone();
+                                        async move {
+                                            scope
+                                                .await_pointer_event_scope(
+                                                    move |await_scope| async move {
+                                                        let mut idx = 0usize;
+                                                        let mut start_x = 0.0f32;
+                                                        let mut dragging = false;
+                                                        // Only an actual press starts a
+                                                        // drag; bare hover moves must
+                                                        // never touch a chip.
+                                                        let mut pressed = false;
+                                                        loop {
+                                                            let event = await_scope
+                                                                .await_pointer_event()
+                                                                .await;
+                                                            match event.kind {
+                                                                PointerEventKind::Scroll => {
+                                                                    // Map either axis of the
+                                                                    // wheel to horizontal pan
+                                                                    // (a vertical wheel emits
+                                                                    // scroll_delta.y).
+                                                                    let d = event.scroll_delta.x
+                                                                        + event.scroll_delta.y;
+                                                                    if d.abs() > f32::EPSILON {
+                                                                        scroll_state
+                                                                            .dispatch_raw_delta(-d);
+                                                                        event.consume();
+                                                                    }
                                                                 }
+                                                                PointerEventKind::Down => {
+                                                                    let start_scroll = scroll_state
+                                                                        .value_non_reactive();
+                                                                    let content_x =
+                                                                        event.position.x
+                                                                            + start_scroll;
+                                                                    idx = ((content_x / stride)
+                                                                        .floor()
+                                                                        as usize)
+                                                                        .min(len.saturating_sub(1));
+                                                                    start_x =
+                                                                        event.global_position.x;
+                                                                    dragging = false;
+                                                                    pressed = true;
+                                                                }
+                                                                PointerEventKind::Move => {
+                                                                    // Guard against a stale
+                                                                    // press (missed Up) and
+                                                                    // bare hover.
+                                                                    if !pressed
+                                                                        || event.buttons
+                                                                            == PointerButtons::NONE
+                                                                    {
+                                                                        continue;
+                                                                    }
+                                                                    let dx =
+                                                                        event.global_position.x
+                                                                            - start_x;
+                                                                    if dx.abs() > 6.0 {
+                                                                        dragging = true;
+                                                                    }
+                                                                    if dragging {
+                                                                        drag.set(Some((idx, dx)));
+                                                                        event.consume();
+                                                                    }
+                                                                }
+                                                                PointerEventKind::Up
+                                                                | PointerEventKind::Cancel => {
+                                                                    pressed = false;
+                                                                    if dragging {
+                                                                        let dx =
+                                                                            event.global_position.x
+                                                                                - start_x;
+                                                                        let delta = (dx / stride)
+                                                                            .round()
+                                                                            as i64;
+                                                                        let target = (idx as i64
+                                                                            + delta)
+                                                                            .clamp(
+                                                                                0,
+                                                                                len as i64 - 1,
+                                                                            )
+                                                                            as usize;
+                                                                        if target != idx {
+                                                                            session_queue_move(
+                                                                                ui_preferences,
+                                                                                idx,
+                                                                                target,
+                                                                            );
+                                                                        }
+                                                                    }
+                                                                    drag.set(None);
+                                                                    dragging = false;
+                                                                }
+                                                                _ => {}
                                                             }
-                                                            drag.set(None);
-                                                            dragging = false;
                                                         }
-                                                        _ => {}
-                                                    }
-                                                }
-                                            })
-                                            .await;
+                                                    },
+                                                )
+                                                .await;
+                                        }
                                     }
                                 }),
                             BoxSpec::default(),
                             {
                                 let session_queue = session_queue.clone();
+                                let scroll_state = scroll_state.clone();
                                 move || {
                                     let session_queue = session_queue.clone();
                                     Row(
-                                        Modifier::empty().fill_max_width(),
+                                        Modifier::empty()
+                                            .fill_max_width()
+                                            .horizontal_scroll_guarded(
+                                                scroll_state.clone(),
+                                                false,
+                                                || false,
+                                            ),
                                         RowSpec::default()
                                             .horizontal_arrangement(LinearArrangement::spaced_by(
                                                 INTERACTIVE_QUEUE_CHIP_GAP,
@@ -2073,21 +2223,51 @@ fn SessionQueueChip(
     theme: ThemeMode,
 ) {
     let label = interactive_queue_label(&item_key, false, false);
-    let drag_dx = match drag.value() {
-        Some((i, dx)) if i == index => Some(dx),
-        _ => None,
+    let stride = SESSION_CHIP_W + INTERACTIVE_QUEUE_CHIP_GAP;
+    // Live reorder: while a chip is dragged the others slide to open a gap so the
+    // list always shows its would-be final arrangement (never a hole, never a
+    // fly). `from` is the grabbed index; `target` is where it would drop right now.
+    let (from, drag_dx, active) = match drag.value() {
+        Some((i, dx)) => (i, dx, true),
+        None => (usize::MAX, 0.0, false),
     };
+    let target = if active {
+        (from as i64 + (drag_dx / stride).round() as i64).clamp(0, len as i64 - 1) as usize
+    } else {
+        from
+    };
+    let is_dragged = active && index == from;
+    // Shift every chip between the grabbed slot and the target by one stride to
+    // make room; the grabbed chip itself tracks the pointer directly. The shift is
+    // instant (no spring): the offset is relative to the chip's laid-out position,
+    // which jumps by a stride the moment the list reorders on drop — an animated
+    // offset would lag that jump and produce a one-stride "pop". Instant offsets
+    // stay frame-coherent, so the drop is seamless.
+    let neighbor_shift = if !active || is_dragged {
+        0.0
+    } else if from < target && index > from && index <= target {
+        -stride
+    } else if target < from && index >= target && index < from {
+        stride
+    } else {
+        0.0
+    };
+    let offset = if is_dragged { drag_dx } else { neighbor_shift };
     // Flat, fixed-width rounded surface. While dragged it follows the pointer
     // and lifts slightly.
     let mut surface = Modifier::empty()
         .width(SESSION_CHIP_W)
         .background(soft_button_surface(theme))
         .rounded_corners(9.0);
-    if let Some(dx) = drag_dx {
+    if offset.abs() > 0.01 || is_dragged {
         surface = surface.graphics_layer_block(move |layer| {
-            layer.translation_x = dx;
-            layer.scale_x = 1.04;
-            layer.scale_y = 1.04;
+            layer.translation_x = offset;
+            if is_dragged {
+                // A gentle lift while dragged. No shadow_elevation: the row clips to
+                // its bounds, and a clipped drop shadow looked broken here.
+                layer.scale_x = 1.04;
+                layer.scale_y = 1.04;
+            }
         });
     }
     ComposeBox(
@@ -2102,11 +2282,6 @@ fn SessionQueueChip(
                     .vertical_alignment(VerticalAlignment::CenterVertically),
                 move || {
                     Text("⠿", Modifier::empty(), muted_style(theme));
-                    if index > 0 {
-                        queue_edit_button("‹", theme, move || {
-                            session_queue_swap(ui_preferences, index, index - 1);
-                        });
-                    }
                     BasicText(
                         label.clone(),
                         Modifier::empty().weight(1.0),
@@ -2116,11 +2291,6 @@ fn SessionQueueChip(
                         1,
                         1,
                     );
-                    if index + 1 < len {
-                        queue_edit_button("›", theme, move || {
-                            session_queue_swap(ui_preferences, index, index + 1);
-                        });
-                    }
                     queue_edit_button("✕", theme, move || {
                         session_queue_remove(ui_preferences, index, status);
                     });
@@ -2197,18 +2367,6 @@ fn queue_edit_button(glyph: &'static str, theme: ThemeMode, on_click: impl FnMut
     );
 }
 
-fn session_queue_swap(ui_preferences: MutableState<UiPreferences>, a: usize, b: usize) {
-    let preferences = ui_preferences.update(|preferences| {
-        let mut queue = preferences.interactive_queue().to_vec();
-        if a < queue.len() && b < queue.len() {
-            queue.swap(a, b);
-        }
-        preferences.set_interactive_queue(queue);
-        preferences.clone()
-    });
-    let _ = persist_ui_preferences(&preferences);
-}
-
 /// Move a chip from one position to another (used by drag-and-drop reorder).
 fn session_queue_move(ui_preferences: MutableState<UiPreferences>, from: usize, to: usize) {
     if from == to {
@@ -2267,43 +2425,11 @@ fn InteractiveQueueChip(
     theme: ThemeMode,
 ) {
     if glow {
-        // Fixed-size chip, so the flame border needs no measuring.
-        let transition = rememberInfiniteTransition("queue_chip_fire");
-        let time = transition.animateFloat(
-            0.0,
-            1.0,
-            infiniteRepeatable(
-                AnimationSpec::linear(60_000),
-                RepeatMode::Restart,
-                StartOffset::default(),
-            ),
-            "queue_chip_fire_t",
-        );
-        let band = 8.0f32;
-        let outer_w = INTERACTIVE_QUEUE_CHIP_WIDTH + 2.0 * band;
-        let outer_h = 48.0 + 2.0 * band;
+        // Fixed-size chip: the flame is a transparent overlay stacked exactly over
+        // the chip's 214×48 bounds, so it never shifts the row and hugs the edge.
         ComposeBox(
-            Modifier::empty()
-                .size(Size::new(outer_w, outer_h))
-                .graphics_layer(move || GraphicsLayer {
-                    render_effect: Some(fire_shader_effect(&FireShaderParams {
-                        resolution_w: outer_w,
-                        resolution_h: outer_h,
-                        time: time.value(),
-                        band_width: 12.0,
-                        corner_radius: 10.0,
-                        contour_w: INTERACTIVE_QUEUE_CHIP_WIDTH,
-                        contour_h: 48.0,
-                        smoke_scale: 0.55,
-                        intensity: 1.05,
-                        smoke_opacity: 0.5,
-                        core_scale: 1.25,
-                        color_tint: [1.3, 0.7, 0.25],
-                    })),
-                    compositing_strategy: CompositingStrategy::Offscreen,
-                    ..Default::default()
-                }),
-            BoxSpec::default().content_alignment(Alignment::CENTER),
+            Modifier::empty().width(INTERACTIVE_QUEUE_CHIP_WIDTH),
+            BoxSpec::default().content_alignment(Alignment::TOP_START),
             move || {
                 interactive_queue_chip_button(
                     item_key.clone(),
@@ -2312,6 +2438,7 @@ fn InteractiveQueueChip(
                     actions,
                     theme,
                 );
+                FireBorderOverlay(10.0, 48.0);
             },
         );
         return;
@@ -2505,93 +2632,45 @@ fn glow_grid_button(
     actions: ActionStates,
     theme: ThemeMode,
 ) {
-    let transition = rememberInfiniteTransition("grid_fire");
-    let time = transition.animateFloat(
-        0.0,
-        1.0,
-        infiniteRepeatable(
-            AnimationSpec::linear(60_000),
-            RepeatMode::Restart,
-            StartOffset::default(),
-        ),
-        "grid_fire_t",
-    );
-    let content_h = 46.0f32;
-    let band = 9.0f32;
-    let outer_h = content_h + 2.0 * band;
+    let button_h = useState(|| 0.0f32);
     // The WEIGHTED element is this outer ComposeBox, which participates in the
-    // Row's weight distribution normally (a weighted BoxWithConstraints does not
-    // and grabs the whole row). BoxWithConstraints lives inside it with
-    // fill_max_size, so it measures the real cell width for the flame while the
-    // cell itself never overflows its neighbours.
+    // Row's weight distribution just like the non-glow buttons (which use
+    // `.weight(1.0)`). The flame is a transparent overlay stacked on top of the
+    // measured button, so it never changes the cell size or shifts neighbours.
     ComposeBox(
-        Modifier::empty().weight(1.0).height(outer_h),
-        BoxSpec::default(),
+        Modifier::empty().weight(1.0),
+        BoxSpec::default().content_alignment(Alignment::TOP_START),
         {
             let fields = fields.clone();
             move || {
                 let fields = fields.clone();
-                BoxWithConstraints(Modifier::empty().fill_max_size(), {
-                    let fields = fields.clone();
-                    move |scope| {
-                        let outer_w = scope.max_width().0.max(1.0);
-                        let content_w = (outer_w - 2.0 * band).max(1.0);
+                ComposeBox(
+                    Modifier::empty().fill_max_width().draw_behind(move |draw| {
+                        let h = draw.size().height;
+                        if (button_h.get_non_reactive() - h).abs() > 0.5 {
+                            button_h.set(h);
+                        }
+                    }),
+                    BoxSpec::default(),
+                    move || {
                         let fields = fields.clone();
-                        ComposeBox(
-                            Modifier::empty().fill_max_size().graphics_layer(move || {
-                                GraphicsLayer {
-                                    render_effect: Some(fire_shader_effect(&FireShaderParams {
-                                        resolution_w: outer_w,
-                                        resolution_h: outer_h,
-                                        time: time.value(),
-                                        band_width: 13.0,
-                                        corner_radius: 10.0,
-                                        contour_w: content_w,
-                                        contour_h: content_h,
-                                        smoke_scale: 0.6,
-                                        intensity: 1.1,
-                                        smoke_opacity: 0.6,
-                                        core_scale: 1.3,
-                                        color_tint: [1.3, 0.7, 0.25],
-                                    })),
-                                    compositing_strategy: CompositingStrategy::Offscreen,
-                                    ..Default::default()
-                                }
-                            }),
-                            BoxSpec::default().content_alignment(Alignment::CENTER),
-                            {
-                                let fields = fields.clone();
-                                move || {
-                                    let fields = fields.clone();
-                                    ComposeBox(
-                                        Modifier::empty()
-                                            .fill_max_width()
-                                            .padding_symmetric(band, band),
-                                        BoxSpec::default().content_alignment(Alignment::CENTER),
-                                        move || {
-                                            let fields = fields.clone();
-                                            primary_button(
-                                                action,
-                                                actions.ui_preferences,
-                                                theme,
-                                                disabled,
-                                                is_busy,
-                                                true,
-                                                move || {
-                                                    handle_action_button(
-                                                        action,
-                                                        fields.clone(),
-                                                        actions,
-                                                    );
-                                                },
-                                            );
-                                        },
-                                    );
-                                }
+                        primary_button(
+                            action,
+                            actions.ui_preferences,
+                            theme,
+                            disabled,
+                            is_busy,
+                            true,
+                            move || {
+                                handle_action_button(action, fields.clone(), actions);
                             },
                         );
-                    }
-                });
+                    },
+                );
+                let h = button_h.value();
+                if h > 1.0 {
+                    FireBorderOverlay(10.0, h);
+                }
             }
         },
     );
@@ -3618,9 +3697,9 @@ fn editor_field_inner(
     );
 }
 
-/// Wraps the current hero field's editor in the same flame border as the hero
-/// button. The field's height is measured (via draw_behind) so the flame fits
-/// single-line and multi-line editors alike.
+/// Stacks the animated fire border over the current hero field's editor without
+/// changing its layout. The editor's height is measured so the transparent
+/// overlay matches it exactly; only the overlay recomposes for the animation.
 #[composable]
 fn glow_field_wrap(
     field: EditorFieldId,
@@ -3630,85 +3709,42 @@ fn glow_field_wrap(
     ui_preferences: MutableState<UiPreferences>,
     theme: ThemeMode,
 ) {
-    let field_h = useState(|| 72.0f32);
-    let transition = rememberInfiniteTransition("field_fire");
-    let time = transition.animateFloat(
-        0.0,
-        1.0,
-        infiniteRepeatable(
-            AnimationSpec::linear(60_000),
-            RepeatMode::Restart,
-            StartOffset::default(),
-        ),
-        "field_fire_t",
-    );
-    let band = 12.0f32;
-    BoxWithConstraints(Modifier::empty().fill_max_width(), {
-        let fields = fields.clone();
-        let saved_draft = saved_draft.clone();
-        move |scope| {
-            let outer_w = scope.max_width().0.max(1.0);
-            let content_h = field_h.value().max(40.0);
-            let outer_h = content_h + 2.0 * band;
-            let content_w = (outer_w - 2.0 * band).max(1.0);
+    let field_h = useState(|| 0.0f32);
+    ComposeBox(
+        Modifier::empty().fill_max_width(),
+        BoxSpec::default().content_alignment(Alignment::TOP_START),
+        {
             let fields = fields.clone();
             let saved_draft = saved_draft.clone();
-            ComposeBox(
-                Modifier::empty()
-                    .fill_max_width()
-                    .height(outer_h)
-                    .graphics_layer(move || GraphicsLayer {
-                        render_effect: Some(fire_shader_effect(&FireShaderParams {
-                            resolution_w: outer_w,
-                            resolution_h: outer_h,
-                            time: time.value(),
-                            band_width: 15.0,
-                            corner_radius: 14.0,
-                            contour_w: content_w,
-                            contour_h: content_h,
-                            smoke_scale: 0.6,
-                            intensity: 1.05,
-                            smoke_opacity: 0.55,
-                            core_scale: 1.25,
-                            color_tint: [1.3, 0.7, 0.25],
-                        })),
-                        compositing_strategy: CompositingStrategy::Offscreen,
-                        ..Default::default()
+            move || {
+                let fields = fields.clone();
+                let saved_draft = saved_draft.clone();
+                ComposeBox(
+                    Modifier::empty().fill_max_width().draw_behind(move |draw| {
+                        let h = draw.size().height;
+                        if (field_h.get_non_reactive() - h).abs() > 0.5 {
+                            field_h.set(h);
+                        }
                     }),
-                BoxSpec::default().content_alignment(Alignment::CENTER),
-                {
-                    let fields = fields.clone();
-                    let saved_draft = saved_draft.clone();
+                    BoxSpec::default(),
                     move || {
-                        let fields = fields.clone();
-                        let saved_draft = saved_draft.clone();
-                        ComposeBox(
-                            Modifier::empty()
-                                .fill_max_width()
-                                .padding_symmetric(band, band)
-                                .draw_behind(move |draw| {
-                                    let h = (draw.size().height - 2.0 * band).max(1.0);
-                                    if (field_h.get_non_reactive() - h).abs() > 1.0 {
-                                        field_h.set(h);
-                                    }
-                                }),
-                            BoxSpec::default(),
-                            move || {
-                                editor_field_inner(
-                                    field,
-                                    fields.clone(),
-                                    saved_draft.clone(),
-                                    status,
-                                    ui_preferences,
-                                    theme,
-                                );
-                            },
+                        editor_field_inner(
+                            field,
+                            fields.clone(),
+                            saved_draft.clone(),
+                            status,
+                            ui_preferences,
+                            theme,
                         );
-                    }
-                },
-            );
-        }
-    });
+                    },
+                );
+                let h = field_h.value();
+                if h > 1.0 {
+                    FireBorderOverlay(12.0, h);
+                }
+            }
+        },
+    );
 }
 
 const DIFFICULTY_OPTIONS: [(&str, &str); 3] =
@@ -5709,8 +5745,8 @@ pub fn run_app_capture_cli(output_path: &Path, size: Option<(u32, u32)>) -> Resu
             let tx = tx.clone();
             move |robot| {
                 let result = (|| -> std::result::Result<PreviewFrame, String> {
-                    robot.wait_for_idle()?;
-                    robot.pump_frames(4)?;
+                    // Not wait_for_idle: the animated fire never idles.
+                    robot.pump_frames(20)?;
                     let screenshot = robot.screenshot_with_scale(1.0)?;
                     robot.exit()?;
                     Ok(PreviewFrame {
@@ -5765,11 +5801,16 @@ pub fn run_robot_cli(scenario: &str, output_dir: &Path) -> Result<()> {
                         )
                         .map_err(|e| e.to_string())
                     };
-                    robot.wait_for_idle()?;
-                    robot.pump_frames(6)?;
+                    robot.pump_frames(20)?;
                     let s = robot.screenshot_with_scale(1.0)?;
                     save("00_before", s.width, s.height, s.pixels)?;
                     match scenario.as_str() {
+                        "anim" => {
+                            std::thread::sleep(Duration::from_millis(700));
+                            robot.pump_frames(4)?;
+                            let s = robot.screenshot_with_scale(1.0)?;
+                            save("01_later", s.width, s.height, s.pixels)?;
+                        }
                         "drag" => {
                             robot.mouse_move(150.0, 585.0)?;
                             robot.mouse_down()?;
