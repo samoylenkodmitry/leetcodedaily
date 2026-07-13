@@ -1778,6 +1778,8 @@ fn SessionQueuePanel(actions: ActionStates, theme: ThemeMode) {
     } = actions;
     let session_queue = ui_preferences.value().interactive_queue().to_vec();
     let scroll_state = remember(|| ScrollState::new(0.0)).with(|state| state.clone());
+    // Shared drag state: Some((dragged_index, horizontal_offset_px)).
+    let drag = useState(|| None::<(usize, f32)>);
     glass_panel(Modifier::empty().fill_max_width(), theme, 14.0, 10.0, {
         let session_queue = session_queue.clone();
         move || {
@@ -1827,6 +1829,7 @@ fn SessionQueuePanel(actions: ActionStates, theme: ThemeMode) {
                                         index,
                                         len,
                                         item_key.clone(),
+                                        drag,
                                         status,
                                         ui_preferences,
                                         theme,
@@ -1841,23 +1844,83 @@ fn SessionQueuePanel(actions: ActionStates, theme: ThemeMode) {
     });
 }
 
+/// Nominal chip stride (width + gap) used to translate a horizontal drag
+/// distance into a number of positions to move.
+const SESSION_CHIP_STRIDE: f32 = 150.0;
+
 #[composable]
 fn SessionQueueChip(
     index: usize,
     len: usize,
     item_key: String,
+    drag: MutableState<Option<(usize, f32)>>,
     status: MutableState<String>,
     ui_preferences: MutableState<UiPreferences>,
     theme: ThemeMode,
 ) {
     let label = interactive_queue_label(&item_key, false, false);
+    let drag_dx = match drag.value() {
+        Some((i, dx)) if i == index => Some(dx),
+        _ => None,
+    };
     // A flat rounded surface (no drop shadow) so the horizontal scroll's clip
-    // never crops a shadow on the left/bottom edges.
+    // never crops a shadow on the left/bottom edges. While dragged, the chip
+    // follows the pointer and lifts slightly.
+    let mut surface = Modifier::empty()
+        .background(soft_button_surface(theme))
+        .rounded_corners(9.0);
+    if let Some(dx) = drag_dx {
+        surface = surface.graphics_layer_block(move |layer| {
+            layer.translation_x = dx;
+            layer.scale_x = 1.05;
+            layer.scale_y = 1.05;
+        });
+    }
     ComposeBox(
-        Modifier::empty()
-            .background(soft_button_surface(theme))
-            .rounded_corners(9.0)
-            .padding_symmetric(8.0, 5.0),
+        surface.padding_symmetric(8.0, 5.0).pointer_input(index, {
+            move |scope: PointerInputScope| async move {
+                scope
+                    .await_pointer_event_scope(|await_scope| async move {
+                        let mut start_x = 0.0f32;
+                        let mut dragging = false;
+                        loop {
+                            let event = await_scope.await_pointer_event().await;
+                            match event.kind {
+                                PointerEventKind::Down => {
+                                    start_x = event.global_position.x;
+                                    dragging = false;
+                                }
+                                PointerEventKind::Move => {
+                                    let dx = event.global_position.x - start_x;
+                                    if dx.abs() > 6.0 {
+                                        dragging = true;
+                                    }
+                                    if dragging {
+                                        drag.set(Some((index, dx)));
+                                        event.consume();
+                                    }
+                                }
+                                PointerEventKind::Up | PointerEventKind::Cancel => {
+                                    if dragging {
+                                        let dx = event.global_position.x - start_x;
+                                        let delta = (dx / SESSION_CHIP_STRIDE).round() as i64;
+                                        let target = (index as i64 + delta)
+                                            .clamp(0, len as i64 - 1)
+                                            as usize;
+                                        if target != index {
+                                            session_queue_move(ui_preferences, index, target);
+                                        }
+                                    }
+                                    drag.set(None);
+                                    dragging = false;
+                                }
+                                _ => {}
+                            }
+                        }
+                    })
+                    .await;
+            }
+        }),
         BoxSpec::default(),
         move || {
             let label = label.clone();
@@ -1867,6 +1930,7 @@ fn SessionQueueChip(
                     .horizontal_arrangement(LinearArrangement::spaced_by(6.0))
                     .vertical_alignment(VerticalAlignment::CenterVertically),
                 move || {
+                    Text("⠿", Modifier::empty(), muted_style(theme));
                     if index > 0 {
                         queue_edit_button("‹", theme, move || {
                             session_queue_swap(ui_preferences, index, index - 1);
@@ -1959,6 +2023,23 @@ fn session_queue_swap(ui_preferences: MutableState<UiPreferences>, a: usize, b: 
         let mut queue = preferences.interactive_queue().to_vec();
         if a < queue.len() && b < queue.len() {
             queue.swap(a, b);
+        }
+        preferences.set_interactive_queue(queue);
+        preferences.clone()
+    });
+    let _ = persist_ui_preferences(&preferences);
+}
+
+/// Move a chip from one position to another (used by drag-and-drop reorder).
+fn session_queue_move(ui_preferences: MutableState<UiPreferences>, from: usize, to: usize) {
+    if from == to {
+        return;
+    }
+    let preferences = ui_preferences.update(|preferences| {
+        let mut queue = preferences.interactive_queue().to_vec();
+        if from < queue.len() && to < queue.len() {
+            let item = queue.remove(from);
+            queue.insert(to, item);
         }
         preferences.set_interactive_queue(queue);
         preferences.clone()
