@@ -389,7 +389,7 @@ fn App() {
     .with(|fields| fields.clone());
     let ui_preferences = useState(load_ui_preferences);
     let startup_interactive_queue = remember({
-        let initial_queue = ui_preferences.value().interactive_queue().to_vec();
+        let initial_queue = ui_preferences.value().remembered_queue().to_vec();
         move || initial_queue
     })
     .with(|queue| queue.clone());
@@ -642,10 +642,9 @@ fn ActionsCard(
         ui_preferences,
         ..
     } = actions;
-    let collapsed = cranpose_core::derivedStateOf(move || {
-        scroll_state.value() > HEADER_COLLAPSE_THRESHOLD
-    })
-    .value();
+    let collapsed =
+        cranpose_core::derivedStateOf(move || scroll_state.value() > HEADER_COLLAPSE_THRESHOLD)
+            .value();
     Column(
         Modifier::empty().fill_max_width(),
         ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(14.0)),
@@ -765,6 +764,8 @@ fn ActionsCard(
                     theme,
                 );
 
+                SessionQueuePanel(actions, theme);
+
                 StatusStrip(status.value(), theme);
 
                 if let Some(saved_webp) = preview_state.value().last_saved_webp_path {
@@ -874,16 +875,20 @@ fn CollapsedHeader(
                         },
                     );
                     let fields_btn = fields.clone();
-                    ComposeBox(Modifier::empty().weight(1.0), BoxSpec::default(), move || {
-                        hero_fire_glow(
-                            hero,
-                            content_height,
-                            12.0,
-                            fields_btn.clone(),
-                            actions,
-                            theme,
-                        );
-                    });
+                    ComposeBox(
+                        Modifier::empty().weight(1.0),
+                        BoxSpec::default(),
+                        move || {
+                            hero_fire_glow(
+                                hero,
+                                content_height,
+                                12.0,
+                                fields_btn.clone(),
+                                actions,
+                                theme,
+                            );
+                        },
+                    );
                 },
             );
         }
@@ -1345,8 +1350,9 @@ fn hero_fire_glow(
             let content_w = (outer_w - 2.0 * HERO_FIRE_BAND).max(1.0);
             let fields = fields.clone();
             ComposeBox(
-                Modifier::empty().size(Size::new(outer_w, outer_h)).graphics_layer(
-                    move || GraphicsLayer {
+                Modifier::empty()
+                    .size(Size::new(outer_w, outer_h))
+                    .graphics_layer(move || GraphicsLayer {
                         render_effect: Some(fire_shader_effect(&FireShaderParams {
                             resolution_w: outer_w,
                             resolution_h: outer_h,
@@ -1363,8 +1369,7 @@ fn hero_fire_glow(
                         })),
                         compositing_strategy: CompositingStrategy::Offscreen,
                         ..Default::default()
-                    },
-                ),
+                    }),
                 BoxSpec::default().content_alignment(Alignment::CENTER),
                 {
                     let fields = fields.clone();
@@ -1557,7 +1562,11 @@ fn InteractiveQueuePanel(
                     );
                     let scroll_state = scroll_state.clone();
                     move || {
-                        Text("Interactive Queue", Modifier::empty(), eyebrow_style(theme));
+                        Text(
+                            "Saved Queue (replays on launch)",
+                            Modifier::empty(),
+                            eyebrow_style(theme),
+                        );
                         BoxWithConstraints(Modifier::empty().fill_max_width(), {
                             let fields = fields.clone();
                             let row_queue = queue.clone();
@@ -1724,6 +1733,231 @@ fn QueueCurrentEditorField(
         ui_preferences,
         theme,
     );
+}
+
+/// Editable row of the actions taken this session. Chips can be reordered and
+/// removed; "Remember queue" saves the curated list as the replay queue.
+#[composable]
+fn SessionQueuePanel(actions: ActionStates, theme: ThemeMode) {
+    let ActionStates {
+        status,
+        ui_preferences,
+        ..
+    } = actions;
+    let session_queue = ui_preferences.value().interactive_queue().to_vec();
+    let scroll_state = remember(|| ScrollState::new(0.0)).with(|state| state.clone());
+    glass_panel(Modifier::empty().fill_max_width(), theme, 14.0, 10.0, {
+        let session_queue = session_queue.clone();
+        move || {
+            let session_queue = session_queue.clone();
+            let scroll_state = scroll_state.clone();
+            Column(
+                Modifier::empty().fill_max_width(),
+                ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(9.0)),
+                move || {
+                    let session_queue = session_queue.clone();
+                    let scroll_state = scroll_state.clone();
+                    Row(
+                        Modifier::empty().fill_max_width(),
+                        RowSpec::default()
+                            .horizontal_arrangement(LinearArrangement::SpaceBetween)
+                            .vertical_alignment(VerticalAlignment::CenterVertically),
+                        {
+                            let queue_len = session_queue.len();
+                            move || {
+                                Text("New Actions Queue", Modifier::empty(), eyebrow_style(theme));
+                                remember_queue_button(queue_len, status, ui_preferences, theme);
+                            }
+                        },
+                    );
+                    if session_queue.is_empty() {
+                        Text(
+                            "Actions you take collect here. Press Remember to save them as your replay queue.",
+                            Modifier::empty(),
+                            muted_style(theme),
+                        );
+                    } else {
+                        let len = session_queue.len();
+                        Row(
+                            Modifier::empty()
+                                .fill_max_width()
+                                .height(46.0)
+                                .clip_to_bounds()
+                                .horizontal_scroll(scroll_state.clone(), false),
+                            RowSpec::default()
+                                .horizontal_arrangement(LinearArrangement::spaced_by(
+                                    INTERACTIVE_QUEUE_CHIP_GAP,
+                                ))
+                                .vertical_alignment(VerticalAlignment::CenterVertically),
+                            move || {
+                                for (index, item_key) in session_queue.iter().enumerate() {
+                                    SessionQueueChip(
+                                        index,
+                                        len,
+                                        item_key.clone(),
+                                        status,
+                                        ui_preferences,
+                                        theme,
+                                    );
+                                }
+                            },
+                        );
+                    }
+                },
+            );
+        }
+    });
+}
+
+#[composable]
+fn SessionQueueChip(
+    index: usize,
+    len: usize,
+    item_key: String,
+    status: MutableState<String>,
+    ui_preferences: MutableState<UiPreferences>,
+    theme: ThemeMode,
+) {
+    let label = interactive_queue_label(&item_key, false, false);
+    ComposeBox(
+        glass_panel_modifier(Modifier::empty(), theme, 9.0).padding_symmetric(8.0, 4.0),
+        BoxSpec::default(),
+        move || {
+            let label = label.clone();
+            Row(
+                Modifier::empty(),
+                RowSpec::default()
+                    .horizontal_arrangement(LinearArrangement::spaced_by(6.0))
+                    .vertical_alignment(VerticalAlignment::CenterVertically),
+                move || {
+                    if index > 0 {
+                        queue_edit_button("‹", theme, move || {
+                            session_queue_swap(ui_preferences, index, index - 1);
+                        });
+                    }
+                    Text(label.clone(), Modifier::empty(), queue_text_style(theme));
+                    if index + 1 < len {
+                        queue_edit_button("›", theme, move || {
+                            session_queue_swap(ui_preferences, index, index + 1);
+                        });
+                    }
+                    queue_edit_button("✕", theme, move || {
+                        session_queue_remove(ui_preferences, index, status);
+                    });
+                },
+            );
+        },
+    );
+}
+
+#[composable]
+fn remember_queue_button(
+    count: usize,
+    status: MutableState<String>,
+    ui_preferences: MutableState<UiPreferences>,
+    theme: ThemeMode,
+) {
+    let enabled = count > 0;
+    let (button_spec, press) = animated_button_spec(enabled, "remember_queue_button_press");
+    Button(
+        glass_button_modifier_with_press(
+            Modifier::empty(),
+            theme,
+            enabled,
+            false,
+            if enabled {
+                button_surface(theme)
+            } else {
+                soft_button_surface(theme)
+            },
+            9.0,
+            press,
+        )
+        .padding_symmetric(13.0, 8.0),
+        button_spec,
+        move || {
+            if !enabled {
+                return;
+            }
+            remember_queue(ui_preferences, status);
+        },
+        move || {
+            Text(
+                "Remember queue",
+                Modifier::empty(),
+                if enabled {
+                    focus_button_text_style(theme)
+                } else {
+                    subtle_button_text_style(theme)
+                },
+            );
+        },
+    );
+}
+
+#[composable]
+fn queue_edit_button(glyph: &'static str, theme: ThemeMode, on_click: impl FnMut() + 'static) {
+    let (button_spec, press) = animated_button_spec(true, "queue_edit_button_press");
+    Button(
+        glass_button_modifier_with_press(
+            Modifier::empty(),
+            theme,
+            true,
+            false,
+            soft_button_surface(theme),
+            7.0,
+            press,
+        )
+        .padding_symmetric(8.0, 5.0),
+        button_spec,
+        on_click,
+        move || {
+            Text(glyph, Modifier::empty(), subtle_button_text_style(theme));
+        },
+    );
+}
+
+fn session_queue_swap(ui_preferences: MutableState<UiPreferences>, a: usize, b: usize) {
+    let preferences = ui_preferences.update(|preferences| {
+        let mut queue = preferences.interactive_queue().to_vec();
+        if a < queue.len() && b < queue.len() {
+            queue.swap(a, b);
+        }
+        preferences.set_interactive_queue(queue);
+        preferences.clone()
+    });
+    let _ = persist_ui_preferences(&preferences);
+}
+
+fn session_queue_remove(
+    ui_preferences: MutableState<UiPreferences>,
+    index: usize,
+    status: MutableState<String>,
+) {
+    let preferences = ui_preferences.update(|preferences| {
+        let mut queue = preferences.interactive_queue().to_vec();
+        if index < queue.len() {
+            queue.remove(index);
+        }
+        preferences.set_interactive_queue(queue);
+        preferences.clone()
+    });
+    let _ = persist_ui_preferences(&preferences);
+    status.set("Removed a step from the new actions queue.".to_string());
+}
+
+fn remember_queue(ui_preferences: MutableState<UiPreferences>, status: MutableState<String>) {
+    let preferences = ui_preferences.update(|preferences| {
+        preferences.remember_current_queue();
+        preferences.clone()
+    });
+    let count = preferences.remembered_queue().len();
+    match persist_ui_preferences(&preferences) {
+        Ok(_) => status.set(format!(
+            "Remembered {count} step(s) — this becomes the replay queue on next launch."
+        )),
+        Err(error) => status.set(format!("Saving the queue failed: {error}")),
+    }
 }
 
 #[composable]
@@ -2512,9 +2746,7 @@ fn field_stage(field: EditorFieldId) -> WorkStage {
 
 fn action_stage(action: ActionButtonId) -> WorkStage {
     match action {
-        ActionButtonId::RefreshRasterPreview | ActionButtonId::SaveRasterWebp => {
-            WorkStage::Review
-        }
+        ActionButtonId::RefreshRasterPreview | ActionButtonId::SaveRasterWebp => WorkStage::Review,
         ActionButtonId::PublishBlog
         | ActionButtonId::PostTelegram
         | ActionButtonId::PostTelegramComment => WorkStage::Ship,
@@ -2977,7 +3209,11 @@ fn DifficultySegment(
             status.set(format!("Difficulty set to {value}."));
         },
         move || {
-            Text(label, Modifier::empty().fill_max_width(), text_style.clone());
+            Text(
+                label,
+                Modifier::empty().fill_max_width(),
+                text_style.clone(),
+            );
         },
     );
 }

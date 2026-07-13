@@ -119,7 +119,12 @@ pub struct UiPreferences {
     pub theme: ThemeMode,
     button_counts: BTreeMap<String, u64>,
     component_order: BTreeMap<String, u64>,
+    /// This session's working queue (auto-recorded as the user acts). Cleared at
+    /// startup and never replayed directly — only the [`remembered_queue`] is.
     interactive_queue: Vec<String>,
+    /// The saved queue that replays on launch. Only rewritten when the user
+    /// explicitly presses "Remember queue".
+    remembered_queue: Vec<String>,
 }
 
 impl UiPreferences {
@@ -151,6 +156,23 @@ impl UiPreferences {
 
     pub fn interactive_queue(&self) -> &[String] {
         &self.interactive_queue
+    }
+
+    /// The saved queue that replays on launch.
+    pub fn remembered_queue(&self) -> &[String] {
+        &self.remembered_queue
+    }
+
+    /// Replace the working queue (used by the editable "New Actions Queue" row
+    /// to remove/reorder entries). Not persisted as the replay queue until
+    /// [`remember_current_queue`] is called.
+    pub fn set_interactive_queue(&mut self, queue: Vec<String>) {
+        self.interactive_queue = queue;
+    }
+
+    /// Save the current working queue as the remembered replay queue.
+    pub fn remember_current_queue(&mut self) {
+        self.remembered_queue = self.interactive_queue.clone();
     }
 
     pub fn clear_interactive_queue(&mut self) {
@@ -701,6 +723,9 @@ fn encode_ui_preferences(preferences: &UiPreferences) -> String {
     for item in &preferences.interactive_queue {
         push_encoded_field(&mut encoded, "interactive_queue", item);
     }
+    for item in &preferences.remembered_queue {
+        push_encoded_field(&mut encoded, "remembered_queue", item);
+    }
 
     encoded
 }
@@ -784,6 +809,17 @@ fn set_ui_preference_field(preferences: &mut UiPreferences, name: &str, value: &
             }
         }
         "interactive_queue" => preferences.record_interactive_queue_item(value),
+        "remembered_queue" => {
+            let value = value.trim();
+            if !value.is_empty()
+                && !preferences
+                    .remembered_queue
+                    .iter()
+                    .any(|item| item == value)
+            {
+                preferences.remembered_queue.push(value.to_string());
+            }
+        }
         _ => {}
     }
 }
@@ -1284,7 +1320,11 @@ mod tests {
         assert!(youtube.contains("keep if a lesser b and b bigger c"));
 
         // Other outputs keep the raw comparison operators.
-        assert!(draft.leetcode_template().contains("keep if a < b and b > c"));
+        assert!(
+            draft
+                .leetcode_template()
+                .contains("keep if a < b and b > c")
+        );
     }
 
     #[test]
@@ -1431,6 +1471,7 @@ mod tests {
         preferences.record_interactive_queue_item("field.problem_title");
         preferences.record_interactive_queue_item("copy.leetcode");
         preferences.record_interactive_queue_item("copy.leetcode");
+        preferences.remember_current_queue();
 
         let encoded = encode_ui_preferences(&preferences);
         let decoded = decode_ui_preferences(&encoded).expect("decode UI preferences");
@@ -1448,6 +1489,39 @@ mod tests {
                 "field.problem_title".to_string(),
                 "copy.leetcode".to_string()
             ]
+        );
+        // The remembered (replay) queue survives a round-trip independently of
+        // the working queue.
+        assert_eq!(
+            decoded.remembered_queue(),
+            [
+                "field.problem_title".to_string(),
+                "copy.leetcode".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn remember_and_edit_working_queue_are_independent() {
+        let mut preferences = UiPreferences::default();
+        preferences.record_interactive_queue_item("copy.blog");
+        preferences.record_interactive_queue_item("post.telegram");
+        preferences.remember_current_queue();
+
+        // Editing the working queue afterwards must not touch the remembered one.
+        preferences.set_interactive_queue(vec!["save.raster_webp".to_string()]);
+        assert_eq!(preferences.interactive_queue(), ["save.raster_webp"]);
+        assert_eq!(
+            preferences.remembered_queue(),
+            ["copy.blog".to_string(), "post.telegram".to_string()]
+        );
+
+        // Clearing the working queue also leaves the remembered queue intact.
+        preferences.clear_interactive_queue();
+        assert!(preferences.interactive_queue().is_empty());
+        assert_eq!(
+            preferences.remembered_queue(),
+            ["copy.blog".to_string(), "post.telegram".to_string()]
         );
     }
 
