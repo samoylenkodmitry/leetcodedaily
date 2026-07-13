@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::fs;
 #[cfg(not(target_arch = "wasm32"))]
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 const DEFAULT_REFERENCE_URL: &str = "https://dmitrysamoylenko.com/2023/07/14/leetcode_daily.html";
 #[cfg(target_arch = "wasm32")]
@@ -119,7 +119,12 @@ pub struct UiPreferences {
     pub theme: ThemeMode,
     button_counts: BTreeMap<String, u64>,
     component_order: BTreeMap<String, u64>,
+    /// This session's working queue (auto-recorded as the user acts). Cleared at
+    /// startup and never replayed directly — only the [`remembered_queue`] is.
     interactive_queue: Vec<String>,
+    /// The saved queue that replays on launch. Only rewritten when the user
+    /// explicitly presses "Remember queue".
+    remembered_queue: Vec<String>,
 }
 
 impl UiPreferences {
@@ -151,6 +156,23 @@ impl UiPreferences {
 
     pub fn interactive_queue(&self) -> &[String] {
         &self.interactive_queue
+    }
+
+    /// The saved queue that replays on launch.
+    pub fn remembered_queue(&self) -> &[String] {
+        &self.remembered_queue
+    }
+
+    /// Replace the working queue (used by the editable "New Actions Queue" row
+    /// to remove/reorder entries). Not persisted as the replay queue until
+    /// [`remember_current_queue`] is called.
+    pub fn set_interactive_queue(&mut self, queue: Vec<String>) {
+        self.interactive_queue = queue;
+    }
+
+    /// Save the current working queue as the remembered replay queue.
+    pub fn remember_current_queue(&mut self) {
+        self.remembered_queue = self.interactive_queue.clone();
     }
 
     pub fn clear_interactive_queue(&mut self) {
@@ -304,7 +326,7 @@ impl PostDraft {
         push_plain_complexity_section(&mut lines, &self.time_complexity, &self.space_complexity);
         push_markdown_section(&mut lines, "#### Code", self.reference_url.trim());
 
-        finalize_markdown(lines)
+        sanitize_youtube_symbols(&finalize_markdown(lines))
     }
 
     pub fn blog_template(&self) -> String {
@@ -589,19 +611,6 @@ pub fn persist_ui_preferences(preferences: &UiPreferences) -> Result<()> {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn write_draft_snapshot(path: &Path, draft: &PostDraft) -> Result<()> {
-    fs::write(path, encode_autosave(draft))
-        .with_context(|| format!("writing draft snapshot {}", path.display()))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn read_draft_snapshot(path: &Path) -> Result<PostDraft> {
-    let encoded = fs::read_to_string(path)
-        .with_context(|| format!("reading draft snapshot {}", path.display()))?;
-    decode_autosave(&encoded)
-}
-
 pub fn autosave_destination_label() -> String {
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -714,6 +723,9 @@ fn encode_ui_preferences(preferences: &UiPreferences) -> String {
     for item in &preferences.interactive_queue {
         push_encoded_field(&mut encoded, "interactive_queue", item);
     }
+    for item in &preferences.remembered_queue {
+        push_encoded_field(&mut encoded, "remembered_queue", item);
+    }
 
     encoded
 }
@@ -772,6 +784,13 @@ fn decode_ui_preferences(encoded: &str) -> Result<UiPreferences> {
         set_ui_preference_field(&mut preferences, name, value);
     }
 
+    // Migration: saves from before the manual-queue split only had the working
+    // `interactive_queue`. Carry it over as the replay queue so an existing
+    // queue is preserved on first upgrade instead of starting empty.
+    if preferences.remembered_queue.is_empty() {
+        preferences.remembered_queue = preferences.interactive_queue.clone();
+    }
+
     Ok(preferences)
 }
 
@@ -797,6 +816,17 @@ fn set_ui_preference_field(preferences: &mut UiPreferences, name: &str, value: &
             }
         }
         "interactive_queue" => preferences.record_interactive_queue_item(value),
+        "remembered_queue" => {
+            let value = value.trim();
+            if !value.is_empty()
+                && !preferences
+                    .remembered_queue
+                    .iter()
+                    .any(|item| item == value)
+            {
+                preferences.remembered_queue.push(value.to_string());
+            }
+        }
         _ => {}
     }
 }
@@ -1026,6 +1056,13 @@ fn finalize_markdown(mut lines: Vec<String>) -> String {
         lines.pop();
     }
     format!("{}\n", lines.join("\n"))
+}
+
+/// YouTube rejects `<` and `>` in descriptions, so spell them out. Applied only
+/// to the generated YouTube text — blog/Telegram output and code keep the raw
+/// symbols.
+fn sanitize_youtube_symbols(text: &str) -> String {
+    text.replace('<', "lesser").replace('>', "bigger")
 }
 
 fn push_optional_html_link(html: &mut String, label: &str, url: &str) {
@@ -1280,6 +1317,24 @@ mod tests {
     }
 
     #[test]
+    fn youtube_template_spells_out_angle_brackets() {
+        let mut draft = PostDraft::default();
+        draft.approach = "keep if a < b and b > c".to_string();
+
+        let youtube = draft.youtube_template();
+        assert!(!youtube.contains('<'));
+        assert!(!youtube.contains('>'));
+        assert!(youtube.contains("keep if a lesser b and b bigger c"));
+
+        // Other outputs keep the raw comparison operators.
+        assert!(
+            draft
+                .leetcode_template()
+                .contains("keep if a < b and b > c")
+        );
+    }
+
+    #[test]
     fn rich_html_omits_empty_optional_links() {
         let draft = PostDraft {
             date: "05.10.2025".to_string(),
@@ -1423,6 +1478,7 @@ mod tests {
         preferences.record_interactive_queue_item("field.problem_title");
         preferences.record_interactive_queue_item("copy.leetcode");
         preferences.record_interactive_queue_item("copy.leetcode");
+        preferences.remember_current_queue();
 
         let encoded = encode_ui_preferences(&preferences);
         let decoded = decode_ui_preferences(&encoded).expect("decode UI preferences");
@@ -1440,6 +1496,54 @@ mod tests {
                 "field.problem_title".to_string(),
                 "copy.leetcode".to_string()
             ]
+        );
+        // The remembered (replay) queue survives a round-trip independently of
+        // the working queue.
+        assert_eq!(
+            decoded.remembered_queue(),
+            [
+                "field.problem_title".to_string(),
+                "copy.leetcode".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn remember_and_edit_working_queue_are_independent() {
+        let mut preferences = UiPreferences::default();
+        preferences.record_interactive_queue_item("copy.blog");
+        preferences.record_interactive_queue_item("post.telegram");
+        preferences.remember_current_queue();
+
+        // Editing the working queue afterwards must not touch the remembered one.
+        preferences.set_interactive_queue(vec!["save.raster_webp".to_string()]);
+        assert_eq!(preferences.interactive_queue(), ["save.raster_webp"]);
+        assert_eq!(
+            preferences.remembered_queue(),
+            ["copy.blog".to_string(), "post.telegram".to_string()]
+        );
+
+        // Clearing the working queue also leaves the remembered queue intact.
+        preferences.clear_interactive_queue();
+        assert!(preferences.interactive_queue().is_empty());
+        assert_eq!(
+            preferences.remembered_queue(),
+            ["copy.blog".to_string(), "post.telegram".to_string()]
+        );
+    }
+
+    #[test]
+    fn decode_migrates_legacy_queue_into_remembered() {
+        // A save from before the split has a working queue but no remembered one.
+        let mut legacy = UiPreferences::default();
+        legacy.record_interactive_queue_item("copy.blog");
+        legacy.record_interactive_queue_item("post.telegram");
+        assert!(legacy.remembered_queue().is_empty());
+
+        let decoded = decode_ui_preferences(&encode_ui_preferences(&legacy)).expect("decode");
+        assert_eq!(
+            decoded.remembered_queue(),
+            ["copy.blog".to_string(), "post.telegram".to_string()]
         );
     }
 

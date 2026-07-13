@@ -6,16 +6,8 @@ use crate::draft::{
     startup_status_message,
 };
 #[cfg(not(target_arch = "wasm32"))]
-use crate::draft::{read_draft_snapshot, write_draft_snapshot};
-#[cfg(not(target_arch = "wasm32"))]
-use crate::export::{
-    CardRenderPlan, CodeRenderPlan, ComposePreviewAssets, compose_preview_assets,
-    compose_preview_plan,
-};
-use crate::export::{
-    PreviewFrame, PreviewState, preview_webp_data_url, render_preview_frame,
-    save_preview_frame_as_webp, save_webp,
-};
+use crate::export::PreviewFrame;
+use crate::export::{PreviewState, preview_webp_data_url, render_preview_frame, save_webp};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::publish::{ArchiveEdit, publish_blog_post};
 #[cfg(not(target_arch = "wasm32"))]
@@ -35,6 +27,7 @@ use cranpose_animation::{
 };
 use cranpose_core::MutableState;
 use cranpose_foundation::DrawScope;
+use cranpose_foundation::PointerButtons;
 use cranpose_foundation::text::{TextFieldLineLimits, TextFieldState};
 #[cfg(not(target_arch = "wasm32"))]
 use image::ImageFormat;
@@ -44,7 +37,7 @@ use js_sys::{Array, Object, Promise, Reflect};
 use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::mpsc;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[cfg(not(target_arch = "wasm32"))]
@@ -80,7 +73,6 @@ const WEB_CANVAS_MARGIN: f64 = 48.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum ActionButtonId {
     RefreshRasterPreview,
-    RefreshCranposePreview,
     CopyLeetcode,
     CopyYoutube,
     CopyBlog,
@@ -89,7 +81,6 @@ enum ActionButtonId {
     CopySubtitle,
     CopyRichText,
     SaveRasterWebp,
-    SaveCranposeWebp,
     PublishBlog,
     PostTelegram,
     PostTelegramComment,
@@ -98,11 +89,9 @@ enum ActionButtonId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum LongAction {
     RefreshRasterPreview,
-    RefreshCranposePreview,
     #[cfg(not(target_arch = "wasm32"))]
     CopyRichText,
     SaveRasterWebp,
-    SaveCranposeWebp,
     PublishBlog,
     PostTelegram,
     PostTelegramComment,
@@ -132,14 +121,11 @@ struct ActionStates {
     skipped_queue: MutableState<Vec<String>>,
 }
 
-/// Handles for the raster/cranpose preview pipelines.
+/// Handles for the raster preview pipeline.
 #[derive(Clone, Copy, PartialEq)]
 struct PreviewStates {
     preview_state: MutableState<PreviewState>,
     preview_loading: MutableState<bool>,
-    compose_preview_state: MutableState<PreviewState>,
-    compose_loading: MutableState<bool>,
-    compose_error: MutableState<String>,
 }
 
 /// Startup-time snapshots of the editing session, loaded once in [`App`].
@@ -167,11 +153,9 @@ struct FieldSpec {
 #[derive(Clone)]
 enum LongActionResult {
     RefreshRasterPreview(std::result::Result<PreviewState, String>),
-    RefreshCranposePreview(std::result::Result<PreviewState, String>),
     #[cfg(not(target_arch = "wasm32"))]
     CopyRichText(std::result::Result<(), String>),
     SaveRasterWebp(std::result::Result<PreviewState, String>),
-    SaveCranposeWebp(std::result::Result<PreviewState, String>),
     PublishBlog(std::result::Result<PublishBlogOutcome, String>),
     PostTelegram(std::result::Result<TelegramPostOutcome, String>),
     PostTelegramComment(std::result::Result<String, String>),
@@ -204,7 +188,6 @@ enum EditorFieldId {
     ProblemTitle,
     ProblemUrl,
     Difficulty,
-    BlogPostUrl,
     SubstackUrl,
     YoutubeUrl,
     ReferenceUrl,
@@ -248,8 +231,6 @@ enum UiIcon {
     Comment,
     Blog,
     Refresh,
-    RefreshAlt,
-    CranposeSave,
     Document,
     Leetcode,
     Substack,
@@ -267,7 +248,7 @@ enum UiIcon {
     Generic,
 }
 
-const ACTION_BUTTONS: [ActionButtonId; 14] = [
+const ACTION_BUTTONS: [ActionButtonId; 12] = [
     ActionButtonId::CopyLeetcode,
     ActionButtonId::CopyYoutube,
     ActionButtonId::CopyBlog,
@@ -276,21 +257,18 @@ const ACTION_BUTTONS: [ActionButtonId; 14] = [
     ActionButtonId::CopySubtitle,
     ActionButtonId::CopyRichText,
     ActionButtonId::RefreshRasterPreview,
-    ActionButtonId::RefreshCranposePreview,
     ActionButtonId::SaveRasterWebp,
-    ActionButtonId::SaveCranposeWebp,
     ActionButtonId::PublishBlog,
     ActionButtonId::PostTelegram,
     ActionButtonId::PostTelegramComment,
 ];
 
 #[cfg(test)]
-const META_FIELDS: [EditorFieldId; 9] = [
+const META_FIELDS: [EditorFieldId; 8] = [
     EditorFieldId::Date,
     EditorFieldId::ProblemTitle,
     EditorFieldId::ProblemUrl,
     EditorFieldId::Difficulty,
-    EditorFieldId::BlogPostUrl,
     EditorFieldId::SubstackUrl,
     EditorFieldId::YoutubeUrl,
     EditorFieldId::ReferenceUrl,
@@ -312,7 +290,7 @@ const CODE_FIELDS: [EditorFieldId; 4] = [
     EditorFieldId::RustCode,
 ];
 
-const WORKFLOW_FIELDS: [EditorFieldId; 18] = [
+const WORKFLOW_FIELDS: [EditorFieldId; 17] = [
     EditorFieldId::ProblemTitle,
     EditorFieldId::ProblemUrl,
     EditorFieldId::Difficulty,
@@ -325,7 +303,6 @@ const WORKFLOW_FIELDS: [EditorFieldId; 18] = [
     EditorFieldId::KotlinCode,
     EditorFieldId::RustRuntimeMs,
     EditorFieldId::RustCode,
-    EditorFieldId::BlogPostUrl,
     EditorFieldId::SubstackUrl,
     EditorFieldId::YoutubeUrl,
     EditorFieldId::ReferenceUrl,
@@ -413,7 +390,7 @@ fn App() {
     .with(|fields| fields.clone());
     let ui_preferences = useState(load_ui_preferences);
     let startup_interactive_queue = remember({
-        let initial_queue = ui_preferences.value().interactive_queue().to_vec();
+        let initial_queue = ui_preferences.value().remembered_queue().to_vec();
         move || initial_queue
     })
     .with(|queue| queue.clone());
@@ -425,9 +402,6 @@ fn App() {
     let autosave_destination = remember(autosave_destination_label).with(|label| label.clone());
     let preview_state = useState(PreviewState::placeholder);
     let preview_loading = useState(|| false);
-    let compose_preview_state = useState(PreviewState::placeholder);
-    let compose_loading = useState(|| false);
-    let compose_error = useState(String::new);
     let telegram_post_link = useState(String::new);
     let status = useState(startup_status_message);
     let pending_action = useState(|| None::<PendingAction>);
@@ -448,9 +422,6 @@ fn App() {
     let previews = PreviewStates {
         preview_state,
         preview_loading,
-        compose_preview_state,
-        compose_loading,
-        compose_error,
     };
     let session = EditorSession {
         saved_draft,
@@ -459,10 +430,23 @@ fn App() {
         autosave_destination,
     };
     let current_draft = PostDraft::from_fields(&fields);
-    let markdown_preview = current_draft.blog_template();
     let queued_action = pending_action.value();
     let theme = ui_preferences.value().theme;
     let queue_reset_done = useState(|| false);
+    // Measured height of the full header (first item in the scroll), used to
+    // fade in the pinned collapsed bar exactly as the header scrolls out.
+    let header_height = useState(|| 0.0f32);
+    // The field the hero currently points at, so its editor row can glow too.
+    let current_field = resolve_next_work(
+        &current_draft,
+        &preview_state.value(),
+        &telegram_post_link.value(),
+        &skipped_queue.value(),
+        &session.startup_interactive_queue,
+        ui_preferences.value().interactive_queue(),
+        &session.layout_preferences,
+    )
+    .field;
 
     cranpose_core::LaunchedEffect!(queue_reset_done.value(), {
         move |_scope| {
@@ -477,6 +461,15 @@ fn App() {
             let _ = persist_ui_preferences(&preferences);
         }
     });
+
+    // Keep the shader-flame animations running. The flames advance off the frame
+    // clock, but cranpose's desktop event loop only stays in continuous-render
+    // (`ControlFlow::Poll`) mode while `should_render()` is true — and a bare
+    // frame-clock loop (like `rememberInfiniteTransition`'s) does not keep it
+    // true, so when the app is idle it renders ~once and the flames freeze until
+    // the next input. AnimationPump invalidates a tiny composition scope every
+    // frame, which keeps the loop hot so every flame keeps animating.
+    AnimationPump();
 
     cranpose_core::LaunchedEffect!(current_draft.clone(), {
         let draft = current_draft.clone();
@@ -511,19 +504,16 @@ fn App() {
         {
             let scroll_state = scroll_state.clone();
             let fields = fields.clone();
-            let markdown_preview = markdown_preview.clone();
             let session = session.clone();
             move || {
                 Column(Modifier::empty().fill_max_size(), ColumnSpec::default(), {
                     let scroll_state = scroll_state.clone();
                     let fields = fields.clone();
-                    let markdown_preview = markdown_preview.clone();
                     let session = session.clone();
                     move || {
                         BoxWithConstraints(Modifier::empty().fill_max_width().weight(1.0), {
                             let scroll_state = scroll_state.clone();
                             let fields = fields.clone();
-                            let markdown_preview = markdown_preview.clone();
                             let session = session.clone();
                             move |scope| {
                                 let compact = scope.max_width().0 < 1120.0;
@@ -545,90 +535,97 @@ fn App() {
                                         .vertical_arrangement(LinearArrangement::spaced_by(14.0)),
                                     {
                                         let fields = fields.clone();
-                                        let markdown_preview = markdown_preview.clone();
                                         let session = session.clone();
                                         let workspace_scroll_state = scroll_state.clone();
                                         move || {
-                                            ActionsCard(
-                                                fields.clone(),
-                                                session.clone(),
-                                                actions,
-                                                preview_state,
-                                                theme,
-                                                compact,
-                                            );
                                             let viewport_scroll_state =
                                                 workspace_scroll_state.clone();
                                             BoxWithConstraints(
-                                                Modifier::empty()
-                                                    .fill_max_width()
-                                                    .weight(1.0)
-                                                    .padding_each(0.0, 12.0, 0.0, 0.0),
+                                                Modifier::empty().fill_max_width().weight(1.0),
                                                 {
                                                     let fields = fields.clone();
-                                                    let markdown_preview = markdown_preview.clone();
                                                     let session = session.clone();
                                                     move |viewport_scope| {
                                                         let viewport_width =
                                                             viewport_scope.max_width().0;
                                                         let viewport_height =
                                                             viewport_scope.max_height().0;
+                                                        let vss = viewport_scroll_state.clone();
+                                                        // Overlay container: the scrollable body
+                                                        // (header + workspace) with the pinned
+                                                        // collapsed bar stacked on top.
                                                         ComposeBox(
-                                                            workspace_viewport_modifier(
-                                                                Modifier::empty().fill_max_size(),
-                                                                theme,
-                                                                viewport_scroll_state.clone(),
-                                                                viewport_width,
-                                                                viewport_height,
+                                                            Modifier::empty().fill_max_size(),
+                                                            BoxSpec::default().content_alignment(
+                                                                Alignment::TOP_START,
                                                             ),
-                                                            BoxSpec::default(),
                                                             {
                                                                 let fields = fields.clone();
-                                                                let markdown_preview =
-                                                                    markdown_preview.clone();
                                                                 let session = session.clone();
-                                                                let viewport_scroll_state =
-                                                                    viewport_scroll_state.clone();
+                                                                let vss = vss.clone();
                                                                 move || {
-                                                                    Column(
-                                                                Modifier::empty()
-                                                                    .fill_max_size()
-                                                                    .vertical_scroll(
-                                                                        viewport_scroll_state
-                                                                            .clone(),
-                                                                        false,
-                                                                    )
-                                                                    .padding_each(
-                                                                        0.0, 22.0, 0.0, 0.0,
-                                                                    ),
-                                                                ColumnSpec::default()
-                                                                    .vertical_arrangement(
-                                                                    LinearArrangement::spaced_by(
-                                                                        22.0,
-                                                                    ),
-                                                                ),
-                                                                {
                                                                     let fields = fields.clone();
-                                                                    let markdown_preview =
-                                                                        markdown_preview.clone();
                                                                     let session = session.clone();
-                                                                    move || {
-                                                                        GuidedWorkspace(
-                                                                            fields.clone(),
-                                                                            previews,
-                                                                            markdown_preview
-                                                                                .clone(),
-                                                                            session.clone(),
-                                                                            actions,
+                                                                    let vss = vss.clone();
+                                                                    ComposeBox(
+                                                                        workspace_viewport_modifier(
+                                                                            Modifier::empty()
+                                                                                .fill_max_size(),
                                                                             theme,
-                                                                            compact,
-                                                                        );
-                                                                        Spacer(Size::new(
-                                                                            0.0, 86.0,
-                                                                        ));
-                                                                    }
-                                                                },
-                                                            );
+                                                                            vss.clone(),
+                                                                            viewport_width,
+                                                                            viewport_height,
+                                                                        ),
+                                                                        BoxSpec::default(),
+                                                                        {
+                                                                            let fields =
+                                                                                fields.clone();
+                                                                            let session =
+                                                                                session.clone();
+                                                                            let vss = vss.clone();
+                                                                            move || {
+                                                                                let fields =
+                                                                                    fields.clone();
+                                                                                let session =
+                                                                                    session.clone();
+                                                                                Column(
+                                                                                    Modifier::empty().fill_max_width().vertical_scroll(vss.clone(), false).padding_each(0.0, 4.0, 0.0, 0.0),
+                                                                                    ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(18.0)),
+                                                                                    move || {
+                                                                                        let fields = fields.clone();
+                                                                                        let session = session.clone();
+                                                                                        ComposeBox(
+                                                                                            Modifier::empty().fill_max_width().draw_behind(move |draw| {
+                                                                                                let h = draw.size().height;
+                                                                                                if (header_height.get_non_reactive() - h).abs() > 0.5 {
+                                                                                                    header_height.set(h);
+                                                                                                }
+                                                                                            }),
+                                                                                            BoxSpec::default(),
+                                                                                            {
+                                                                                                let fields = fields.clone();
+                                                                                                let session = session.clone();
+                                                                                                move || {
+                                                                                                    ActionsCard(fields.clone(), session.clone(), actions, preview_state, theme, compact);
+                                                                                                }
+                                                                                            },
+                                                                                        );
+                                                                                        GuidedWorkspace(fields.clone(), previews, session.clone(), actions, theme, compact, current_field);
+                                                                                        Spacer(Size::new(0.0, 86.0));
+                                                                                    },
+                                                                                );
+                                                                            }
+                                                                        },
+                                                                    );
+                                                                    CollapsedHeaderOverlay(
+                                                                        fields.clone(),
+                                                                        session.clone(),
+                                                                        actions,
+                                                                        preview_state,
+                                                                        theme,
+                                                                        vss.clone(),
+                                                                        header_height,
+                                                                    );
                                                                 }
                                                             },
                                                         );
@@ -652,24 +649,89 @@ fn App() {
 fn GuidedWorkspace(
     fields: EditorFields,
     previews: PreviewStates,
-    markdown_preview: String,
     session: EditorSession,
     actions: ActionStates,
     theme: ThemeMode,
     compact: bool,
+    current_field: Option<EditorFieldId>,
 ) {
-    ProblemMetaCard(fields.clone(), session.clone(), actions, theme, compact);
-    WriteupCard(fields.clone(), session.clone(), actions, theme);
-    Spacer(Size::new(0.0, 82.0));
-    CodeCard(fields, session, actions, theme);
-    PreviewCard(previews.preview_state, previews.preview_loading, theme);
-    ComposePreviewCard(
-        previews.compose_preview_state,
-        previews.compose_loading,
-        previews.compose_error,
+    ProblemMetaCard(
+        fields.clone(),
+        session.clone(),
+        actions,
         theme,
+        compact,
+        current_field,
     );
-    MarkdownCard(markdown_preview, theme);
+    WriteupCard(
+        fields.clone(),
+        session.clone(),
+        actions,
+        theme,
+        current_field,
+    );
+    Spacer(Size::new(0.0, 82.0));
+    CodeCard(fields, session, actions, theme, current_field);
+    PreviewCard(previews.preview_state, previews.preview_loading, theme);
+}
+
+/// Scroll offset (px) past which the tall header collapses, and the lower
+/// offset it must fall back under to expand again. The gap is hysteresis: it
+/// stops the header oscillating when a collapse/expand itself shifts the layout.
+/// The current recommended work item, resolved once and shared by the header,
+/// the collapsed overlay, the Quick Actions grid, and the field-editor glow.
+struct NextWork {
+    item: NextWorkItem,
+    title: Option<String>,
+    skip_key: String,
+    action: Option<ActionButtonId>,
+    field: Option<EditorFieldId>,
+}
+
+fn resolve_next_work(
+    draft: &PostDraft,
+    preview: &PreviewState,
+    telegram_link: &str,
+    skipped: &[String],
+    startup_queue: &[String],
+    current_queue: &[String],
+    layout_prefs: &UiPreferences,
+) -> NextWork {
+    let mut excluded = current_queue.to_vec();
+    excluded.extend(skipped.iter().cloned());
+    let next_queue_key = interactive_queue_next_key(startup_queue, &excluded);
+    let item = next_queue_key
+        .as_deref()
+        .and_then(next_work_item_from_queue_key)
+        .unwrap_or_else(|| {
+            recommended_next_work_excluding(draft, preview, telegram_link, layout_prefs, skipped)
+        });
+    let skip_key = next_queue_key
+        .clone()
+        .unwrap_or_else(|| next_work_item_key(item));
+    let title = next_queue_key
+        .as_deref()
+        .map(|key| interactive_queue_label(key, false, false));
+    let (action, field) = match item {
+        NextWorkItem::Action(action) => (Some(action), None),
+        NextWorkItem::Field(field) => (None, Some(field)),
+    };
+    NextWork {
+        item,
+        title,
+        skip_key,
+        action,
+        field,
+    }
+}
+
+/// Smooth 0→1 ramp between two edges (Hermite), used to drive scroll-linked fades.
+fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+    if edge1 <= edge0 {
+        return if x >= edge1 { 1.0 } else { 0.0 };
+    }
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 #[composable]
@@ -694,6 +756,21 @@ fn ActionsCard(
             let fields = fields.clone();
             let session = session.clone();
             move || {
+                let draft = PostDraft::from_fields(&fields);
+                let next = resolve_next_work(
+                    &draft,
+                    &preview_state.value(),
+                    &telegram_post_link.value(),
+                    &actions.skipped_queue.value(),
+                    &session.startup_interactive_queue,
+                    ui_preferences.value().interactive_queue(),
+                    &session.layout_preferences,
+                );
+                let next_item = next.item;
+                let skip_key = next.skip_key;
+                let next_title = next.title;
+                let next_action = next.action;
+
                 HeaderBar(
                     session.autosave_destination.clone(),
                     ui_preferences,
@@ -702,32 +779,6 @@ fn ActionsCard(
                     compact,
                 );
 
-                let draft = PostDraft::from_fields(&fields);
-                let preview = preview_state.value();
-                let latest_telegram_link = telegram_post_link.value();
-                let skipped = actions.skipped_queue.value();
-                let mut excluded_queue = ui_preferences.value().interactive_queue().to_vec();
-                excluded_queue.extend(skipped.iter().cloned());
-                let next_queue_key =
-                    interactive_queue_next_key(&session.startup_interactive_queue, &excluded_queue);
-                let next_item = next_queue_key
-                    .as_deref()
-                    .and_then(next_work_item_from_queue_key)
-                    .unwrap_or_else(|| {
-                        recommended_next_work_excluding(
-                            &draft,
-                            &preview,
-                            &latest_telegram_link,
-                            &session.layout_preferences,
-                            &skipped,
-                        )
-                    });
-                let skip_key = next_queue_key
-                    .clone()
-                    .unwrap_or_else(|| next_work_item_key(next_item));
-                let next_title = next_queue_key
-                    .as_deref()
-                    .map(|key| interactive_queue_label(key, false, false));
                 if compact {
                     Column(
                         Modifier::empty().fill_max_width(),
@@ -752,6 +803,7 @@ fn ActionsCard(
                                     actions,
                                     theme,
                                     true,
+                                    next_action,
                                 );
                             }
                         },
@@ -780,6 +832,7 @@ fn ActionsCard(
                                     actions,
                                     theme,
                                     false,
+                                    next_action,
                                 );
                             }
                         },
@@ -793,6 +846,8 @@ fn ActionsCard(
                     theme,
                 );
 
+                SessionQueuePanel(actions, theme);
+
                 StatusStrip(status.value(), theme);
 
                 if let Some(saved_webp) = preview_state.value().last_saved_webp_path {
@@ -802,6 +857,7 @@ fn ActionsCard(
                         body_style(theme),
                     );
                 }
+                let latest_telegram_link = telegram_post_link.value();
                 if !latest_telegram_link.is_empty() {
                     Text(
                         format!("Latest Telegram post: {latest_telegram_link}"),
@@ -812,6 +868,176 @@ fn ActionsCard(
             }
         },
     );
+}
+
+/// Pinned collapsed header that fades in as the full header scrolls out of the
+/// viewport. Because it is an overlay it never resizes the scroll region, so the
+/// collapse follows the scroll smoothly with no feedback loop or snap.
+#[composable]
+fn CollapsedHeaderOverlay(
+    fields: EditorFields,
+    session: EditorSession,
+    actions: ActionStates,
+    preview_state: MutableState<PreviewState>,
+    theme: ThemeMode,
+    scroll_state: ScrollState,
+    header_height: MutableState<f32>,
+) {
+    let scroll = scroll_state.value();
+    let hh = header_height.value();
+    let alpha = if hh < 50.0 {
+        0.0
+    } else {
+        smoothstep(hh - 200.0, hh - 120.0, scroll)
+    };
+    if alpha <= 0.001 {
+        return;
+    }
+    let ActionStates {
+        status,
+        telegram_post_link,
+        ui_preferences,
+        ..
+    } = actions;
+    let draft = PostDraft::from_fields(&fields);
+    let next = resolve_next_work(
+        &draft,
+        &preview_state.value(),
+        &telegram_post_link.value(),
+        &actions.skipped_queue.value(),
+        &session.startup_interactive_queue,
+        ui_preferences.value().interactive_queue(),
+        &session.layout_preferences,
+    );
+    ComposeBox(
+        Modifier::empty()
+            .fill_max_width()
+            .graphics_layer_block(move |layer| {
+                layer.alpha = alpha;
+            }),
+        BoxSpec::default(),
+        {
+            let fields = fields.clone();
+            move || {
+                CollapsedHeader(
+                    next.item,
+                    next.title.clone(),
+                    status.value(),
+                    fields.clone(),
+                    actions,
+                    theme,
+                );
+            }
+        },
+    );
+}
+
+/// Thin header shown when the workspace is scrolled: a scaled-down hero (stage
+/// badge, next-action title, fire-glow button) plus the live status line.
+#[composable]
+fn CollapsedHeader(
+    next_item: NextWorkItem,
+    next_title: Option<String>,
+    status_message: String,
+    fields: EditorFields,
+    actions: ActionStates,
+    theme: ThemeMode,
+) {
+    let title = next_title.unwrap_or_else(|| next_item.title());
+    let stage = next_item.stage();
+    let hero = match next_item {
+        NextWorkItem::Field(field) => HeroButton::Field(field),
+        NextWorkItem::Action(action) => HeroButton::Action(action),
+    };
+    let content_height = match next_item {
+        NextWorkItem::Action(_) => 60.0,
+        NextWorkItem::Field(_) => 48.0,
+    };
+    glass_panel(Modifier::empty().fill_max_width(), theme, 14.0, 12.0, {
+        let fields = fields.clone();
+        move || {
+            let fields = fields.clone();
+            let title = title.clone();
+            let status_message = status_message.clone();
+            Row(
+                Modifier::empty().fill_max_width(),
+                RowSpec::default()
+                    .horizontal_arrangement(LinearArrangement::spaced_by(14.0))
+                    .vertical_alignment(VerticalAlignment::CenterVertically),
+                move || {
+                    ReferenceIcon(stage.icon(), Size::new(38.0, 38.0), theme, true);
+                    Column(
+                        Modifier::empty().weight(1.4),
+                        ColumnSpec::default()
+                            .vertical_arrangement(LinearArrangement::spaced_by(3.0)),
+                        {
+                            let title = title.clone();
+                            let status_message = status_message.clone();
+                            move || {
+                                Row(
+                                    Modifier::empty(),
+                                    RowSpec::default()
+                                        .horizontal_arrangement(LinearArrangement::spaced_by(8.0))
+                                        .vertical_alignment(VerticalAlignment::CenterVertically),
+                                    move || {
+                                        Text("Now", Modifier::empty(), eyebrow_style(theme));
+                                        Text(
+                                            stage.label(),
+                                            Modifier::empty(),
+                                            stage_label_style(theme),
+                                        );
+                                    },
+                                );
+                                BasicText(
+                                    title.clone(),
+                                    Modifier::empty().fill_max_width(),
+                                    heading_style(17.0, theme),
+                                    TextOverflow::Ellipsis,
+                                    false,
+                                    1,
+                                    1,
+                                );
+                                let status_message = status_message.clone();
+                                Row(
+                                    Modifier::empty().fill_max_width(),
+                                    RowSpec::default()
+                                        .horizontal_arrangement(LinearArrangement::spaced_by(8.0))
+                                        .vertical_alignment(VerticalAlignment::CenterVertically),
+                                    move || {
+                                        StatusDot(true, theme);
+                                        BasicText(
+                                            status_message.clone(),
+                                            Modifier::empty().weight(1.0),
+                                            accent_style(theme),
+                                            TextOverflow::Ellipsis,
+                                            false,
+                                            1,
+                                            1,
+                                        );
+                                    },
+                                );
+                            }
+                        },
+                    );
+                    let fields_btn = fields.clone();
+                    ComposeBox(
+                        Modifier::empty().weight(1.0),
+                        BoxSpec::default(),
+                        move || {
+                            hero_fire_glow(
+                                hero,
+                                content_height,
+                                12.0,
+                                fields_btn.clone(),
+                                actions,
+                                theme,
+                            );
+                        },
+                    );
+                },
+            );
+        }
+    });
 }
 
 #[composable]
@@ -896,6 +1122,7 @@ fn QuickActionsPanel(
     actions: ActionStates,
     theme: ThemeMode,
     compact: bool,
+    next_action: Option<ActionButtonId>,
 ) {
     let modifier = if compact {
         Modifier::empty().fill_max_width()
@@ -914,7 +1141,7 @@ fn QuickActionsPanel(
                     let fields = fields.clone();
                     move || {
                         Text("Quick Actions", Modifier::empty(), panel_title_style(theme));
-                        ActionButtons(fields.clone(), session.clone(), actions, theme);
+                        ActionButtons(fields.clone(), session.clone(), actions, theme, next_action);
                     }
                 },
             );
@@ -951,6 +1178,456 @@ fn StatusStrip(message: String, theme: ThemeMode) {
     );
 }
 
+// ── Fire-shader hero glow ────────────────────────────────────────────────
+// Ported from the Cranpose desktop demo's shader-rect tab: an animated flame
+// border drawn around the hero "next action" button via an offscreen runtime
+// shader.
+
+const HERO_FIRE_WGSL_PREAMBLE: &str = r#"
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+}
+
+@vertex
+fn fullscreen_vs(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+    var output: VertexOutput;
+    let x = f32(i32(vertex_index & 1u) * 2 - 1);
+    let y = f32(i32(vertex_index >> 1u) * 2 - 1);
+    output.uv = vec2<f32>(x * 0.5 + 0.5, 1.0 - (y * 0.5 + 0.5));
+    output.position = vec4<f32>(x, y, 0.0, 1.0);
+    return output;
+}
+
+@group(0) @binding(0) var input_texture: texture_2d<f32>;
+@group(0) @binding(1) var input_sampler: sampler;
+@group(1) @binding(0) var<uniform> u: array<vec4<f32>, 64>;
+
+fn get_float(index: u32) -> f32 {
+    return u[index / 4u][index % 4u];
+}
+
+fn get_vec2(index: u32) -> vec2<f32> {
+    return vec2<f32>(get_float(index), get_float(index + 1u));
+}
+
+fn sd_round_box(p: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
+    let q = abs(p) - b + vec2<f32>(r);
+    return length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - r;
+}
+"#;
+
+fn hero_fire_wgsl() -> Arc<str> {
+    static SOURCE: OnceLock<Arc<str>> = OnceLock::new();
+    SOURCE
+        .get_or_init(|| {
+            Arc::<str>::from(format!(
+                r#"{preamble}
+
+const PI: f32 = 3.14159265358979;
+const TWO_PI: f32 = 6.28318530717959;
+
+fn rand_f(n: vec2<f32>) -> f32 {{
+    return fract(sin(dot(n, vec2<f32>(12.9898, 12.1414))) * 83758.5453);
+}}
+
+fn noise_f(n: vec2<f32>) -> f32 {{
+    let b = floor(n);
+    let f = fract(n);
+    return mix(
+        mix(rand_f(b), rand_f(b + vec2<f32>(1.0, 0.0)), f.x),
+        mix(rand_f(b + vec2<f32>(0.0, 1.0)), rand_f(b + vec2<f32>(1.0, 1.0)), f.x),
+        f.y
+    );
+}}
+
+fn fire_f(n: vec2<f32>) -> f32 {{
+    return noise_f(n) + noise_f(n * 2.1) * 0.6 + noise_f(n * 5.4) * 0.42;
+}}
+
+fn ramp(t_in: f32) -> vec3<f32> {{
+    let t = max(t_in, 0.001);
+    if (t <= 0.5) {{
+        return vec3<f32>(1.0 - t * 1.4, 0.2, 1.05) / t;
+    }}
+    return vec3<f32>(0.3 * (1.0 - t) * 2.0, 0.2, 1.05) / t;
+}}
+
+fn shade(uv_in: vec2<f32>, t: f32) -> f32 {{
+    var uv = uv_in;
+    if (uv.y < 0.5) {{
+        uv.x = uv.x + 23.0 + t * 0.035;
+    }} else {{
+        uv.x = uv.x - 11.0 + t * 0.03;
+    }}
+    uv.y = abs(uv.y - 0.5);
+    uv.x = uv.x * 35.0;
+
+    let q = fire_f(uv - t * 0.013) / 2.0;
+    let rv = vec2<f32>(
+        fire_f(uv + q / 2.0 + t - uv.x - uv.y),
+        fire_f(uv + q - t)
+    );
+    return pow((rv.y + rv.y) * max(0.0, uv.y) + 0.1, 4.0);
+}}
+
+fn color_from_grad(grad: f32) -> vec3<f32> {{
+    let g = sqrt(max(grad, 0.0));
+    let c = ramp(g);
+    return c / (vec3<f32>(1.15) + max(vec3<f32>(0.0), c));
+}}
+
+fn perimeter_s(p: vec2<f32>, half_size: vec2<f32>, r: f32) -> f32 {{
+    let inner = max(half_size - vec2<f32>(r), vec2<f32>(0.0001));
+    let lh = 2.0 * inner.x;
+    let lv = 2.0 * inner.y;
+    let lc = 0.5 * PI * r;
+    let a = abs(p);
+    let is_corner = (a.x > inner.x) && (a.y > inner.y);
+
+    if (!is_corner) {{
+        if (a.x > inner.x) {{
+            if (p.x >= 0.0) {{ return clamp(p.y + inner.y, 0.0, lv); }}
+            else {{ return lv + lc + lh + lc + clamp(inner.y - p.y, 0.0, lv); }}
+        }}
+        if (a.y > inner.y) {{
+            if (p.y >= 0.0) {{ return lv + lc + clamp(inner.x - p.x, 0.0, lh); }}
+            else {{ return lv + lc + lh + lc + lv + lc + clamp(p.x + inner.x, 0.0, lh); }}
+        }}
+        return clamp(p.y + inner.y, 0.0, lv);
+    }}
+
+    if (p.x >= 0.0 && p.y >= 0.0) {{
+        let c = vec2<f32>(inner.x, inner.y);
+        let v = (p - c) / r;
+        return lv + clamp(atan2(v.y, v.x), 0.0, 0.5 * PI) * r;
+    }}
+    if (p.x <= 0.0 && p.y >= 0.0) {{
+        let c = vec2<f32>(-inner.x, inner.y);
+        let v = (p - c) / r;
+        return lv + lc + lh + (clamp(atan2(v.y, v.x), 0.5 * PI, PI) - 0.5 * PI) * r;
+    }}
+    if (p.x <= 0.0 && p.y <= 0.0) {{
+        let c = vec2<f32>(-inner.x, -inner.y);
+        let v = (p - c) / r;
+        var ang = atan2(v.y, v.x);
+        if (ang < 0.0) {{ ang = ang + TWO_PI; }}
+        ang = clamp(ang, PI, PI + 0.5 * PI);
+        return lv + lc + lh + lc + lv + (ang - PI) * r;
+    }}
+    let c = vec2<f32>(inner.x, -inner.y);
+    let v = (p - c) / r;
+    let base = lv + lc + lh + lc + lv + lc + lh;
+    return base + (clamp(atan2(v.y, v.x), -0.5 * PI, 0.0) + 0.5 * PI) * r;
+}}
+
+@fragment
+fn effect_fs(input: VertexOutput) -> @location(0) vec4<f32> {{
+    let uv_screen = input.uv;
+    let tex_size = vec2<f32>(textureDimensions(input_texture));
+    let effect_rect = vec4<f32>(get_float(248u), get_float(249u), get_float(250u), get_float(251u));
+    let resolution = get_vec2(0u);
+    let dp_scale = effect_rect.zw / max(resolution, vec2<f32>(1.0));
+    let s = min(dp_scale.x, dp_scale.y);
+    let local_px = uv_screen * tex_size - effect_rect.xy;
+
+    let time_raw = get_float(2u);
+    let band_px = get_float(3u) * s;
+    let corner_raw = get_float(4u) * s;
+    let contour_size = vec2<f32>(get_float(5u) * dp_scale.x, get_float(6u) * dp_scale.y);
+    let smoke_scale = get_float(7u);
+    let intensity = get_float(8u);
+    let smoke_opacity = get_float(9u);
+    let core_scale = get_float(10u);
+    let smoke_blue_tint = clamp(get_float(11u), 0.0, 1.0);
+    let thin_mode = clamp(get_float(12u), 0.0, 1.0);
+
+    let size_px = resolution * dp_scale;
+    let res = max(size_px, vec2<f32>(1.0));
+    let t = time_raw * 60.0;
+    let p = local_px - 0.5 * res;
+    let p_norm = p / max(res.y, 1.0);
+
+    let min_thickness = mix(1.5, 0.55, thin_mode);
+    let thickness = max(min_thickness, band_px * mix(0.30, 0.16, thin_mode));
+    let smoke_w = max(thickness * 4.8, band_px * 2.2) * max(smoke_scale, 0.3) * mix(1.0, 0.30, thin_mode);
+
+    let half_size = contour_size * 0.5;
+    var radius = min(corner_raw, min(half_size.x, half_size.y) - 0.1);
+    radius = max(radius, 1.0);
+
+    let d = sd_round_box(p, half_size, radius);
+
+    let inner = max(half_size - vec2<f32>(radius), vec2<f32>(0.0001));
+    let lh = 2.0 * inner.x;
+    let lv = 2.0 * inner.y;
+    let perimeter = 2.0 * (lh + lv) + TWO_PI * radius;
+
+    let s_param = perimeter_s(p, half_size, radius);
+    let u_coord = fract(s_param / perimeter);
+    let v_coord = 0.5 + d / (thickness * 2.0);
+
+    let core_mask = 1.0 - smoothstep(thickness, thickness * 2.0, abs(d));
+    let smoke_mask = 1.0 - smoothstep(smoke_w, smoke_w * 3.2, abs(d));
+    let ff = smoothstep(-0.15, 0.25, -p_norm.y);
+
+    let overlap_px = 10.0;
+    let seam_width = clamp(overlap_px / max(perimeter, 1.0), 0.001, 0.20);
+    let seam_blend = smoothstep(0.0, seam_width, u_coord) * smoothstep(0.0, seam_width, 1.0 - u_coord);
+
+    let uv_a = vec2<f32>(u_coord + 1.30, v_coord);
+    let uv_a2 = vec2<f32>(u_coord + 1.90, 1.0 - v_coord);
+    let a1 = color_from_grad(shade(uv_a, t)) * ff;
+    let a2 = color_from_grad(shade(uv_a2, t)) * (1.0 - ff);
+    let flame_a = a1 + a2;
+
+    let u_b = u_coord + 1.0;
+    let uv_b = vec2<f32>(u_b + 1.30, v_coord);
+    let uv_b2 = vec2<f32>(u_b + 1.90, 1.0 - v_coord);
+    let b1 = color_from_grad(shade(uv_b, t)) * ff;
+    let b2 = color_from_grad(shade(uv_b2, t)) * (1.0 - ff);
+    let flame_b = b1 + b2;
+
+    let flame = mix(flame_b, flame_a, seam_blend) * intensity;
+    let smoke_tinted = mix(
+        flame,
+        flame * vec3<f32>(0.50, 0.72, 1.35) + vec3<f32>(0.00, 0.02, 0.10),
+        smoke_blue_tint
+    );
+
+    var col = flame * core_mask * max(core_scale, 0.0);
+    col = col + smoke_tinted * (0.55 * max(smoke_opacity, 0.0)) * smoke_mask;
+    col = col * smoke_mask;
+
+    let crisp_edge = smoothstep(thickness * 0.85, thickness * 0.10, abs(d));
+    col = col + flame * crisp_edge * thin_mode * 0.55;
+
+    let tint = vec3<f32>(get_float(13u), get_float(14u), get_float(15u));
+    col = col * tint;
+
+    var alpha = clamp(max(max(col.r, col.g), col.b), 0.0, 1.0);
+    alpha = max(alpha * 0.95, core_mask * 0.35);
+    let halo = vec4<f32>(col, alpha);
+
+    let base = textureSample(input_texture, input_sampler, uv_screen);
+    let out_a = base.a + halo.a * (1.0 - base.a);
+    let out_rgb = base.rgb + halo.rgb * (1.0 - base.a);
+    return vec4<f32>(out_rgb, out_a);
+}}
+"#,
+                preamble = HERO_FIRE_WGSL_PREAMBLE
+            ))
+        })
+        .clone()
+}
+
+struct FireShaderParams {
+    resolution_w: f32,
+    resolution_h: f32,
+    time: f32,
+    band_width: f32,
+    corner_radius: f32,
+    contour_w: f32,
+    contour_h: f32,
+    smoke_scale: f32,
+    intensity: f32,
+    smoke_opacity: f32,
+    core_scale: f32,
+    color_tint: [f32; 3],
+}
+
+fn fire_shader_effect(p: &FireShaderParams) -> RenderEffect {
+    let mut shader = RuntimeShader::from_shared_source(hero_fire_wgsl());
+    shader.set_float2(0, p.resolution_w, p.resolution_h);
+    shader.set_float(2, p.time);
+    shader.set_float(3, p.band_width);
+    shader.set_float(4, p.corner_radius);
+    shader.set_float2(5, p.contour_w, p.contour_h);
+    shader.set_float(7, p.smoke_scale);
+    shader.set_float(8, p.intensity);
+    shader.set_float(9, p.smoke_opacity);
+    shader.set_float(10, p.core_scale);
+    shader.set_float(11, 0.0);
+    shader.set_float(12, 0.0);
+    shader.set_float(13, p.color_tint[0]);
+    shader.set_float(14, p.color_tint[1]);
+    shader.set_float(15, p.color_tint[2]);
+    RenderEffect::runtime_shader(shader)
+}
+
+/// A transparent fire-border overlay of an exact size. Sized with fill_max_width
+/// plus an explicit (measured) height, it renders correctly and matches the
+/// element it is stacked over — so it never changes layout and hugs the bounds.
+///
+/// The animation frame is read as `time.get()` *inside* the graphics_layer
+/// closure. That closure runs under `observe_draw_reads`, so the read subscribes
+/// the draw node directly: when the infinite transition ticks, the runtime
+/// schedules a draw-repass for just this layer and re-renders it — no
+/// recomposition needed. Reading the frame in the composable body instead only
+/// subscribes the recompose scope, which is throttled/cached when the element
+/// lives inside a scroll container (that was the "animates only while scrolling"
+/// bug). This mirrors how the cranpose desktop-demo's shader rect animates.
+#[composable]
+fn FireBorderOverlay(corner_radius: f32, height: f32) {
+    let transition = rememberInfiniteTransition("fire_border");
+    let time = transition.animateFloat(
+        0.0,
+        1.0,
+        infiniteRepeatable(
+            AnimationSpec::linear(60_000),
+            RepeatMode::Restart,
+            StartOffset::default(),
+        ),
+        "fire_border_t",
+    );
+    // Read the frame in the BODY so this composable recomposes each tick (which
+    // keeps the frame flowing alongside AnimationPump).
+    let frame = time.value();
+    let height = height.max(1.0);
+    // How far the flame overhangs the element on every side. The layer texture is
+    // grown by this much so the outward glow has room and is not clipped.
+    let pad = 13.0f32;
+    BoxWithConstraints(
+        Modifier::empty().fill_max_width().height(height),
+        move |scope| {
+            let w = scope.max_width().0.max(1.0);
+            let outer_w = w + 2.0 * pad;
+            let outer_h = height + 2.0 * pad;
+            // Force the shader to re-render every frame. Cranpose caches the raster
+            // of a scroll's content, keyed on a content hash that excludes shader
+            // uniforms (see render_hash.rs) — so an animated shader inside a scroll
+            // reuses its cached (frozen) pixels. The content hash DOES include the
+            // layer's alpha (graph_hash.rs), so nudging alpha by a hair each frame
+            // forces a cache miss and a real re-raster with the new time. Unlike a
+            // bounds nudge this costs no relayout, and the change is far below
+            // perceptible (~0.3% opacity).
+            let anim_alpha = 1.0 - (frame * 240.0).fract() * 0.003;
+            // `required_size` makes the flame layer bigger than the element and
+            // lets it overflow, while the parent is still reported the element-sized
+            // (coerced) bounds — so the flame sits OUTSIDE the element edge without
+            // shifting layout. cranpose places the oversized child at the parent's
+            // top-left, overflowing to the bottom-right (alignment/offset can't move
+            // it — they act on the coerced size, which already equals the parent).
+            // So we recentre the overhang with a render-time `translation` of -pad on
+            // the graphics_layer, which shifts the drawn pixels without touching
+            // layout. The contour is the element bounds, centred in the larger
+            // texture, so the band straddles the edge and its glow bleeds outward.
+            ComposeBox(
+                Modifier::empty()
+                    .required_size(Size::new(outer_w, outer_h))
+                    .graphics_layer(move || GraphicsLayer {
+                        render_effect: Some(fire_shader_effect(&FireShaderParams {
+                            resolution_w: outer_w,
+                            resolution_h: outer_h,
+                            time: frame,
+                            band_width: 14.0,
+                            corner_radius,
+                            contour_w: w,
+                            contour_h: height,
+                            smoke_scale: 0.5,
+                            intensity: 1.15,
+                            smoke_opacity: 0.5,
+                            core_scale: 1.3,
+                            color_tint: [1.3, 0.7, 0.25],
+                        })),
+                        alpha: anim_alpha,
+                        translation_x: -pad,
+                        translation_y: -pad,
+                        compositing_strategy: CompositingStrategy::Offscreen,
+                        ..Default::default()
+                    }),
+                BoxSpec::default(),
+                || {},
+            );
+        },
+    );
+}
+
+/// A zero-size, invisible composable that drives continuous rendering so the
+/// shader-flame animations never freeze. Each frame it bumps a state that it
+/// reads itself, invalidating only this leaf scope. That keeps the desktop event
+/// loop's `should_render()` true (→ `ControlFlow::Poll`), so the frame clock the
+/// flames animate off of keeps ticking even when the app is otherwise idle. The
+/// recompose is confined to this one leaf; the rest of the tree is untouched.
+#[composable]
+fn AnimationPump() {
+    let tick = useState(|| 0u64);
+    // Read the tick so this scope subscribes and recomposes when it changes.
+    let _ = tick.value();
+    cranpose_core::LaunchedEffectAsync!((), move |scope| {
+        Box::pin(async move {
+            let clock = scope.runtime().frame_clock();
+            let mut n = 0u64;
+            loop {
+                if !scope.is_active() {
+                    break;
+                }
+                clock.next_frame().await;
+                n = n.wrapping_add(1);
+                tick.set(n);
+            }
+        })
+    });
+}
+
+/// The hero "next action" button to render inside the flame border.
+#[derive(Clone, Copy, PartialEq)]
+enum HeroButton {
+    Field(EditorFieldId),
+    Action(ActionButtonId),
+}
+
+/// Wraps the hero "next action" button in an animated flame border. The flame is
+/// a transparent overlay stacked over the measured button, so it never changes
+/// layout and always hugs the button's bounds. Used for both the action CTA and
+/// the field-edit suggestion, in every hero layout.
+#[composable]
+fn hero_fire_glow(
+    hero: HeroButton,
+    content_height: f32,
+    corner_radius: f32,
+    fields: EditorFields,
+    actions: ActionStates,
+    theme: ThemeMode,
+) {
+    let _ = content_height;
+    let button_h = useState(|| 0.0f32);
+    ComposeBox(
+        Modifier::empty().fill_max_width(),
+        BoxSpec::default().content_alignment(Alignment::TOP_START),
+        {
+            let fields = fields.clone();
+            move || {
+                let fields = fields.clone();
+                ComposeBox(
+                    Modifier::empty().fill_max_width().draw_behind(move |draw| {
+                        let h = draw.size().height;
+                        if (button_h.get_non_reactive() - h).abs() > 0.5 {
+                            button_h.set(h);
+                        }
+                    }),
+                    BoxSpec::default(),
+                    move || match hero {
+                        HeroButton::Field(field) => FieldSuggestion(
+                            field,
+                            actions.active_queue_target,
+                            actions.status,
+                            theme,
+                        ),
+                        HeroButton::Action(action) => {
+                            focus_action_button(action, fields.clone(), actions, theme)
+                        }
+                    },
+                );
+                let h = button_h.value();
+                if h > 1.0 {
+                    FireBorderOverlay(corner_radius, h);
+                }
+            }
+        },
+    );
+}
+
 #[composable]
 fn NextWorkPanel(
     next_item: NextWorkItem,
@@ -963,7 +1640,6 @@ fn NextWorkPanel(
 ) {
     let ActionStates {
         status,
-        active_queue_target,
         skipped_queue,
         ..
     } = actions;
@@ -1050,16 +1726,20 @@ fn NextWorkPanel(
                                     );
                                     match next_item {
                                         NextWorkItem::Field(field) => {
-                                            FieldSuggestion(
-                                                field,
-                                                active_queue_target,
-                                                status,
+                                            hero_fire_glow(
+                                                HeroButton::Field(field),
+                                                48.0,
+                                                11.0,
+                                                fields.clone(),
+                                                actions,
                                                 theme,
                                             );
                                         }
                                         NextWorkItem::Action(action) => {
-                                            focus_action_button(
-                                                action,
+                                            hero_fire_glow(
+                                                HeroButton::Action(action),
+                                                64.0,
+                                                14.0,
                                                 fields.clone(),
                                                 actions,
                                                 theme,
@@ -1090,6 +1770,30 @@ fn InteractiveQueuePanel(
         ..
     } = actions;
     if queue.is_empty() {
+        glass_panel(
+            Modifier::empty().fill_max_width(),
+            theme,
+            14.0,
+            10.0,
+            move || {
+                Column(
+                    Modifier::empty().fill_max_width(),
+                    ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(6.0)),
+                    move || {
+                        Text(
+                            "Saved Queue (replays on launch)",
+                            Modifier::empty(),
+                            eyebrow_style(theme),
+                        );
+                        Text(
+                            "No saved queue yet. Build one below in New Actions Queue, then press Remember queue.",
+                            Modifier::empty(),
+                            muted_style(theme),
+                        );
+                    },
+                );
+            },
+        );
         return;
     }
 
@@ -1113,7 +1817,11 @@ fn InteractiveQueuePanel(
                     );
                     let scroll_state = scroll_state.clone();
                     move || {
-                        Text("Interactive Queue", Modifier::empty(), eyebrow_style(theme));
+                        Text(
+                            "Saved Queue (replays on launch)",
+                            Modifier::empty(),
+                            eyebrow_style(theme),
+                        );
                         BoxWithConstraints(Modifier::empty().fill_max_width(), {
                             let fields = fields.clone();
                             let row_queue = queue.clone();
@@ -1177,21 +1885,25 @@ fn InteractiveQueuePanel(
                                 Row(
                                     Modifier::empty()
                                         .fill_max_width()
-                                        .height(58.0)
+                                        .height(60.0)
                                         .clip_to_bounds()
                                         .horizontal_scroll(scroll_state.clone(), false),
-                                    RowSpec::default().horizontal_arrangement(
-                                        LinearArrangement::spaced_by(INTERACTIVE_QUEUE_CHIP_GAP),
-                                    ),
+                                    RowSpec::default()
+                                        .horizontal_arrangement(LinearArrangement::spaced_by(
+                                            INTERACTIVE_QUEUE_CHIP_GAP,
+                                        ))
+                                        .vertical_alignment(VerticalAlignment::CenterVertically),
                                     {
                                         let fields = fields.clone();
                                         let row_queue = row_queue.clone();
                                         let row_current_queue = row_current_queue.clone();
+                                        let selected_key = selected_key.clone();
                                         move || {
                                             for item_key in &row_queue {
                                                 InteractiveQueueChip(
                                                     item_key.clone(),
                                                     row_current_queue.contains(item_key),
+                                                    selected_key.as_deref() == Some(item_key),
                                                     fields.clone(),
                                                     actions,
                                                     theme,
@@ -1260,6 +1972,10 @@ fn QueueCurrentEditorField(
 ) {
     let state = field_state(&fields, field);
     let saved_text = state.text();
+    if field == EditorFieldId::Difficulty {
+        DifficultyField(state, saved_text, status, ui_preferences, theme);
+        return;
+    }
     let (min_lines, max_lines) = field.queue_line_bounds();
     labeled_field(
         FieldSpec {
@@ -1278,8 +1994,460 @@ fn QueueCurrentEditorField(
     );
 }
 
+/// Editable row of the actions taken this session. Chips can be reordered and
+/// removed; "Remember queue" saves the curated list as the replay queue.
+#[composable]
+fn SessionQueuePanel(actions: ActionStates, theme: ThemeMode) {
+    let ActionStates {
+        status,
+        ui_preferences,
+        ..
+    } = actions;
+    let session_queue = ui_preferences.value().interactive_queue().to_vec();
+    // Shared drag state: Some((dragged_index, horizontal_offset_px)).
+    let drag = useState(|| None::<(usize, f32)>);
+    let stride = SESSION_CHIP_W + INTERACTIVE_QUEUE_CHIP_GAP;
+    // Horizontal scroll for long queues. The scroll modifier's own gesture is
+    // disabled (guard returns false); we drive the offset ourselves from the one
+    // pointer handler so wheel-pan and drag-reorder never fight each other.
+    let scroll_state = remember(|| ScrollState::new(0.0)).with(|state| state.clone());
+    glass_panel(Modifier::empty().fill_max_width(), theme, 14.0, 10.0, {
+        let session_queue = session_queue.clone();
+        let scroll_state = scroll_state.clone();
+        move || {
+            let session_queue = session_queue.clone();
+            let scroll_state = scroll_state.clone();
+            Column(
+                Modifier::empty().fill_max_width(),
+                ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(9.0)),
+                move || {
+                    let session_queue = session_queue.clone();
+                    let scroll_state = scroll_state.clone();
+                    Row(
+                        Modifier::empty().fill_max_width(),
+                        RowSpec::default()
+                            .horizontal_arrangement(LinearArrangement::SpaceBetween)
+                            .vertical_alignment(VerticalAlignment::CenterVertically),
+                        {
+                            let queue_len = session_queue.len();
+                            move || {
+                                Text("New Actions Queue", Modifier::empty(), eyebrow_style(theme));
+                                remember_queue_button(queue_len, status, ui_preferences, theme);
+                            }
+                        },
+                    );
+                    if session_queue.is_empty() {
+                        Text(
+                            "Actions you take collect here. Drag chips to reorder, then press Remember to save them as your replay queue.",
+                            Modifier::empty(),
+                            muted_style(theme),
+                        );
+                    } else {
+                        let len = session_queue.len();
+                        // A single pointer handler on the full-width container owns
+                        // both gestures: a click-drag reorders chips (live), and the
+                        // mouse wheel pans the row when it overflows. Because the
+                        // container spans the whole range, the pointer never slips off
+                        // it mid-drag (a per-chip handler froze once the chip
+                        // translated out from under the cursor).
+                        ComposeBox(
+                            Modifier::empty()
+                                .fill_max_width()
+                                .height(48.0)
+                                .clip_to_bounds()
+                                .pointer_input(len, {
+                                    let scroll_state = scroll_state.clone();
+                                    move |scope: PointerInputScope| {
+                                        let scroll_state = scroll_state.clone();
+                                        async move {
+                                            scope
+                                                .await_pointer_event_scope(
+                                                    move |await_scope| async move {
+                                                        let mut idx = 0usize;
+                                                        let mut start_x = 0.0f32;
+                                                        let mut dragging = false;
+                                                        // Only an actual press starts a
+                                                        // drag; bare hover moves must
+                                                        // never touch a chip.
+                                                        let mut pressed = false;
+                                                        loop {
+                                                            let event = await_scope
+                                                                .await_pointer_event()
+                                                                .await;
+                                                            match event.kind {
+                                                                PointerEventKind::Scroll => {
+                                                                    // Map either axis of the
+                                                                    // wheel to horizontal pan
+                                                                    // (a vertical wheel emits
+                                                                    // scroll_delta.y).
+                                                                    let d = event.scroll_delta.x
+                                                                        + event.scroll_delta.y;
+                                                                    if d.abs() > f32::EPSILON {
+                                                                        scroll_state
+                                                                            .dispatch_raw_delta(-d);
+                                                                        event.consume();
+                                                                    }
+                                                                }
+                                                                PointerEventKind::Down => {
+                                                                    let start_scroll = scroll_state
+                                                                        .value_non_reactive();
+                                                                    let content_x =
+                                                                        event.position.x
+                                                                            + start_scroll;
+                                                                    idx = ((content_x / stride)
+                                                                        .floor()
+                                                                        as usize)
+                                                                        .min(len.saturating_sub(1));
+                                                                    start_x =
+                                                                        event.global_position.x;
+                                                                    dragging = false;
+                                                                    pressed = true;
+                                                                }
+                                                                PointerEventKind::Move => {
+                                                                    // Guard against a stale
+                                                                    // press (missed Up) and
+                                                                    // bare hover.
+                                                                    if !pressed
+                                                                        || event.buttons
+                                                                            == PointerButtons::NONE
+                                                                    {
+                                                                        continue;
+                                                                    }
+                                                                    let dx =
+                                                                        event.global_position.x
+                                                                            - start_x;
+                                                                    if dx.abs() > 6.0 {
+                                                                        dragging = true;
+                                                                    }
+                                                                    if dragging {
+                                                                        drag.set(Some((idx, dx)));
+                                                                        event.consume();
+                                                                    }
+                                                                }
+                                                                PointerEventKind::Up
+                                                                | PointerEventKind::Cancel => {
+                                                                    pressed = false;
+                                                                    if dragging {
+                                                                        let dx =
+                                                                            event.global_position.x
+                                                                                - start_x;
+                                                                        let delta = (dx / stride)
+                                                                            .round()
+                                                                            as i64;
+                                                                        let target = (idx as i64
+                                                                            + delta)
+                                                                            .clamp(
+                                                                                0,
+                                                                                len as i64 - 1,
+                                                                            )
+                                                                            as usize;
+                                                                        if target != idx {
+                                                                            session_queue_move(
+                                                                                ui_preferences,
+                                                                                idx,
+                                                                                target,
+                                                                            );
+                                                                        }
+                                                                    }
+                                                                    drag.set(None);
+                                                                    dragging = false;
+                                                                }
+                                                                _ => {}
+                                                            }
+                                                        }
+                                                    },
+                                                )
+                                                .await;
+                                        }
+                                    }
+                                }),
+                            BoxSpec::default(),
+                            {
+                                let session_queue = session_queue.clone();
+                                let scroll_state = scroll_state.clone();
+                                move || {
+                                    let session_queue = session_queue.clone();
+                                    Row(
+                                        Modifier::empty()
+                                            .fill_max_width()
+                                            .horizontal_scroll_guarded(
+                                                scroll_state.clone(),
+                                                false,
+                                                || false,
+                                            ),
+                                        RowSpec::default()
+                                            .horizontal_arrangement(LinearArrangement::spaced_by(
+                                                INTERACTIVE_QUEUE_CHIP_GAP,
+                                            ))
+                                            .vertical_alignment(
+                                                VerticalAlignment::CenterVertically,
+                                            ),
+                                        move || {
+                                            for (index, item_key) in
+                                                session_queue.iter().enumerate()
+                                            {
+                                                SessionQueueChip(
+                                                    index,
+                                                    len,
+                                                    item_key.clone(),
+                                                    drag,
+                                                    status,
+                                                    ui_preferences,
+                                                    theme,
+                                                );
+                                            }
+                                        },
+                                    );
+                                }
+                            },
+                        );
+                    }
+                },
+            );
+        }
+    });
+}
+
+/// Fixed chip width; a constant width lets the container drag handler map a
+/// pointer x-position to a chip index.
+const SESSION_CHIP_W: f32 = 210.0;
+
+#[composable]
+fn SessionQueueChip(
+    index: usize,
+    len: usize,
+    item_key: String,
+    drag: MutableState<Option<(usize, f32)>>,
+    status: MutableState<String>,
+    ui_preferences: MutableState<UiPreferences>,
+    theme: ThemeMode,
+) {
+    let label = interactive_queue_label(&item_key, false, false);
+    let stride = SESSION_CHIP_W + INTERACTIVE_QUEUE_CHIP_GAP;
+    // Live reorder: while a chip is dragged the others slide to open a gap so the
+    // list always shows its would-be final arrangement (never a hole, never a
+    // fly). `from` is the grabbed index; `target` is where it would drop right now.
+    let (from, drag_dx, active) = match drag.value() {
+        Some((i, dx)) => (i, dx, true),
+        None => (usize::MAX, 0.0, false),
+    };
+    let target = if active {
+        (from as i64 + (drag_dx / stride).round() as i64).clamp(0, len as i64 - 1) as usize
+    } else {
+        from
+    };
+    let is_dragged = active && index == from;
+    // Shift every chip between the grabbed slot and the target by one stride to
+    // make room; the grabbed chip itself tracks the pointer directly. The shift is
+    // instant (no spring): the offset is relative to the chip's laid-out position,
+    // which jumps by a stride the moment the list reorders on drop — an animated
+    // offset would lag that jump and produce a one-stride "pop". Instant offsets
+    // stay frame-coherent, so the drop is seamless.
+    let neighbor_shift = if !active || is_dragged {
+        0.0
+    } else if from < target && index > from && index <= target {
+        -stride
+    } else if target < from && index >= target && index < from {
+        stride
+    } else {
+        0.0
+    };
+    let offset = if is_dragged { drag_dx } else { neighbor_shift };
+    // Flat, fixed-width rounded surface. While dragged it follows the pointer
+    // and lifts slightly.
+    let mut surface = Modifier::empty()
+        .width(SESSION_CHIP_W)
+        .background(soft_button_surface(theme))
+        .rounded_corners(9.0);
+    if offset.abs() > 0.01 || is_dragged {
+        surface = surface.graphics_layer_block(move |layer| {
+            layer.translation_x = offset;
+            if is_dragged {
+                // A gentle lift while dragged. No shadow_elevation: the row clips to
+                // its bounds, and a clipped drop shadow looked broken here.
+                layer.scale_x = 1.04;
+                layer.scale_y = 1.04;
+            }
+        });
+    }
+    ComposeBox(
+        surface.padding_symmetric(8.0, 5.0),
+        BoxSpec::default(),
+        move || {
+            let label = label.clone();
+            Row(
+                Modifier::empty().fill_max_width(),
+                RowSpec::default()
+                    .horizontal_arrangement(LinearArrangement::spaced_by(5.0))
+                    .vertical_alignment(VerticalAlignment::CenterVertically),
+                move || {
+                    Text("⠿", Modifier::empty(), muted_style(theme));
+                    BasicText(
+                        label.clone(),
+                        Modifier::empty().weight(1.0),
+                        queue_text_style(theme),
+                        TextOverflow::Ellipsis,
+                        false,
+                        1,
+                        1,
+                    );
+                    queue_edit_button("✕", theme, move || {
+                        session_queue_remove(ui_preferences, index, status);
+                    });
+                },
+            );
+        },
+    );
+}
+
+#[composable]
+fn remember_queue_button(
+    count: usize,
+    status: MutableState<String>,
+    ui_preferences: MutableState<UiPreferences>,
+    theme: ThemeMode,
+) {
+    let enabled = count > 0;
+    let (button_spec, press) = animated_button_spec(enabled, "remember_queue_button_press");
+    Button(
+        glass_button_modifier_with_press(
+            Modifier::empty(),
+            theme,
+            enabled,
+            false,
+            if enabled {
+                button_surface(theme)
+            } else {
+                soft_button_surface(theme)
+            },
+            9.0,
+            press,
+        )
+        .padding_symmetric(13.0, 8.0),
+        button_spec,
+        move || {
+            if !enabled {
+                return;
+            }
+            remember_queue(ui_preferences, status);
+        },
+        move || {
+            Text(
+                "Remember queue",
+                Modifier::empty(),
+                if enabled {
+                    focus_button_text_style(theme)
+                } else {
+                    subtle_button_text_style(theme)
+                },
+            );
+        },
+    );
+}
+
+#[composable]
+fn queue_edit_button(glyph: &'static str, theme: ThemeMode, on_click: impl FnMut() + 'static) {
+    let (button_spec, press) = animated_button_spec(true, "queue_edit_button_press");
+    Button(
+        glass_button_modifier_with_press(
+            Modifier::empty(),
+            theme,
+            true,
+            false,
+            soft_button_surface(theme),
+            7.0,
+            press,
+        )
+        .padding_symmetric(8.0, 5.0),
+        button_spec,
+        on_click,
+        move || {
+            Text(glyph, Modifier::empty(), subtle_button_text_style(theme));
+        },
+    );
+}
+
+/// Move a chip from one position to another (used by drag-and-drop reorder).
+fn session_queue_move(ui_preferences: MutableState<UiPreferences>, from: usize, to: usize) {
+    if from == to {
+        return;
+    }
+    let preferences = ui_preferences.update(|preferences| {
+        let mut queue = preferences.interactive_queue().to_vec();
+        if from < queue.len() && to < queue.len() {
+            let item = queue.remove(from);
+            queue.insert(to, item);
+        }
+        preferences.set_interactive_queue(queue);
+        preferences.clone()
+    });
+    let _ = persist_ui_preferences(&preferences);
+}
+
+fn session_queue_remove(
+    ui_preferences: MutableState<UiPreferences>,
+    index: usize,
+    status: MutableState<String>,
+) {
+    let preferences = ui_preferences.update(|preferences| {
+        let mut queue = preferences.interactive_queue().to_vec();
+        if index < queue.len() {
+            queue.remove(index);
+        }
+        preferences.set_interactive_queue(queue);
+        preferences.clone()
+    });
+    let _ = persist_ui_preferences(&preferences);
+    status.set("Removed a step from the new actions queue.".to_string());
+}
+
+fn remember_queue(ui_preferences: MutableState<UiPreferences>, status: MutableState<String>) {
+    let preferences = ui_preferences.update(|preferences| {
+        preferences.remember_current_queue();
+        preferences.clone()
+    });
+    let count = preferences.remembered_queue().len();
+    match persist_ui_preferences(&preferences) {
+        Ok(_) => status.set(format!(
+            "Remembered {count} step(s) — this becomes the replay queue on next launch."
+        )),
+        Err(error) => status.set(format!("Saving the queue failed: {error}")),
+    }
+}
+
 #[composable]
 fn InteractiveQueueChip(
+    item_key: String,
+    done: bool,
+    glow: bool,
+    fields: EditorFields,
+    actions: ActionStates,
+    theme: ThemeMode,
+) {
+    if glow {
+        // Fixed-size chip: the flame is a transparent overlay stacked exactly over
+        // the chip's 214×48 bounds, so it never shifts the row and hugs the edge.
+        ComposeBox(
+            Modifier::empty().width(INTERACTIVE_QUEUE_CHIP_WIDTH),
+            BoxSpec::default().content_alignment(Alignment::TOP_START),
+            move || {
+                interactive_queue_chip_button(
+                    item_key.clone(),
+                    done,
+                    fields.clone(),
+                    actions,
+                    theme,
+                );
+                FireBorderOverlay(10.0, 48.0);
+            },
+        );
+        return;
+    }
+    interactive_queue_chip_button(item_key, done, fields, actions, theme);
+}
+
+#[composable]
+fn interactive_queue_chip_button(
     item_key: String,
     done: bool,
     fields: EditorFields,
@@ -1371,6 +2539,7 @@ fn ActionButtons(
     session: EditorSession,
     actions: ActionStates,
     theme: ThemeMode,
+    next_action: Option<ActionButtonId>,
 ) {
     let ordered_actions = ordered_action_buttons(&session.layout_preferences);
     BoxWithConstraints(Modifier::empty().fill_max_width(), {
@@ -1403,7 +2572,13 @@ fn ActionButtons(
                                 move || {
                                     let fields = fields.clone();
                                     ForEach(&row_actions, move |action| {
-                                        ActionButton(*action, fields.clone(), actions, theme);
+                                        ActionButton(
+                                            *action,
+                                            fields.clone(),
+                                            actions,
+                                            theme,
+                                            next_action,
+                                        );
                                     });
                                 },
                             );
@@ -1421,19 +2596,82 @@ fn ActionButton(
     fields: EditorFields,
     actions: ActionStates,
     theme: ThemeMode,
+    next_action: Option<ActionButtonId>,
 ) {
     let action_busy = actions.busy_action.value();
     let long_action = action.long_action();
     let is_busy = long_action.is_some() && action_busy == long_action;
     let disabled = long_action.is_some() && action_busy.is_some();
+    // The action currently recommended by the hero glows here too, so the "do
+    // this next" cue follows the button wherever it appears.
+    if next_action == Some(action) {
+        glow_grid_button(action, disabled, is_busy, fields, actions, theme);
+        return;
+    }
     primary_button(
         action,
         actions.ui_preferences,
         theme,
         disabled,
         is_busy,
+        false,
         move || {
             handle_action_button(action, fields.clone(), actions);
+        },
+    );
+}
+
+/// A Quick Actions grid button wrapped in the same fire-shader glow as the hero,
+/// used to highlight the current recommended action in the grid.
+#[composable]
+fn glow_grid_button(
+    action: ActionButtonId,
+    disabled: bool,
+    is_busy: bool,
+    fields: EditorFields,
+    actions: ActionStates,
+    theme: ThemeMode,
+) {
+    let button_h = useState(|| 0.0f32);
+    // The WEIGHTED element is this outer ComposeBox, which participates in the
+    // Row's weight distribution just like the non-glow buttons (which use
+    // `.weight(1.0)`). The flame is a transparent overlay stacked on top of the
+    // measured button, so it never changes the cell size or shifts neighbours.
+    ComposeBox(
+        Modifier::empty().weight(1.0),
+        BoxSpec::default().content_alignment(Alignment::TOP_START),
+        {
+            let fields = fields.clone();
+            move || {
+                let fields = fields.clone();
+                ComposeBox(
+                    Modifier::empty().fill_max_width().draw_behind(move |draw| {
+                        let h = draw.size().height;
+                        if (button_h.get_non_reactive() - h).abs() > 0.5 {
+                            button_h.set(h);
+                        }
+                    }),
+                    BoxSpec::default(),
+                    move || {
+                        let fields = fields.clone();
+                        primary_button(
+                            action,
+                            actions.ui_preferences,
+                            theme,
+                            disabled,
+                            is_busy,
+                            true,
+                            move || {
+                                handle_action_button(action, fields.clone(), actions);
+                            },
+                        );
+                    },
+                );
+                let h = button_h.value();
+                if h > 1.0 {
+                    FireBorderOverlay(10.0, h);
+                }
+            }
         },
     );
 }
@@ -1617,7 +2855,6 @@ fn field_state(fields: &EditorFields, field: EditorFieldId) -> TextFieldState {
         EditorFieldId::ProblemTitle => fields.problem_title.clone(),
         EditorFieldId::ProblemUrl => fields.problem_url.clone(),
         EditorFieldId::Difficulty => fields.difficulty.clone(),
-        EditorFieldId::BlogPostUrl => fields.blog_post_url.clone(),
         EditorFieldId::SubstackUrl => fields.substack_url.clone(),
         EditorFieldId::YoutubeUrl => fields.youtube_url.clone(),
         EditorFieldId::ReferenceUrl => fields.reference_url.clone(),
@@ -1678,9 +2915,7 @@ fn handle_action_button(action: ActionButtonId, fields: EditorFields, actions: A
         ),
         ActionButtonId::CopyRichText => copy_rich_text_to_clipboard(draft, status),
         ActionButtonId::RefreshRasterPreview
-        | ActionButtonId::RefreshCranposePreview
         | ActionButtonId::SaveRasterWebp
-        | ActionButtonId::SaveCranposeWebp
         | ActionButtonId::PublishBlog
         | ActionButtonId::PostTelegram
         | ActionButtonId::PostTelegramComment => {}
@@ -1729,7 +2964,6 @@ impl ActionButtonId {
     fn icon(self) -> UiIcon {
         match self {
             Self::RefreshRasterPreview => UiIcon::Refresh,
-            Self::RefreshCranposePreview => UiIcon::RefreshAlt,
             Self::CopyLeetcode => UiIcon::Code,
             Self::CopyYoutube => UiIcon::Youtube,
             Self::CopyBlog => UiIcon::Document,
@@ -1738,7 +2972,6 @@ impl ActionButtonId {
             Self::CopySubtitle => UiIcon::Subtitle,
             Self::CopyRichText => UiIcon::RichText,
             Self::SaveRasterWebp => UiIcon::Save,
-            Self::SaveCranposeWebp => UiIcon::CranposeSave,
             Self::PublishBlog => UiIcon::Blog,
             Self::PostTelegram => UiIcon::Telegram,
             Self::PostTelegramComment => UiIcon::Comment,
@@ -1748,7 +2981,6 @@ impl ActionButtonId {
     fn label(self) -> &'static str {
         match self {
             Self::RefreshRasterPreview => "Refresh Raster",
-            Self::RefreshCranposePreview => "Refresh Cranpose",
             Self::CopyLeetcode => "Copy LeetCode",
             Self::CopyYoutube => "Copy YouTube",
             Self::CopyBlog => "Copy Blog",
@@ -1757,7 +2989,6 @@ impl ActionButtonId {
             Self::CopySubtitle => "Copy Subtitle",
             Self::CopyRichText => "Copy Rich Text",
             Self::SaveRasterWebp => "Save Raster WebP",
-            Self::SaveCranposeWebp => "Save Cranpose WebP",
             Self::PublishBlog => "Publish Blog",
             Self::PostTelegram => "Post Telegram",
             Self::PostTelegramComment => "Post TG Comment",
@@ -1767,7 +2998,6 @@ impl ActionButtonId {
     fn count_key(self) -> &'static str {
         match self {
             Self::RefreshRasterPreview => "preview.raster",
-            Self::RefreshCranposePreview => "preview.cranpose",
             Self::CopyLeetcode => "copy.leetcode",
             Self::CopyYoutube => "copy.youtube",
             Self::CopyBlog => "copy.blog",
@@ -1776,7 +3006,6 @@ impl ActionButtonId {
             Self::CopySubtitle => "copy.subtitle",
             Self::CopyRichText => "copy.rich_text",
             Self::SaveRasterWebp => "save.raster_webp",
-            Self::SaveCranposeWebp => "save.cranpose_webp",
             Self::PublishBlog => "publish.blog",
             Self::PostTelegram => "post.telegram",
             Self::PostTelegramComment => "post.telegram_comment",
@@ -1786,11 +3015,9 @@ impl ActionButtonId {
     fn long_action(self) -> Option<LongAction> {
         match self {
             Self::RefreshRasterPreview => Some(LongAction::RefreshRasterPreview),
-            Self::RefreshCranposePreview => Some(LongAction::RefreshCranposePreview),
             #[cfg(not(target_arch = "wasm32"))]
             Self::CopyRichText => Some(LongAction::CopyRichText),
             Self::SaveRasterWebp => Some(LongAction::SaveRasterWebp),
-            Self::SaveCranposeWebp => Some(LongAction::SaveCranposeWebp),
             Self::PublishBlog => Some(LongAction::PublishBlog),
             Self::PostTelegram => Some(LongAction::PostTelegram),
             Self::PostTelegramComment => Some(LongAction::PostTelegramComment),
@@ -1803,11 +3030,9 @@ impl LongAction {
     fn label(self) -> &'static str {
         match self {
             Self::RefreshRasterPreview => "Refresh Raster",
-            Self::RefreshCranposePreview => "Refresh Cranpose",
             #[cfg(not(target_arch = "wasm32"))]
             Self::CopyRichText => "Copy Rich Text",
             Self::SaveRasterWebp => "Save Raster WebP",
-            Self::SaveCranposeWebp => "Save Cranpose WebP",
             Self::PublishBlog => "Publish Blog",
             Self::PostTelegram => "Post Telegram",
             Self::PostTelegramComment => "Post TG Comment",
@@ -2046,7 +3271,6 @@ fn field_needs_attention(field: EditorFieldId, draft: &PostDraft) -> bool {
         EditorFieldId::RustRuntimeMs => draft.rust_runtime_ms.trim().is_empty(),
         EditorFieldId::RustCode => draft.rust_code.trim().is_empty(),
         EditorFieldId::Date
-        | EditorFieldId::BlogPostUrl
         | EditorFieldId::SubstackUrl
         | EditorFieldId::YoutubeUrl
         | EditorFieldId::ReferenceUrl
@@ -2069,8 +3293,7 @@ fn field_stage(field: EditorFieldId) -> WorkStage {
         | EditorFieldId::KotlinCode
         | EditorFieldId::RustRuntimeMs
         | EditorFieldId::RustCode => WorkStage::Code,
-        EditorFieldId::BlogPostUrl
-        | EditorFieldId::SubstackUrl
+        EditorFieldId::SubstackUrl
         | EditorFieldId::YoutubeUrl
         | EditorFieldId::ReferenceUrl
         | EditorFieldId::TelegramText => WorkStage::Ship,
@@ -2079,10 +3302,7 @@ fn field_stage(field: EditorFieldId) -> WorkStage {
 
 fn action_stage(action: ActionButtonId) -> WorkStage {
     match action {
-        ActionButtonId::RefreshRasterPreview
-        | ActionButtonId::RefreshCranposePreview
-        | ActionButtonId::SaveRasterWebp
-        | ActionButtonId::SaveCranposeWebp => WorkStage::Review,
+        ActionButtonId::RefreshRasterPreview | ActionButtonId::SaveRasterWebp => WorkStage::Review,
         ActionButtonId::PublishBlog
         | ActionButtonId::PostTelegram
         | ActionButtonId::PostTelegramComment => WorkStage::Ship,
@@ -2200,307 +3420,13 @@ fn PreviewCard(
 }
 
 #[composable]
-fn ComposePreviewCard(
-    compose_preview_state: MutableState<PreviewState>,
-    compose_loading: MutableState<bool>,
-    compose_error: MutableState<String>,
-    theme: ThemeMode,
-) {
-    section_card(theme, {
-        move || {
-            Column(
-                Modifier::empty().fill_max_width(),
-                ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(14.0)),
-                {
-                    move || {
-                        let preview = compose_preview_state.value();
-                        let error = compose_error.value();
-                        Text(
-                            "Cranpose Preview",
-                            Modifier::empty(),
-                            heading_style(28.0, theme),
-                        );
-                        if compose_loading.value() {
-                            Text(
-                                "Preparing Cranpose preview in the background...",
-                                Modifier::empty(),
-                                accent_style(theme),
-                            );
-                        } else if !error.is_empty() {
-                            Text(error.clone(), Modifier::empty(), body_style(theme));
-                        }
-                        ComposeBox(
-                            Modifier::empty()
-                                .size(Size {
-                                    width: 1200.0,
-                                    height: 675.0,
-                                })
-                                .background(panel_surface(theme))
-                                .rounded_corners(8.0)
-                                .padding(18.0),
-                            BoxSpec::default().content_alignment(Alignment::CENTER),
-                            move || {
-                                if !compose_loading.value() && !error.is_empty() {
-                                    Text(
-                                        error.clone(),
-                                        Modifier::empty().fill_max_width(),
-                                        body_style(theme),
-                                    );
-                                } else {
-                                    Image(
-                                        BitmapPainter(preview.bitmap.clone()),
-                                        Some("Cranpose preview".to_string()),
-                                        Modifier::empty().fill_max_size().rounded_corners(8.0),
-                                        Alignment::CENTER,
-                                        ContentScale::Fit,
-                                        DEFAULT_ALPHA,
-                                        None,
-                                    );
-                                }
-                            },
-                        );
-                    }
-                },
-            );
-        }
-    });
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[composable]
-fn CranposeCaptureSurface(
-    compose_assets: ComposePreviewAssets,
-    compose_plan: CardRenderPlan,
-    scale: f32,
-) {
-    ComposeBox(Modifier::empty().fill_max_size(), BoxSpec::default(), {
-        let compose_assets = compose_assets.clone();
-        let compose_plan = compose_plan.clone();
-        move || {
-            let background = compose_assets.background.clone();
-            let qr = compose_assets.qr.clone();
-            let compose_plan = compose_plan.clone();
-            Image(
-                BitmapPainter(background),
-                Some("Cranpose card background".to_string()),
-                Modifier::empty().fill_max_size(),
-                Alignment::CENTER,
-                ContentScale::Crop,
-                DEFAULT_ALPHA,
-                None,
-            );
-
-            Image(
-                BitmapPainter(qr),
-                Some("QR overlay".to_string()),
-                Modifier::empty()
-                    .absolute_offset(
-                        scale_x(compose_plan.qr.x, scale),
-                        scale_y(compose_plan.qr.y, scale),
-                    )
-                    .size(scaled_size(
-                        compose_plan.qr.width,
-                        compose_plan.qr.height,
-                        scale,
-                    ))
-                    .rounded_corners(18.0 * scale),
-                Alignment::CENTER,
-                ContentScale::Fit,
-                DEFAULT_ALPHA * 0.72,
-                None,
-            );
-
-            ComposeBox(
-                Modifier::empty()
-                    .absolute_offset(
-                        scale_x(compose_plan.panel.x, scale),
-                        scale_y(compose_plan.panel.y, scale),
-                    )
-                    .size(scaled_size(
-                        compose_plan.panel.width,
-                        compose_plan.panel.height,
-                        scale,
-                    ))
-                    .background(Color::from_rgba_u8(5, 8, 14, 210))
-                    .rounded_corners(46.0 * scale)
-                    .padding(compose_plan.panel_padding as f32 * scale),
-                BoxSpec::default(),
-                {
-                    let compose_plan = compose_plan.clone();
-                    move || {
-                        CranposePanelContent(compose_plan.clone(), scale);
-                    }
-                },
-            );
-        }
-    });
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[composable]
-fn CranposePanelContent(compose_plan: CardRenderPlan, scale: f32) {
-    Column(Modifier::empty().fill_max_size(), ColumnSpec::default(), {
-        let compose_plan = compose_plan.clone();
-        move || {
-            Spacer(Size::new(
-                0.0,
-                compose_plan.code_group_top_offset as f32 * scale,
-            ));
-            ComposeBox(
-                Modifier::empty().fill_max_width(),
-                BoxSpec::default().content_alignment(Alignment::CENTER),
-                {
-                    let compose_plan = compose_plan.clone();
-                    move || {
-                        Column(
-                            Modifier::empty().width(compose_plan.shared_text_width as f32 * scale),
-                            ColumnSpec::default().vertical_arrangement(
-                                LinearArrangement::spaced_by(compose_plan.code_gap as f32 * scale),
-                            ),
-                            {
-                                let code_blocks = compose_plan.code_blocks.clone();
-                                move || {
-                                    for code_block in code_blocks.clone() {
-                                        CranposeCodeBlockCard(code_block, scale);
-                                    }
-                                }
-                            },
-                        );
-                    }
-                },
-            );
-            ComposeBox(
-                Modifier::empty().fill_max_width().weight(1.0),
-                BoxSpec::default(),
-                || {},
-            );
-            ComposeBox(
-                Modifier::empty().fill_max_width(),
-                BoxSpec::default().content_alignment(Alignment::CENTER),
-                {
-                    let compose_plan = compose_plan.clone();
-                    move || {
-                        ComposeBox(
-                            Modifier::empty().width(compose_plan.tldr.width as f32 * scale),
-                            BoxSpec::default(),
-                            {
-                                let tldr = compose_plan.tldr.clone();
-                                move || {
-                                    CranposeTldrBlock(tldr.clone(), scale);
-                                }
-                            },
-                        );
-                    }
-                },
-            );
-        }
-    });
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[composable]
-fn CranposeCodeBlockCard(code_block: CodeRenderPlan, scale: f32) {
-    Column(Modifier::empty().fill_max_width(), ColumnSpec::default(), {
-        let code_block = code_block.clone();
-        move || {
-            Text(
-                format!("// {}", code_block.language),
-                Modifier::empty(),
-                preview_code_label_style(code_block.label_font_size * scale),
-            );
-            Spacer(Size::new(0.0, 4.0 * scale));
-            Text(
-                format!("// {}", code_block.runtime),
-                Modifier::empty(),
-                preview_runtime_style(code_block.label_font_size * scale),
-            );
-            Spacer(Size::new(0.0, 14.0 * scale));
-            let line_gap =
-                ((code_block.code_line_height as f32 - code_block.code_font_size).max(0.0)) * scale;
-            for (index, line) in code_block.lines.iter().enumerate() {
-                Text(
-                    line.clone(),
-                    Modifier::empty(),
-                    preview_code_style(
-                        code_block.code_font_size * scale,
-                        code_block.code_line_height as f32 * scale,
-                    ),
-                );
-                if index + 1 < code_block.lines.len() && line_gap > 0.0 {
-                    Spacer(Size::new(0.0, line_gap));
-                }
-            }
-        }
-    });
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[composable]
-fn CranposeTldrBlock(tldr: crate::export::TextRenderPlan, scale: f32) {
-    Column(Modifier::empty().fill_max_width(), ColumnSpec::default(), {
-        let tldr = tldr.clone();
-        move || {
-            let line_gap = ((tldr.line_height as f32 - tldr.font_size).max(0.0)) * scale;
-            for (index, line) in tldr.lines.iter().enumerate() {
-                Text(
-                    line.clone(),
-                    Modifier::empty().fill_max_width(),
-                    preview_tldr_style(tldr.font_size * scale, tldr.line_height as f32 * scale),
-                );
-                if index + 1 < tldr.lines.len() && line_gap > 0.0 {
-                    Spacer(Size::new(0.0, line_gap));
-                }
-            }
-        }
-    });
-}
-
-#[composable]
-fn MarkdownCard(markdown_preview: String, theme: ThemeMode) {
-    section_card(theme, {
-        let markdown_preview = markdown_preview.clone();
-        move || {
-            Column(
-                Modifier::empty().fill_max_width(),
-                ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(12.0)),
-                {
-                    let markdown_preview = markdown_preview.clone();
-                    move || {
-                        let markdown_content = markdown_preview.clone();
-                        Text(
-                            "Blog Template Preview",
-                            Modifier::empty(),
-                            heading_style(28.0, theme),
-                        );
-                        ComposeBox(
-                            Modifier::empty()
-                                .fill_max_width()
-                                .background(panel_surface(theme))
-                                .rounded_corners(8.0)
-                                .padding(18.0),
-                            BoxSpec::default(),
-                            move || {
-                                Text(
-                                    markdown_content.clone(),
-                                    Modifier::empty().fill_max_width(),
-                                    code_text_style(18.0, theme),
-                                );
-                            },
-                        );
-                    }
-                },
-            );
-        }
-    });
-}
-
-#[composable]
 fn ProblemMetaCard(
     fields: EditorFields,
     session: EditorSession,
     actions: ActionStates,
     theme: ThemeMode,
     compact: bool,
+    current_field: Option<EditorFieldId>,
 ) {
     let ActionStates {
         status,
@@ -2530,7 +3456,6 @@ fn ProblemMetaCard(
                                     EditorFieldId::SubstackUrl,
                                     EditorFieldId::Date,
                                     EditorFieldId::Difficulty,
-                                    EditorFieldId::BlogPostUrl,
                                 ],
                                 fields.clone(),
                                 saved_draft.clone(),
@@ -2538,6 +3463,7 @@ fn ProblemMetaCard(
                                 ui_preferences,
                                 theme,
                                 false,
+                                current_field,
                             );
                         } else {
                             Row(
@@ -2562,13 +3488,13 @@ fn ProblemMetaCard(
                                             ui_preferences,
                                             theme,
                                             true,
+                                            current_field,
                                         );
                                         MetaFieldColumn(
                                             vec![
                                                 EditorFieldId::SubstackUrl,
                                                 EditorFieldId::Date,
                                                 EditorFieldId::Difficulty,
-                                                EditorFieldId::BlogPostUrl,
                                             ],
                                             fields.clone(),
                                             saved_draft.clone(),
@@ -2576,6 +3502,7 @@ fn ProblemMetaCard(
                                             ui_preferences,
                                             theme,
                                             true,
+                                            current_field,
                                         );
                                     }
                                 },
@@ -2597,6 +3524,7 @@ fn MetaFieldColumn(
     ui_preferences: MutableState<UiPreferences>,
     theme: ThemeMode,
     weighted: bool,
+    current_field: Option<EditorFieldId>,
 ) {
     let modifier = if weighted {
         Modifier::empty().weight(1.0)
@@ -2618,6 +3546,7 @@ fn MetaFieldColumn(
                         status,
                         ui_preferences,
                         theme,
+                        current_field == Some(*field),
                     );
                 }
             });
@@ -2631,13 +3560,36 @@ fn WriteupCard(
     session: EditorSession,
     actions: ActionStates,
     theme: ThemeMode,
+    current_field: Option<EditorFieldId>,
 ) {
-    FieldSectionCard("Writeup", &WRITEUP_FIELDS, fields, session, actions, theme);
+    FieldSectionCard(
+        "Writeup",
+        &WRITEUP_FIELDS,
+        fields,
+        session,
+        actions,
+        theme,
+        current_field,
+    );
 }
 
 #[composable]
-fn CodeCard(fields: EditorFields, session: EditorSession, actions: ActionStates, theme: ThemeMode) {
-    FieldSectionCard("Code Blocks", &CODE_FIELDS, fields, session, actions, theme);
+fn CodeCard(
+    fields: EditorFields,
+    session: EditorSession,
+    actions: ActionStates,
+    theme: ThemeMode,
+    current_field: Option<EditorFieldId>,
+) {
+    FieldSectionCard(
+        "Code Blocks",
+        &CODE_FIELDS,
+        fields,
+        session,
+        actions,
+        theme,
+        current_field,
+    );
 }
 
 #[composable]
@@ -2648,6 +3600,7 @@ fn FieldSectionCard(
     session: EditorSession,
     actions: ActionStates,
     theme: ThemeMode,
+    current_field: Option<EditorFieldId>,
 ) {
     let ActionStates {
         status,
@@ -2679,6 +3632,7 @@ fn FieldSectionCard(
                                     status,
                                     ui_preferences,
                                     theme,
+                                    current_field == Some(*field),
                                 );
                             }
                         });
@@ -2697,7 +3651,34 @@ fn EditorField(
     status: MutableState<String>,
     ui_preferences: MutableState<UiPreferences>,
     theme: ThemeMode,
+    glow: bool,
 ) {
+    if glow {
+        glow_field_wrap(field, fields, saved_draft, status, ui_preferences, theme);
+    } else {
+        editor_field_inner(field, fields, saved_draft, status, ui_preferences, theme);
+    }
+}
+
+#[composable]
+fn editor_field_inner(
+    field: EditorFieldId,
+    fields: EditorFields,
+    saved_draft: PostDraft,
+    status: MutableState<String>,
+    ui_preferences: MutableState<UiPreferences>,
+    theme: ThemeMode,
+) {
+    if field == EditorFieldId::Difficulty {
+        DifficultyField(
+            field_state(&fields, field),
+            saved_field_text(&saved_draft, field),
+            status,
+            ui_preferences,
+            theme,
+        );
+        return;
+    }
     let (min_lines, max_lines) = field.editor_line_bounds();
     labeled_field(
         FieldSpec {
@@ -2713,6 +3694,181 @@ fn EditorField(
         status,
         ui_preferences,
         theme,
+    );
+}
+
+/// Stacks the animated fire border over the current hero field's editor without
+/// changing its layout. The editor's height is measured so the transparent
+/// overlay matches it exactly; only the overlay recomposes for the animation.
+#[composable]
+fn glow_field_wrap(
+    field: EditorFieldId,
+    fields: EditorFields,
+    saved_draft: PostDraft,
+    status: MutableState<String>,
+    ui_preferences: MutableState<UiPreferences>,
+    theme: ThemeMode,
+) {
+    let field_h = useState(|| 0.0f32);
+    ComposeBox(
+        Modifier::empty().fill_max_width(),
+        BoxSpec::default().content_alignment(Alignment::TOP_START),
+        {
+            let fields = fields.clone();
+            let saved_draft = saved_draft.clone();
+            move || {
+                let fields = fields.clone();
+                let saved_draft = saved_draft.clone();
+                ComposeBox(
+                    Modifier::empty().fill_max_width().draw_behind(move |draw| {
+                        let h = draw.size().height;
+                        if (field_h.get_non_reactive() - h).abs() > 0.5 {
+                            field_h.set(h);
+                        }
+                    }),
+                    BoxSpec::default(),
+                    move || {
+                        editor_field_inner(
+                            field,
+                            fields.clone(),
+                            saved_draft.clone(),
+                            status,
+                            ui_preferences,
+                            theme,
+                        );
+                    },
+                );
+                let h = field_h.value();
+                if h > 1.0 {
+                    FireBorderOverlay(12.0, h);
+                }
+            }
+        },
+    );
+}
+
+const DIFFICULTY_OPTIONS: [(&str, &str); 3] =
+    [("Easy", "easy"), ("Medium", "medium"), ("Hard", "hard")];
+
+/// Difficulty picker rendered as a three-way Easy/Medium/Hard segmented toggle.
+/// The chosen option is stored back into the field as lowercase text.
+#[composable]
+fn DifficultyField(
+    state: TextFieldState,
+    saved_text: String,
+    status: MutableState<String>,
+    ui_preferences: MutableState<UiPreferences>,
+    theme: ThemeMode,
+) {
+    let current_text = state.text();
+    track_field_interaction("difficulty", current_text.clone(), ui_preferences);
+    let selected = current_text.trim().to_ascii_lowercase();
+    let is_changed = current_text != saved_text;
+    ComposeBox(
+        glass_panel_modifier(Modifier::empty().fill_max_width(), theme, 12.0)
+            .padding_symmetric(12.0, 10.0),
+        BoxSpec::default(),
+        move || {
+            let state = state.clone();
+            let selected = selected.clone();
+            Row(
+                icon_overlay_modifier(
+                    Modifier::empty().fill_max_width(),
+                    UiIcon::Difficulty,
+                    44.0,
+                    0.0,
+                    theme,
+                    false,
+                ),
+                RowSpec::default().horizontal_arrangement(LinearArrangement::spaced_by(16.0)),
+                move || {
+                    Spacer(Size::new(44.0, 0.0));
+                    let state = state.clone();
+                    let selected = selected.clone();
+                    Column(
+                        Modifier::empty().weight(1.0),
+                        ColumnSpec::default()
+                            .vertical_arrangement(LinearArrangement::spaced_by(6.0)),
+                        move || {
+                            Text(
+                                "Difficulty",
+                                Modifier::empty(),
+                                label_style(theme, is_changed),
+                            );
+                            let state = state.clone();
+                            let selected = selected.clone();
+                            Row(
+                                Modifier::empty().fill_max_width(),
+                                RowSpec::default()
+                                    .horizontal_arrangement(LinearArrangement::spaced_by(8.0)),
+                                move || {
+                                    for (label, value) in DIFFICULTY_OPTIONS {
+                                        DifficultySegment(
+                                            label,
+                                            value,
+                                            selected == value,
+                                            state.clone(),
+                                            status,
+                                            theme,
+                                        );
+                                    }
+                                },
+                            );
+                        },
+                    );
+                },
+            );
+        },
+    );
+}
+
+#[composable]
+fn DifficultySegment(
+    label: &'static str,
+    value: &'static str,
+    selected: bool,
+    state: TextFieldState,
+    status: MutableState<String>,
+    theme: ThemeMode,
+) {
+    let (button_spec, press) = animated_button_spec(true, "difficulty_segment_press");
+    let surface = if selected {
+        button_surface(theme)
+    } else {
+        soft_button_surface(theme)
+    };
+    let mut text_style = if selected {
+        focus_button_text_style(theme)
+    } else {
+        subtle_button_text_style(theme)
+    };
+    text_style.paragraph_style.text_align = cranpose::text::TextAlign::Center;
+    Button(
+        glass_button_modifier_with_press(
+            Modifier::empty().weight(1.0),
+            theme,
+            true,
+            selected,
+            surface,
+            10.0,
+            press,
+        )
+        .padding_symmetric(12.0, 11.0),
+        button_spec,
+        move || {
+            if state.text().trim().eq_ignore_ascii_case(value) {
+                return;
+            }
+            state.set_text(value.to_string());
+            status.set(format!("Difficulty set to {value}."));
+        },
+        move || {
+            Text(
+                label,
+                Modifier::empty().fill_max_width(),
+                text_style.clone(),
+            );
+        },
     );
 }
 
@@ -2734,7 +3890,6 @@ impl EditorFieldId {
             Self::ProblemTitle => "Problem Title",
             Self::ProblemUrl => "Problem URL",
             Self::Difficulty => "Difficulty",
-            Self::BlogPostUrl => "Blog Post URL",
             Self::SubstackUrl => "Substack URL",
             Self::YoutubeUrl => "YouTube URL",
             Self::ReferenceUrl => "Reference URL",
@@ -2757,7 +3912,6 @@ impl EditorFieldId {
             Self::ProblemTitle => "problem_title",
             Self::ProblemUrl => "problem_url",
             Self::Difficulty => "difficulty",
-            Self::BlogPostUrl => "blog_post_url",
             Self::SubstackUrl => "substack_url",
             Self::YoutubeUrl => "youtube_url",
             Self::ReferenceUrl => "reference_url",
@@ -2820,7 +3974,6 @@ fn saved_field_text(draft: &PostDraft, field: EditorFieldId) -> String {
         EditorFieldId::ProblemTitle => draft.problem_title.clone(),
         EditorFieldId::ProblemUrl => draft.problem_url.clone(),
         EditorFieldId::Difficulty => draft.difficulty.clone(),
-        EditorFieldId::BlogPostUrl => draft.blog_post_url.clone(),
         EditorFieldId::SubstackUrl => draft.substack_url.clone(),
         EditorFieldId::YoutubeUrl => draft.youtube_url.clone(),
         EditorFieldId::ReferenceUrl => draft.reference_url.clone(),
@@ -3396,7 +4549,6 @@ impl UiIcon {
     fn sheet_index(self) -> u32 {
         match self {
             Self::AppLogo => 0,
-            Self::CranposeSave => 1,
             Self::Save => 2,
             Self::Code => 3,
             Self::Telegram => 4,
@@ -3407,7 +4559,6 @@ impl UiIcon {
             Self::Comment => 9,
             Self::Blog => 10,
             Self::Refresh => 11,
-            Self::RefreshAlt => 12,
             Self::Document => 14,
             Self::Leetcode => 15,
             Self::Substack => 16,
@@ -3433,7 +4584,6 @@ impl UiIcon {
                 | Self::Blog
                 | Self::Web
                 | Self::Refresh
-                | Self::RefreshAlt
                 | Self::StagePrepare
                 | Self::StageWrite
                 | Self::StageCode
@@ -3454,13 +4604,10 @@ impl UiIcon {
             Self::Telegram => Color::from_rgb_u8(45, 169, 230),
             Self::Substack => Color::from_rgb_u8(255, 116, 43),
             Self::StageReview | Self::Title => Color::from_rgb_u8(247, 177, 20),
-            Self::RefreshAlt => Color::from_rgb_u8(155, 73, 218),
             Self::StageShip => Color::from_rgb_u8(139, 169, 188),
             Self::Comment => Color::from_rgb_u8(109, 205, 58),
             Self::RichText => Color::from_rgb_u8(48, 143, 177),
-            Self::CranposeSave | Self::Document | Self::Subtitle => {
-                Color::from_rgb_u8(38, 151, 226)
-            }
+            Self::Document | Self::Subtitle => Color::from_rgb_u8(38, 151, 226),
             Self::Leetcode => Color::from_rgb_u8(248, 177, 48),
             Self::Blog | Self::Web => Color::from_rgb_u8(42, 162, 231),
             Self::Refresh => Color::from_rgb_u8(92, 196, 57),
@@ -3967,12 +5114,18 @@ fn primary_button(
     theme: ThemeMode,
     disabled: bool,
     busy: bool,
+    fill_width: bool,
     on_click: impl FnMut() + 'static,
 ) {
     let icon = action.icon();
     let label = action.label();
     let count = ui_preferences.value().button_count(action.count_key());
     let count_key = action.count_key().to_string();
+    let base = if fill_width {
+        Modifier::empty().fill_max_width()
+    } else {
+        Modifier::empty().weight(1.0)
+    };
     let background = if busy {
         button_surface(theme).with_alpha(0.86)
     } else if disabled {
@@ -3989,17 +5142,9 @@ fn primary_button(
     };
     let (button_spec, press) = animated_button_spec(!disabled, "primary_button_press");
     Button(
-        glass_button_modifier_with_press(
-            Modifier::empty().weight(1.0),
-            theme,
-            !disabled,
-            busy,
-            background,
-            10.0,
-            press,
-        )
-        .height(46.0)
-        .padding_symmetric(8.0, 9.0),
+        glass_button_modifier_with_press(base, theme, !disabled, busy, background, 10.0, press)
+            .height(46.0)
+            .padding_symmetric(8.0, 9.0),
         button_spec,
         move || {
             if disabled {
@@ -4316,6 +5461,9 @@ fn labeled_field(
     } = spec;
     let current_text = state.text();
     track_field_interaction(field_id, current_text.clone(), ui_preferences);
+    if field_is_numeric(field_id) {
+        enforce_numeric_input(state.clone(), current_text.clone());
+    }
     let is_changed = current_text != saved_text;
     let icon = UiIcon::for_field_id(field_id);
     let input_box_modifier = {
@@ -4473,6 +5621,26 @@ fn track_field_interaction(
     });
 }
 
+/// Fields whose contents must stay strictly numeric (digits only).
+fn field_is_numeric(field_id: &str) -> bool {
+    matches!(field_id, "kotlin_runtime_ms" | "rust_runtime_ms")
+}
+
+/// Reactively strips any non-digit character the user types into a numeric
+/// field, so runtime (ms) inputs can only ever hold a plain number.
+#[composable]
+fn enforce_numeric_input(state: TextFieldState, current_text: String) {
+    cranpose_core::LaunchedEffect!(current_text.clone(), {
+        let current_text = current_text.clone();
+        move |_scope| {
+            let filtered: String = current_text.chars().filter(char::is_ascii_digit).collect();
+            if filtered != current_text {
+                state.set_text(filtered);
+            }
+        }
+    });
+}
+
 fn record_button_press(ui_preferences: MutableState<UiPreferences>, count_key: &str) {
     let preferences = ui_preferences.update(|preferences| {
         preferences.increment_button_count(count_key);
@@ -4567,106 +5735,6 @@ fn copy_rich_text_to_clipboard(draft: PostDraft, status: MutableState<String>) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn render_compose_preview_frame(draft: &PostDraft) -> std::result::Result<PreviewFrame, String> {
-    // The Cranpose headless helper currently drops non-image layers for this
-    // capture surface on desktop, leaving a background-only preview. Keep the
-    // user-facing preview/export path on the same renderer used by Card Preview.
-    render_preview_frame(draft)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[allow(dead_code)]
-fn render_compose_preview_frame_with_helper(
-    draft: &PostDraft,
-) -> std::result::Result<PreviewFrame, String> {
-    let (draft_path, output_path) = compose_capture_paths();
-    let result = (|| -> Result<PreviewFrame> {
-        write_draft_snapshot(&draft_path, draft)?;
-        let command_output = Command::new(
-            std::env::current_exe().context("resolving current executable for compose capture")?,
-        )
-        .arg("--capture-compose-preview")
-        .arg(&draft_path)
-        .arg(&output_path)
-        .output()
-        .context("launching compose capture helper")?;
-
-        if !command_output.status.success() {
-            let stderr = String::from_utf8_lossy(&command_output.stderr);
-            let message = stderr.trim();
-            return Err(anyhow::anyhow!(if message.is_empty() {
-                "compose capture helper exited unsuccessfully".to_string()
-            } else {
-                format!("compose capture helper failed: {message}")
-            }));
-        }
-
-        let image = image::open(&output_path)
-            .with_context(|| format!("reading compose capture image {}", output_path.display()))?
-            .to_rgba8();
-        Ok(PreviewFrame {
-            width: image.width(),
-            height: image.height(),
-            pixels: image.into_raw(),
-        })
-    })();
-
-    cleanup_capture_artifacts(&draft_path, &output_path);
-    result.map_err(|error| error.to_string())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub fn run_compose_capture_cli(draft_path: &Path, output_path: &Path) -> Result<()> {
-    let draft = read_draft_snapshot(draft_path)?;
-    let compose_assets = compose_preview_assets()?;
-    let compose_plan = compose_preview_plan(&draft)?;
-    let (tx, rx) = mpsc::channel::<std::result::Result<PreviewFrame, String>>();
-
-    let launch_result = AppLauncher::new()
-        .with_title("LeetCode Daily Cranpose Capture")
-        .with_size(1600, 900)
-        .with_fonts(crate::assets::APP_FONTS)
-        .with_headless(true)
-        .with_test_driver({
-            let tx = tx.clone();
-            move |robot| {
-                let result = (|| -> std::result::Result<PreviewFrame, String> {
-                    robot.wait_for_idle()?;
-                    robot.pump_frames(4)?;
-                    let screenshot = robot.screenshot_with_scale(1.0)?;
-                    robot.exit()?;
-                    Ok(PreviewFrame {
-                        width: screenshot.width,
-                        height: screenshot.height,
-                        pixels: screenshot.pixels,
-                    })
-                })();
-                let _ = tx.send(result);
-            }
-        })
-        .try_run({
-            let compose_assets = compose_assets.clone();
-            let compose_plan = compose_plan.clone();
-            move || {
-                CranposeCaptureSurface(compose_assets.clone(), compose_plan.clone(), 1.0);
-            }
-        });
-
-    launch_result.map_err(|error| anyhow::anyhow!(error.to_string()))?;
-
-    let frame = rx
-        .recv_timeout(Duration::from_secs(20))
-        .map_err(|error| anyhow::anyhow!("timed out waiting for Cranpose capture: {error}"))?
-        .map_err(anyhow::Error::msg)?;
-    let image = RgbaImage::from_raw(frame.width, frame.height, frame.pixels)
-        .ok_or_else(|| anyhow::anyhow!("invalid RGBA frame from Cranpose capture"))?;
-    image
-        .save_with_format(output_path, ImageFormat::Png)
-        .with_context(|| format!("writing compose capture image {}", output_path.display()))?;
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 pub fn run_app_capture_cli(output_path: &Path, size: Option<(u32, u32)>) -> Result<()> {
     let (tx, rx) = mpsc::channel::<std::result::Result<PreviewFrame, String>>();
     let (width, height) = size.unwrap_or((APP_WIDTH, APP_HEIGHT));
@@ -4677,8 +5745,8 @@ pub fn run_app_capture_cli(output_path: &Path, size: Option<(u32, u32)>) -> Resu
             let tx = tx.clone();
             move |robot| {
                 let result = (|| -> std::result::Result<PreviewFrame, String> {
-                    robot.wait_for_idle()?;
-                    robot.pump_frames(4)?;
+                    // Not wait_for_idle: the animated fire never idles.
+                    robot.pump_frames(20)?;
                     let screenshot = robot.screenshot_with_scale(1.0)?;
                     robot.exit()?;
                     Ok(PreviewFrame {
@@ -4706,28 +5774,89 @@ pub fn run_app_capture_cli(output_path: &Path, size: Option<(u32, u32)>) -> Resu
     Ok(())
 }
 
-#[cfg(target_arch = "wasm32")]
-fn render_compose_preview_frame(_draft: &PostDraft) -> std::result::Result<PreviewFrame, String> {
-    Err("Cranpose preview capture is desktop-only right now.".to_string())
-}
-
+/// Headless robot harness used to validate interaction behaviour (drag, scroll)
+/// by driving the real app and dumping screenshots to `output_dir`.
 #[cfg(not(target_arch = "wasm32"))]
-fn compose_capture_paths() -> (PathBuf, PathBuf) {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let base = std::env::temp_dir().join(format!(
-        "leetcodedaily-compose-{}-{nonce}",
-        std::process::id()
-    ));
-    (base.with_extension("draft"), base.with_extension("png"))
-}
+pub fn run_robot_cli(scenario: &str, output_dir: &Path) -> Result<()> {
+    let _ = fs::create_dir_all(output_dir);
+    let (tx, rx) = mpsc::channel::<std::result::Result<(), String>>();
+    let scenario = scenario.to_string();
+    let output_dir = output_dir.to_path_buf();
 
-#[cfg(not(target_arch = "wasm32"))]
-fn cleanup_capture_artifacts(draft_path: &Path, output_path: &Path) {
-    let _ = fs::remove_file(draft_path);
-    let _ = fs::remove_file(output_path);
+    let launch_result = launcher_with_size(APP_WIDTH, APP_HEIGHT)
+        .with_headless(true)
+        .with_test_driver({
+            let tx = tx.clone();
+            move |robot| {
+                let result = (|| -> std::result::Result<(), String> {
+                    let save = |name: &str,
+                                w: u32,
+                                h: u32,
+                                px: Vec<u8>|
+                     -> std::result::Result<(), String> {
+                        let img = RgbaImage::from_raw(w, h, px).ok_or("bad frame")?;
+                        img.save_with_format(
+                            output_dir.join(format!("{name}.png")),
+                            ImageFormat::Png,
+                        )
+                        .map_err(|e| e.to_string())
+                    };
+                    robot.pump_frames(20)?;
+                    let s = robot.screenshot_with_scale(1.0)?;
+                    save("00_before", s.width, s.height, s.pixels)?;
+                    match scenario.as_str() {
+                        "anim" => {
+                            std::thread::sleep(Duration::from_millis(700));
+                            robot.pump_frames(4)?;
+                            let s = robot.screenshot_with_scale(1.0)?;
+                            save("01_later", s.width, s.height, s.pixels)?;
+                        }
+                        "drag" => {
+                            robot.mouse_move(150.0, 585.0)?;
+                            robot.mouse_down()?;
+                            robot.mouse_move(230.0, 585.0)?;
+                            robot.pump_frames(3)?;
+                            let s = robot.screenshot_with_scale(1.0)?;
+                            save("01_drag_80px", s.width, s.height, s.pixels)?;
+                            robot.mouse_move(430.0, 585.0)?;
+                            robot.pump_frames(3)?;
+                            let s = robot.screenshot_with_scale(1.0)?;
+                            save("02_drag_280px", s.width, s.height, s.pixels)?;
+                            robot.mouse_up()?;
+                            robot.pump_frames(4)?;
+                            let s = robot.screenshot_with_scale(1.0)?;
+                            save("03_after", s.width, s.height, s.pixels)?;
+                        }
+                        "scroll" => {
+                            robot.mouse_move(720.0, 1050.0)?;
+                            for i in 0..10u32 {
+                                robot.mouse_scroll_and_wait_for_frame(0.0, -48.0)?;
+                                robot.pump_frames(1)?;
+                                let s = robot.screenshot_with_scale(1.0)?;
+                                save(&format!("dn_{i:02}"), s.width, s.height, s.pixels)?;
+                            }
+                            for i in 0..10u32 {
+                                robot.mouse_scroll_and_wait_for_frame(0.0, 48.0)?;
+                                robot.pump_frames(1)?;
+                                let s = robot.screenshot_with_scale(1.0)?;
+                                save(&format!("up_{i:02}"), s.width, s.height, s.pixels)?;
+                            }
+                        }
+                        _ => {}
+                    }
+                    robot.exit()?;
+                    Ok(())
+                })();
+                let _ = tx.send(result);
+            }
+        })
+        .try_run(App);
+
+    launch_result.map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    rx.recv_timeout(Duration::from_secs(180))
+        .map_err(|error| anyhow::anyhow!("robot scenario timed out: {error}"))?
+        .map_err(anyhow::Error::msg)?;
+    Ok(())
 }
 
 fn run_long_action(pending: PendingAction) -> LongActionResult {
@@ -4737,18 +5866,12 @@ fn run_long_action(pending: PendingAction) -> LongActionResult {
         LongAction::RefreshRasterPreview => {
             LongActionResult::RefreshRasterPreview(render_raster_preview_result(&pending.draft))
         }
-        LongAction::RefreshCranposePreview => {
-            LongActionResult::RefreshCranposePreview(render_compose_preview_result(&pending.draft))
-        }
         #[cfg(not(target_arch = "wasm32"))]
         LongAction::CopyRichText => {
             LongActionResult::CopyRichText(copy_rich_text_result(&pending.draft))
         }
         LongAction::SaveRasterWebp => LongActionResult::SaveRasterWebp(
             save_webp(&pending.draft).map_err(|error| error.to_string()),
-        ),
-        LongAction::SaveCranposeWebp => LongActionResult::SaveCranposeWebp(
-            save_compose_webp_result(&pending.draft).map_err(|error| error.to_string()),
         ),
         LongAction::PublishBlog => {
             LongActionResult::PublishBlog(publish_blog_result(&pending.draft))
@@ -4779,12 +5902,7 @@ fn finish_long_action(
     actions: ActionStates,
     fields: EditorFields,
 ) {
-    let PreviewStates {
-        preview_state,
-        compose_preview_state,
-        compose_error,
-        ..
-    } = previews;
+    let PreviewStates { preview_state, .. } = previews;
     let ActionStates {
         status,
         telegram_post_link,
@@ -4801,17 +5919,6 @@ fn finish_long_action(
             }
             Err(error) => status.set(format!("Raster preview failed: {error}")),
         },
-        LongActionResult::RefreshCranposePreview(result) => match result {
-            Ok(preview) => {
-                compose_preview_state.set(preview);
-                compose_error.set(String::new());
-                status.set("Cranpose preview refreshed.".to_string());
-            }
-            Err(error) => {
-                compose_error.set(error.clone());
-                status.set(format!("Cranpose preview failed: {error}"));
-            }
-        },
         #[cfg(not(target_arch = "wasm32"))]
         LongActionResult::CopyRichText(result) => match result {
             Ok(()) => status.set("Rich text copied to the clipboard.".to_string()),
@@ -4827,17 +5934,6 @@ fn finish_long_action(
                 status.set(format!("Raster WebP saved to {saved_to}"));
             }
             Err(error) => status.set(format!("Saving raster WebP failed: {error}")),
-        },
-        LongActionResult::SaveCranposeWebp(result) => match result {
-            Ok(preview) => {
-                let saved_to = preview
-                    .last_saved_webp_path
-                    .clone()
-                    .unwrap_or_else(|| "~/Downloads".to_string());
-                preview_state.set(preview);
-                status.set(format!("Cranpose WebP saved to {saved_to}"));
-            }
-            Err(error) => status.set(format!("Saving Cranpose WebP failed: {error}")),
         },
         LongActionResult::PublishBlog(result) => match result {
             Ok(outcome) => {
@@ -4883,23 +5979,12 @@ fn render_raster_preview_result(draft: &PostDraft) -> std::result::Result<Previe
         .and_then(|frame| PreviewState::from_frame(frame).map_err(|error| error.to_string()))
 }
 
-fn render_compose_preview_result(draft: &PostDraft) -> std::result::Result<PreviewState, String> {
-    render_compose_preview_frame(draft)
-        .map_err(|error| error.to_string())
-        .and_then(|frame| PreviewState::from_frame(frame).map_err(|error| error.to_string()))
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 fn copy_rich_text_result(draft: &PostDraft) -> std::result::Result<(), String> {
     let image_data_url = preview_webp_data_url(draft).ok();
     let html = draft.rich_html_with_image(image_data_url.as_deref());
     let fallback = draft.rich_text_fallback();
     copy_rich_text(&html, &fallback).map_err(|error| error.to_string())
-}
-
-fn save_compose_webp_result(draft: &PostDraft) -> Result<PreviewState> {
-    let frame = render_compose_preview_frame(draft).map_err(anyhow::Error::msg)?;
-    save_preview_frame_as_webp(frame, draft)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -5236,24 +6321,6 @@ fn track_web_promise(
     });
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn scale_x(value: i32, scale: f32) -> f32 {
-    value as f32 * scale
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn scale_y(value: i32, scale: f32) -> f32 {
-    value as f32 * scale
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn scaled_size(width: u32, height: u32, scale: f32) -> Size {
-    Size {
-        width: width as f32 * scale,
-        height: height as f32 * scale,
-    }
-}
-
 fn panel_brush(theme: ThemeMode, size: Size) -> Brush {
     match theme {
         ThemeMode::Dark => Brush::linear_gradient_range(
@@ -5568,74 +6635,6 @@ fn badge_text_style(theme: ThemeMode) -> TextStyle {
             ..SpanStyle::default()
         },
         paragraph_style: ParagraphStyle::default(),
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn preview_code_label_style(size: f32) -> TextStyle {
-    TextStyle {
-        span_style: SpanStyle {
-            color: Some(Color::from_rgb_u8(148, 229, 255)),
-            font_size: cranpose::text::TextUnit::Sp(size.max(10.0)),
-            font_weight: Some(cranpose::text::FontWeight::BOLD),
-            font_family: Some(cranpose::text::FontFamily::Monospace),
-            ..SpanStyle::default()
-        },
-        paragraph_style: ParagraphStyle {
-            line_height: cranpose::text::TextUnit::Sp((size * 1.04).max(size)),
-            ..ParagraphStyle::default()
-        },
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn preview_runtime_style(size: f32) -> TextStyle {
-    TextStyle {
-        span_style: SpanStyle {
-            color: Some(Color::from_rgb_u8(255, 180, 78)),
-            font_size: cranpose::text::TextUnit::Sp(size.max(10.0)),
-            font_weight: Some(cranpose::text::FontWeight::SEMI_BOLD),
-            font_family: Some(cranpose::text::FontFamily::Monospace),
-            ..SpanStyle::default()
-        },
-        paragraph_style: ParagraphStyle {
-            line_height: cranpose::text::TextUnit::Sp((size * 1.04).max(size)),
-            ..ParagraphStyle::default()
-        },
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn preview_code_style(size: f32, line_height: f32) -> TextStyle {
-    TextStyle {
-        span_style: SpanStyle {
-            color: Some(Color::from_rgb_u8(242, 246, 250)),
-            font_size: cranpose::text::TextUnit::Sp(size.max(8.0)),
-            font_weight: Some(cranpose::text::FontWeight::MEDIUM),
-            font_family: Some(cranpose::text::FontFamily::Monospace),
-            ..SpanStyle::default()
-        },
-        paragraph_style: ParagraphStyle {
-            line_height: cranpose::text::TextUnit::Sp(line_height.max(size)),
-            ..ParagraphStyle::default()
-        },
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn preview_tldr_style(size: f32, line_height: f32) -> TextStyle {
-    TextStyle {
-        span_style: SpanStyle {
-            color: Some(Color::from_rgb_u8(170, 176, 187)),
-            font_size: cranpose::text::TextUnit::Sp(size.max(10.0)),
-            font_weight: Some(cranpose::text::FontWeight::MEDIUM),
-            ..SpanStyle::default()
-        },
-        paragraph_style: ParagraphStyle {
-            text_align: cranpose::text::TextAlign::Center,
-            line_height: cranpose::text::TextUnit::Sp(line_height.max(size)),
-            ..ParagraphStyle::default()
-        },
     }
 }
 
