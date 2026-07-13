@@ -36,7 +36,7 @@ use js_sys::{Array, Object, Promise, Reflect};
 use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::mpsc;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[cfg(not(target_arch = "wasm32"))]
@@ -901,6 +901,371 @@ fn StatusStrip(message: String, theme: ThemeMode) {
     );
 }
 
+// ── Fire-shader hero glow ────────────────────────────────────────────────
+// Ported from the Cranpose desktop demo's shader-rect tab: an animated flame
+// border drawn around the hero "next action" button via an offscreen runtime
+// shader.
+
+/// Extra space around the wrapped button where the flame is painted.
+const HERO_FIRE_BAND: f32 = 22.0;
+
+const HERO_FIRE_WGSL_PREAMBLE: &str = r#"
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+}
+
+@vertex
+fn fullscreen_vs(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+    var output: VertexOutput;
+    let x = f32(i32(vertex_index & 1u) * 2 - 1);
+    let y = f32(i32(vertex_index >> 1u) * 2 - 1);
+    output.uv = vec2<f32>(x * 0.5 + 0.5, 1.0 - (y * 0.5 + 0.5));
+    output.position = vec4<f32>(x, y, 0.0, 1.0);
+    return output;
+}
+
+@group(0) @binding(0) var input_texture: texture_2d<f32>;
+@group(0) @binding(1) var input_sampler: sampler;
+@group(1) @binding(0) var<uniform> u: array<vec4<f32>, 64>;
+
+fn get_float(index: u32) -> f32 {
+    return u[index / 4u][index % 4u];
+}
+
+fn get_vec2(index: u32) -> vec2<f32> {
+    return vec2<f32>(get_float(index), get_float(index + 1u));
+}
+
+fn sd_round_box(p: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
+    let q = abs(p) - b + vec2<f32>(r);
+    return length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - r;
+}
+"#;
+
+fn hero_fire_wgsl() -> Arc<str> {
+    static SOURCE: OnceLock<Arc<str>> = OnceLock::new();
+    SOURCE
+        .get_or_init(|| {
+            Arc::<str>::from(format!(
+                r#"{preamble}
+
+const PI: f32 = 3.14159265358979;
+const TWO_PI: f32 = 6.28318530717959;
+
+fn rand_f(n: vec2<f32>) -> f32 {{
+    return fract(sin(dot(n, vec2<f32>(12.9898, 12.1414))) * 83758.5453);
+}}
+
+fn noise_f(n: vec2<f32>) -> f32 {{
+    let b = floor(n);
+    let f = fract(n);
+    return mix(
+        mix(rand_f(b), rand_f(b + vec2<f32>(1.0, 0.0)), f.x),
+        mix(rand_f(b + vec2<f32>(0.0, 1.0)), rand_f(b + vec2<f32>(1.0, 1.0)), f.x),
+        f.y
+    );
+}}
+
+fn fire_f(n: vec2<f32>) -> f32 {{
+    return noise_f(n) + noise_f(n * 2.1) * 0.6 + noise_f(n * 5.4) * 0.42;
+}}
+
+fn ramp(t_in: f32) -> vec3<f32> {{
+    let t = max(t_in, 0.001);
+    if (t <= 0.5) {{
+        return vec3<f32>(1.0 - t * 1.4, 0.2, 1.05) / t;
+    }}
+    return vec3<f32>(0.3 * (1.0 - t) * 2.0, 0.2, 1.05) / t;
+}}
+
+fn shade(uv_in: vec2<f32>, t: f32) -> f32 {{
+    var uv = uv_in;
+    if (uv.y < 0.5) {{
+        uv.x = uv.x + 23.0 + t * 0.035;
+    }} else {{
+        uv.x = uv.x - 11.0 + t * 0.03;
+    }}
+    uv.y = abs(uv.y - 0.5);
+    uv.x = uv.x * 35.0;
+
+    let q = fire_f(uv - t * 0.013) / 2.0;
+    let rv = vec2<f32>(
+        fire_f(uv + q / 2.0 + t - uv.x - uv.y),
+        fire_f(uv + q - t)
+    );
+    return pow((rv.y + rv.y) * max(0.0, uv.y) + 0.1, 4.0);
+}}
+
+fn color_from_grad(grad: f32) -> vec3<f32> {{
+    let g = sqrt(max(grad, 0.0));
+    let c = ramp(g);
+    return c / (vec3<f32>(1.15) + max(vec3<f32>(0.0), c));
+}}
+
+fn perimeter_s(p: vec2<f32>, half_size: vec2<f32>, r: f32) -> f32 {{
+    let inner = max(half_size - vec2<f32>(r), vec2<f32>(0.0001));
+    let lh = 2.0 * inner.x;
+    let lv = 2.0 * inner.y;
+    let lc = 0.5 * PI * r;
+    let a = abs(p);
+    let is_corner = (a.x > inner.x) && (a.y > inner.y);
+
+    if (!is_corner) {{
+        if (a.x > inner.x) {{
+            if (p.x >= 0.0) {{ return clamp(p.y + inner.y, 0.0, lv); }}
+            else {{ return lv + lc + lh + lc + clamp(inner.y - p.y, 0.0, lv); }}
+        }}
+        if (a.y > inner.y) {{
+            if (p.y >= 0.0) {{ return lv + lc + clamp(inner.x - p.x, 0.0, lh); }}
+            else {{ return lv + lc + lh + lc + lv + lc + clamp(p.x + inner.x, 0.0, lh); }}
+        }}
+        return clamp(p.y + inner.y, 0.0, lv);
+    }}
+
+    if (p.x >= 0.0 && p.y >= 0.0) {{
+        let c = vec2<f32>(inner.x, inner.y);
+        let v = (p - c) / r;
+        return lv + clamp(atan2(v.y, v.x), 0.0, 0.5 * PI) * r;
+    }}
+    if (p.x <= 0.0 && p.y >= 0.0) {{
+        let c = vec2<f32>(-inner.x, inner.y);
+        let v = (p - c) / r;
+        return lv + lc + lh + (clamp(atan2(v.y, v.x), 0.5 * PI, PI) - 0.5 * PI) * r;
+    }}
+    if (p.x <= 0.0 && p.y <= 0.0) {{
+        let c = vec2<f32>(-inner.x, -inner.y);
+        let v = (p - c) / r;
+        var ang = atan2(v.y, v.x);
+        if (ang < 0.0) {{ ang = ang + TWO_PI; }}
+        ang = clamp(ang, PI, PI + 0.5 * PI);
+        return lv + lc + lh + lc + lv + (ang - PI) * r;
+    }}
+    let c = vec2<f32>(inner.x, -inner.y);
+    let v = (p - c) / r;
+    let base = lv + lc + lh + lc + lv + lc + lh;
+    return base + (clamp(atan2(v.y, v.x), -0.5 * PI, 0.0) + 0.5 * PI) * r;
+}}
+
+@fragment
+fn effect_fs(input: VertexOutput) -> @location(0) vec4<f32> {{
+    let uv_screen = input.uv;
+    let tex_size = vec2<f32>(textureDimensions(input_texture));
+    let effect_rect = vec4<f32>(get_float(248u), get_float(249u), get_float(250u), get_float(251u));
+    let resolution = get_vec2(0u);
+    let dp_scale = effect_rect.zw / max(resolution, vec2<f32>(1.0));
+    let s = min(dp_scale.x, dp_scale.y);
+    let local_px = uv_screen * tex_size - effect_rect.xy;
+
+    let time_raw = get_float(2u);
+    let band_px = get_float(3u) * s;
+    let corner_raw = get_float(4u) * s;
+    let contour_size = vec2<f32>(get_float(5u) * dp_scale.x, get_float(6u) * dp_scale.y);
+    let smoke_scale = get_float(7u);
+    let intensity = get_float(8u);
+    let smoke_opacity = get_float(9u);
+    let core_scale = get_float(10u);
+    let smoke_blue_tint = clamp(get_float(11u), 0.0, 1.0);
+    let thin_mode = clamp(get_float(12u), 0.0, 1.0);
+
+    let size_px = resolution * dp_scale;
+    let res = max(size_px, vec2<f32>(1.0));
+    let t = time_raw * 60.0;
+    let p = local_px - 0.5 * res;
+    let p_norm = p / max(res.y, 1.0);
+
+    let min_thickness = mix(1.5, 0.55, thin_mode);
+    let thickness = max(min_thickness, band_px * mix(0.30, 0.16, thin_mode));
+    let smoke_w = max(thickness * 4.8, band_px * 2.2) * max(smoke_scale, 0.3) * mix(1.0, 0.30, thin_mode);
+
+    let half_size = contour_size * 0.5;
+    var radius = min(corner_raw, min(half_size.x, half_size.y) - 0.1);
+    radius = max(radius, 1.0);
+
+    let d = sd_round_box(p, half_size, radius);
+
+    let inner = max(half_size - vec2<f32>(radius), vec2<f32>(0.0001));
+    let lh = 2.0 * inner.x;
+    let lv = 2.0 * inner.y;
+    let perimeter = 2.0 * (lh + lv) + TWO_PI * radius;
+
+    let s_param = perimeter_s(p, half_size, radius);
+    let u_coord = fract(s_param / perimeter);
+    let v_coord = 0.5 + d / (thickness * 2.0);
+
+    let core_mask = 1.0 - smoothstep(thickness, thickness * 2.0, abs(d));
+    let smoke_mask = 1.0 - smoothstep(smoke_w, smoke_w * 3.2, abs(d));
+    let ff = smoothstep(-0.15, 0.25, -p_norm.y);
+
+    let overlap_px = 10.0;
+    let seam_width = clamp(overlap_px / max(perimeter, 1.0), 0.001, 0.20);
+    let seam_blend = smoothstep(0.0, seam_width, u_coord) * smoothstep(0.0, seam_width, 1.0 - u_coord);
+
+    let uv_a = vec2<f32>(u_coord + 1.30, v_coord);
+    let uv_a2 = vec2<f32>(u_coord + 1.90, 1.0 - v_coord);
+    let a1 = color_from_grad(shade(uv_a, t)) * ff;
+    let a2 = color_from_grad(shade(uv_a2, t)) * (1.0 - ff);
+    let flame_a = a1 + a2;
+
+    let u_b = u_coord + 1.0;
+    let uv_b = vec2<f32>(u_b + 1.30, v_coord);
+    let uv_b2 = vec2<f32>(u_b + 1.90, 1.0 - v_coord);
+    let b1 = color_from_grad(shade(uv_b, t)) * ff;
+    let b2 = color_from_grad(shade(uv_b2, t)) * (1.0 - ff);
+    let flame_b = b1 + b2;
+
+    let flame = mix(flame_b, flame_a, seam_blend) * intensity;
+    let smoke_tinted = mix(
+        flame,
+        flame * vec3<f32>(0.50, 0.72, 1.35) + vec3<f32>(0.00, 0.02, 0.10),
+        smoke_blue_tint
+    );
+
+    var col = flame * core_mask * max(core_scale, 0.0);
+    col = col + smoke_tinted * (0.55 * max(smoke_opacity, 0.0)) * smoke_mask;
+    col = col * smoke_mask;
+
+    let crisp_edge = smoothstep(thickness * 0.85, thickness * 0.10, abs(d));
+    col = col + flame * crisp_edge * thin_mode * 0.55;
+
+    let tint = vec3<f32>(get_float(13u), get_float(14u), get_float(15u));
+    col = col * tint;
+
+    var alpha = clamp(max(max(col.r, col.g), col.b), 0.0, 1.0);
+    alpha = max(alpha * 0.95, core_mask * 0.35);
+    let halo = vec4<f32>(col, alpha);
+
+    let base = textureSample(input_texture, input_sampler, uv_screen);
+    let out_a = base.a + halo.a * (1.0 - base.a);
+    let out_rgb = base.rgb + halo.rgb * (1.0 - base.a);
+    return vec4<f32>(out_rgb, out_a);
+}}
+"#,
+                preamble = HERO_FIRE_WGSL_PREAMBLE
+            ))
+        })
+        .clone()
+}
+
+struct FireShaderParams {
+    resolution_w: f32,
+    resolution_h: f32,
+    time: f32,
+    band_width: f32,
+    corner_radius: f32,
+    contour_w: f32,
+    contour_h: f32,
+    smoke_scale: f32,
+    intensity: f32,
+    smoke_opacity: f32,
+    core_scale: f32,
+    color_tint: [f32; 3],
+}
+
+fn fire_shader_effect(p: &FireShaderParams) -> RenderEffect {
+    let mut shader = RuntimeShader::from_shared_source(hero_fire_wgsl());
+    shader.set_float2(0, p.resolution_w, p.resolution_h);
+    shader.set_float(2, p.time);
+    shader.set_float(3, p.band_width);
+    shader.set_float(4, p.corner_radius);
+    shader.set_float2(5, p.contour_w, p.contour_h);
+    shader.set_float(7, p.smoke_scale);
+    shader.set_float(8, p.intensity);
+    shader.set_float(9, p.smoke_opacity);
+    shader.set_float(10, p.core_scale);
+    shader.set_float(11, 0.0);
+    shader.set_float(12, 0.0);
+    shader.set_float(13, p.color_tint[0]);
+    shader.set_float(14, p.color_tint[1]);
+    shader.set_float(15, p.color_tint[2]);
+    RenderEffect::runtime_shader(shader)
+}
+
+/// The hero "next action" button to render inside the flame border.
+#[derive(Clone, Copy, PartialEq)]
+enum HeroButton {
+    Field(EditorFieldId),
+    Action(ActionButtonId),
+}
+
+/// Wraps the hero "next action" button in an animated flame border. The button
+/// is inset by [`HERO_FIRE_BAND`] so the fire has room to breathe. Used for both
+/// the action CTA and the field-edit suggestion, in every hero layout.
+#[composable]
+fn hero_fire_glow(
+    hero: HeroButton,
+    content_height: f32,
+    corner_radius: f32,
+    fields: EditorFields,
+    actions: ActionStates,
+    theme: ThemeMode,
+) {
+    let transition = rememberInfiniteTransition("hero_fire");
+    let time = transition.animateFloat(
+        0.0,
+        1.0,
+        infiniteRepeatable(
+            AnimationSpec::linear(60_000),
+            RepeatMode::Restart,
+            StartOffset::default(),
+        ),
+        "hero_fire_t",
+    );
+    BoxWithConstraints(Modifier::empty().fill_max_width(), {
+        let fields = fields.clone();
+        move |scope| {
+            let outer_w = scope.max_width().0.max(1.0);
+            let outer_h = content_height + 2.0 * HERO_FIRE_BAND;
+            let content_w = (outer_w - 2.0 * HERO_FIRE_BAND).max(1.0);
+            let fields = fields.clone();
+            ComposeBox(
+                Modifier::empty().size(Size::new(outer_w, outer_h)).graphics_layer(
+                    move || GraphicsLayer {
+                        render_effect: Some(fire_shader_effect(&FireShaderParams {
+                            resolution_w: outer_w,
+                            resolution_h: outer_h,
+                            time: time.value(),
+                            band_width: 13.0,
+                            corner_radius,
+                            contour_w: content_w,
+                            contour_h: content_height,
+                            smoke_scale: 1.0,
+                            intensity: 0.95,
+                            smoke_opacity: 0.9,
+                            core_scale: 1.0,
+                            color_tint: [1.3, 0.7, 0.25],
+                        })),
+                        compositing_strategy: CompositingStrategy::Offscreen,
+                        ..Default::default()
+                    },
+                ),
+                BoxSpec::default().content_alignment(Alignment::CENTER),
+                {
+                    let fields = fields.clone();
+                    move || {
+                        let fields = fields.clone();
+                        ComposeBox(
+                            Modifier::empty().size(Size::new(content_w, content_height)),
+                            BoxSpec::default().content_alignment(Alignment::CENTER),
+                            move || match hero {
+                                HeroButton::Field(field) => FieldSuggestion(
+                                    field,
+                                    actions.active_queue_target,
+                                    actions.status,
+                                    theme,
+                                ),
+                                HeroButton::Action(action) => {
+                                    focus_action_button(action, fields.clone(), actions, theme)
+                                }
+                            },
+                        );
+                    }
+                },
+            );
+        }
+    });
+}
+
 #[composable]
 fn NextWorkPanel(
     next_item: NextWorkItem,
@@ -913,7 +1278,6 @@ fn NextWorkPanel(
 ) {
     let ActionStates {
         status,
-        active_queue_target,
         skipped_queue,
         ..
     } = actions;
@@ -1000,16 +1364,20 @@ fn NextWorkPanel(
                                     );
                                     match next_item {
                                         NextWorkItem::Field(field) => {
-                                            FieldSuggestion(
-                                                field,
-                                                active_queue_target,
-                                                status,
+                                            hero_fire_glow(
+                                                HeroButton::Field(field),
+                                                48.0,
+                                                11.0,
+                                                fields.clone(),
+                                                actions,
                                                 theme,
                                             );
                                         }
                                         NextWorkItem::Action(action) => {
-                                            focus_action_button(
-                                                action,
+                                            hero_fire_glow(
+                                                HeroButton::Action(action),
+                                                64.0,
+                                                14.0,
                                                 fields.clone(),
                                                 actions,
                                                 theme,
