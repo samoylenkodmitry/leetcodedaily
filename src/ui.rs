@@ -381,14 +381,14 @@ fn clamp_web_dimension(target: u32, viewport: f64, device_pixel_ratio: f64) -> u
 
 #[composable]
 fn App() {
-    let scroll_state = remember(|| ScrollState::new(0.0)).with(|state| state.clone());
+    let scroll_state = remember(|| ScrollState::new(0.0)).with(|state| *state);
     let saved_draft = remember(load_initial_draft).with(|draft| draft.clone());
     let fields = remember({
         let saved_draft = saved_draft.clone();
         move || EditorFields::from_draft(&saved_draft)
     })
     .with(|fields| fields.clone());
-    let ui_preferences = useState(load_ui_preferences);
+    let ui_preferences = rememberMutableStateOf(load_ui_preferences);
     let startup_interactive_queue = remember({
         let initial_queue = ui_preferences.value().remembered_queue().to_vec();
         move || initial_queue
@@ -400,15 +400,20 @@ fn App() {
     })
     .with(|preferences| preferences.clone());
     let autosave_destination = remember(autosave_destination_label).with(|label| label.clone());
-    let preview_state = useState(PreviewState::placeholder);
-    let preview_loading = useState(|| false);
-    let telegram_post_link = useState(String::new);
-    let status = useState(startup_status_message);
-    let pending_action = useState(|| None::<PendingAction>);
-    let action_request_counter = useState(|| 0u64);
-    let busy_action = useState(|| None::<LongAction>);
-    let active_queue_target = useState(|| None::<String>);
-    let skipped_queue = useState(Vec::<String>::new);
+    // PreviewState holds an ImageBitmap and isn't PartialEq, so it can't use
+    // rememberMutableStateOf (which requires structural equality). This is
+    // remember+mutableStateOf spelled out, matching the pre-0.1.106 useState
+    // semantics: recreated once per slot, every set() always notifies.
+    let preview_state =
+        remember(|| mutableStateOf(PreviewState::placeholder())).with(|state| *state);
+    let preview_loading = rememberMutableStateOf(|| false);
+    let telegram_post_link = rememberMutableStateOf(String::new);
+    let status = rememberMutableStateOf(startup_status_message);
+    let pending_action = rememberMutableStateOf(|| None::<PendingAction>);
+    let action_request_counter = rememberMutableStateOf(|| 0u64);
+    let busy_action = rememberMutableStateOf(|| None::<LongAction>);
+    let active_queue_target = rememberMutableStateOf(|| None::<String>);
+    let skipped_queue = rememberMutableStateOf(Vec::<String>::new);
     let actions = ActionStates {
         status,
         telegram_post_link,
@@ -432,10 +437,10 @@ fn App() {
     let current_draft = PostDraft::from_fields(&fields);
     let queued_action = pending_action.value();
     let theme = ui_preferences.value().theme;
-    let queue_reset_done = useState(|| false);
+    let queue_reset_done = rememberMutableStateOf(|| false);
     // Measured height of the full header (first item in the scroll), used to
     // fade in the pinned collapsed bar exactly as the header scrolls out.
-    let header_height = useState(|| 0.0f32);
+    let header_height = rememberMutableStateOf(|| 0.0f32);
     // The field the hero currently points at, so its editor row can glow too.
     let current_field = resolve_next_work(
         &current_draft,
@@ -502,17 +507,16 @@ fn App() {
         }),
         BoxSpec::default(),
         {
-            let scroll_state = scroll_state.clone();
             let fields = fields.clone();
             let session = session.clone();
             move || {
                 Column(Modifier::empty().fill_max_size(), ColumnSpec::default(), {
-                    let scroll_state = scroll_state.clone();
+                    let scroll_state = scroll_state;
                     let fields = fields.clone();
                     let session = session.clone();
                     move || {
                         BoxWithConstraints(Modifier::empty().fill_max_width().weight(1.0), {
-                            let scroll_state = scroll_state.clone();
+                            let scroll_state = scroll_state;
                             let fields = fields.clone();
                             let session = session.clone();
                             move |scope| {
@@ -536,10 +540,9 @@ fn App() {
                                     {
                                         let fields = fields.clone();
                                         let session = session.clone();
-                                        let workspace_scroll_state = scroll_state.clone();
+                                        let workspace_scroll_state = scroll_state;
                                         move || {
-                                            let viewport_scroll_state =
-                                                workspace_scroll_state.clone();
+                                            let viewport_scroll_state = workspace_scroll_state;
                                             BoxWithConstraints(
                                                 Modifier::empty().fill_max_width().weight(1.0),
                                                 {
@@ -550,7 +553,7 @@ fn App() {
                                                             viewport_scope.max_width().0;
                                                         let viewport_height =
                                                             viewport_scope.max_height().0;
-                                                        let vss = viewport_scroll_state.clone();
+                                                        let vss = viewport_scroll_state;
                                                         // Overlay container: the scrollable body
                                                         // (header + workspace) with the pinned
                                                         // collapsed bar stacked on top.
@@ -562,17 +565,16 @@ fn App() {
                                                             {
                                                                 let fields = fields.clone();
                                                                 let session = session.clone();
-                                                                let vss = vss.clone();
                                                                 move || {
                                                                     let fields = fields.clone();
                                                                     let session = session.clone();
-                                                                    let vss = vss.clone();
+                                                                    let vss = vss;
                                                                     ComposeBox(
                                                                         workspace_viewport_modifier(
                                                                             Modifier::empty()
                                                                                 .fill_max_size(),
                                                                             theme,
-                                                                            vss.clone(),
+                                                                            vss,
                                                                             viewport_width,
                                                                             viewport_height,
                                                                         ),
@@ -582,14 +584,13 @@ fn App() {
                                                                                 fields.clone();
                                                                             let session =
                                                                                 session.clone();
-                                                                            let vss = vss.clone();
                                                                             move || {
                                                                                 let fields =
                                                                                     fields.clone();
                                                                                 let session =
                                                                                     session.clone();
                                                                                 Column(
-                                                                                    Modifier::empty().fill_max_width().vertical_scroll(vss.clone(), false).padding_each(0.0, 4.0, 0.0, 0.0),
+                                                                                    Modifier::empty().fill_max_width().vertical_scroll(vss, false).padding_each(0.0, 4.0, 0.0, 0.0),
                                                                                     ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(18.0)),
                                                                                     move || {
                                                                                         let fields = fields.clone();
@@ -623,7 +624,7 @@ fn App() {
                                                                         actions,
                                                                         preview_state,
                                                                         theme,
-                                                                        vss.clone(),
+                                                                        vss,
                                                                         header_height,
                                                                     );
                                                                 }
@@ -1551,7 +1552,7 @@ fn FireBorderOverlay(corner_radius: f32, height: f32) {
 /// recompose is confined to this one leaf; the rest of the tree is untouched.
 #[composable]
 fn AnimationPump() {
-    let tick = useState(|| 0u64);
+    let tick = rememberMutableStateOf(|| 0u64);
     // Read the tick so this scope subscribes and recomposes when it changes.
     let _ = tick.value();
     cranpose_core::LaunchedEffectAsync!((), move |scope| {
@@ -1591,7 +1592,7 @@ fn hero_fire_glow(
     theme: ThemeMode,
 ) {
     let _ = content_height;
-    let button_h = useState(|| 0.0f32);
+    let button_h = rememberMutableStateOf(|| 0.0f32);
     ComposeBox(
         Modifier::empty().fill_max_width(),
         BoxSpec::default().content_alignment(Alignment::TOP_START),
@@ -1797,9 +1798,9 @@ fn InteractiveQueuePanel(
         return;
     }
 
-    let scroll_state = remember(|| ScrollState::new(0.0)).with(|state| state.clone());
-    let scroll_retry = useState(|| 0u64);
-    let last_auto_scroll_key = useState(|| None::<String>);
+    let scroll_state = remember(|| ScrollState::new(0.0)).with(|state| *state);
+    let scroll_retry = rememberMutableStateOf(|| 0u64);
+    let last_auto_scroll_key = rememberMutableStateOf(|| None::<String>);
     glass_panel(Modifier::empty().fill_max_width(), theme, 14.0, 10.0, {
         let fields = fields.clone();
         move || {
@@ -1815,7 +1816,7 @@ fn InteractiveQueuePanel(
                         &current_queue,
                         active_queue_target.value().as_deref(),
                     );
-                    let scroll_state = scroll_state.clone();
+                    let scroll_state = scroll_state;
                     move || {
                         Text(
                             "Saved Queue (replays on launch)",
@@ -1827,7 +1828,7 @@ fn InteractiveQueuePanel(
                             let row_queue = queue.clone();
                             let row_current_queue = current_queue.clone();
                             let selected_key = selected_key.clone();
-                            let scroll_state = scroll_state.clone();
+                            let scroll_state = scroll_state;
                             move |scope| {
                                 let viewport_width = scope.max_width().0;
                                 let selected_index = selected_key
@@ -1842,7 +1843,7 @@ fn InteractiveQueuePanel(
                                     scroll_retry.value(),
                                 );
                                 cranpose_core::LaunchedEffect!(scroll_effect_key, {
-                                    let scroll_state = scroll_state.clone();
+                                    let scroll_state = scroll_state;
                                     let selected_key = selected_key_for_effect.clone();
                                     move |scope| {
                                         let Some(selected_key) = selected_key.clone() else {
@@ -1887,7 +1888,7 @@ fn InteractiveQueuePanel(
                                         .fill_max_width()
                                         .height(60.0)
                                         .clip_to_bounds()
-                                        .horizontal_scroll(scroll_state.clone(), false),
+                                        .horizontal_scroll(scroll_state, false),
                                     RowSpec::default()
                                         .horizontal_arrangement(LinearArrangement::spaced_by(
                                             INTERACTIVE_QUEUE_CHIP_GAP,
@@ -2005,24 +2006,23 @@ fn SessionQueuePanel(actions: ActionStates, theme: ThemeMode) {
     } = actions;
     let session_queue = ui_preferences.value().interactive_queue().to_vec();
     // Shared drag state: Some((dragged_index, horizontal_offset_px)).
-    let drag = useState(|| None::<(usize, f32)>);
+    let drag = rememberMutableStateOf(|| None::<(usize, f32)>);
     let stride = SESSION_CHIP_W + INTERACTIVE_QUEUE_CHIP_GAP;
     // Horizontal scroll for long queues. The scroll modifier's own gesture is
     // disabled (guard returns false); we drive the offset ourselves from the one
     // pointer handler so wheel-pan and drag-reorder never fight each other.
-    let scroll_state = remember(|| ScrollState::new(0.0)).with(|state| state.clone());
+    let scroll_state = remember(|| ScrollState::new(0.0)).with(|state| *state);
     glass_panel(Modifier::empty().fill_max_width(), theme, 14.0, 10.0, {
         let session_queue = session_queue.clone();
-        let scroll_state = scroll_state.clone();
         move || {
             let session_queue = session_queue.clone();
-            let scroll_state = scroll_state.clone();
+            let scroll_state = scroll_state;
             Column(
                 Modifier::empty().fill_max_width(),
                 ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(9.0)),
                 move || {
                     let session_queue = session_queue.clone();
-                    let scroll_state = scroll_state.clone();
+                    let scroll_state = scroll_state;
                     Row(
                         Modifier::empty().fill_max_width(),
                         RowSpec::default()
@@ -2056,9 +2056,8 @@ fn SessionQueuePanel(actions: ActionStates, theme: ThemeMode) {
                                 .height(48.0)
                                 .clip_to_bounds()
                                 .pointer_input(len, {
-                                    let scroll_state = scroll_state.clone();
                                     move |scope: PointerInputScope| {
-                                        let scroll_state = scroll_state.clone();
+                                        let scroll_state = scroll_state;
                                         async move {
                                             scope
                                                 .await_pointer_event_scope(
@@ -2164,17 +2163,30 @@ fn SessionQueuePanel(actions: ActionStates, theme: ThemeMode) {
                             BoxSpec::default(),
                             {
                                 let session_queue = session_queue.clone();
-                                let scroll_state = scroll_state.clone();
                                 move || {
                                     let session_queue = session_queue.clone();
                                     Row(
                                         Modifier::empty()
                                             .fill_max_width()
-                                            .horizontal_scroll_guarded(
-                                                scroll_state.clone(),
-                                                false,
-                                                || false,
-                                            ),
+                                            // `horizontal_scroll_guarded(.., || false)` used to keep
+                                            // this Row's ScrollState-driven layout/clip/max-value
+                                            // tracking while permanently disabling the modifier's own
+                                            // pointer-driven drag/wheel gesture, so the single
+                                            // `pointer_input` above (drag-reorder + wheel-pan) was the
+                                            // only thing that ever called `scroll_state.scroll_to`.
+                                            // cranpose-ui 0.1.106 removed the guarded scroll variants
+                                            // (no caller inside the Cranpose repo itself) and kept no
+                                            // public equivalent — `horizontal_scroll`/`vertical_scroll`
+                                            // always attach their built-in gesture, and there is no
+                                            // public way to get the layout/measurement side alone.
+                                            // Falling back to plain `horizontal_scroll` here is
+                                            // therefore not behavior-preserving: this Row can now also
+                                            // react to raw drags as a scroll gesture, competing with
+                                            // the reorder drag above exactly like the removed guard was
+                                            // written to prevent. No equivalent exists upstream as of
+                                            // 0.1.106; needs manual on-device verification of
+                                            // drag-reorder vs. drag-to-scroll before this ships.
+                                            .horizontal_scroll(scroll_state, false),
                                         RowSpec::default()
                                             .horizontal_arrangement(LinearArrangement::spaced_by(
                                                 INTERACTIVE_QUEUE_CHIP_GAP,
@@ -2632,7 +2644,7 @@ fn glow_grid_button(
     actions: ActionStates,
     theme: ThemeMode,
 ) {
-    let button_h = useState(|| 0.0f32);
+    let button_h = rememberMutableStateOf(|| 0.0f32);
     // The WEIGHTED element is this outer ComposeBox, which participates in the
     // Row's weight distribution just like the non-glow buttons (which use
     // `.weight(1.0)`). The flame is a transparent overlay stacked on top of the
@@ -2851,23 +2863,23 @@ fn parse_field_queue_key(item_key: &str) -> Option<(EditorFieldId, FieldQueueCom
 
 fn field_state(fields: &EditorFields, field: EditorFieldId) -> TextFieldState {
     match field {
-        EditorFieldId::Date => fields.date.clone(),
-        EditorFieldId::ProblemTitle => fields.problem_title.clone(),
-        EditorFieldId::ProblemUrl => fields.problem_url.clone(),
-        EditorFieldId::Difficulty => fields.difficulty.clone(),
-        EditorFieldId::SubstackUrl => fields.substack_url.clone(),
-        EditorFieldId::YoutubeUrl => fields.youtube_url.clone(),
-        EditorFieldId::ReferenceUrl => fields.reference_url.clone(),
-        EditorFieldId::TelegramText => fields.telegram_text.clone(),
-        EditorFieldId::ProblemTldr => fields.problem_tldr.clone(),
-        EditorFieldId::Intuition => fields.intuition.clone(),
-        EditorFieldId::Approach => fields.approach.clone(),
-        EditorFieldId::TimeComplexity => fields.time_complexity.clone(),
-        EditorFieldId::SpaceComplexity => fields.space_complexity.clone(),
-        EditorFieldId::KotlinRuntimeMs => fields.kotlin_runtime_ms.clone(),
-        EditorFieldId::KotlinCode => fields.kotlin_code.clone(),
-        EditorFieldId::RustRuntimeMs => fields.rust_runtime_ms.clone(),
-        EditorFieldId::RustCode => fields.rust_code.clone(),
+        EditorFieldId::Date => fields.date,
+        EditorFieldId::ProblemTitle => fields.problem_title,
+        EditorFieldId::ProblemUrl => fields.problem_url,
+        EditorFieldId::Difficulty => fields.difficulty,
+        EditorFieldId::SubstackUrl => fields.substack_url,
+        EditorFieldId::YoutubeUrl => fields.youtube_url,
+        EditorFieldId::ReferenceUrl => fields.reference_url,
+        EditorFieldId::TelegramText => fields.telegram_text,
+        EditorFieldId::ProblemTldr => fields.problem_tldr,
+        EditorFieldId::Intuition => fields.intuition,
+        EditorFieldId::Approach => fields.approach,
+        EditorFieldId::TimeComplexity => fields.time_complexity,
+        EditorFieldId::SpaceComplexity => fields.space_complexity,
+        EditorFieldId::KotlinRuntimeMs => fields.kotlin_runtime_ms,
+        EditorFieldId::KotlinCode => fields.kotlin_code,
+        EditorFieldId::RustRuntimeMs => fields.rust_runtime_ms,
+        EditorFieldId::RustCode => fields.rust_code,
     }
 }
 
@@ -3516,6 +3528,7 @@ fn ProblemMetaCard(
 }
 
 #[composable]
+#[allow(clippy::too_many_arguments)]
 fn MetaFieldColumn(
     field_ids: Vec<EditorFieldId>,
     fields: EditorFields,
@@ -3709,7 +3722,7 @@ fn glow_field_wrap(
     ui_preferences: MutableState<UiPreferences>,
     theme: ThemeMode,
 ) {
-    let field_h = useState(|| 0.0f32);
+    let field_h = rememberMutableStateOf(|| 0.0f32);
     ComposeBox(
         Modifier::empty().fill_max_width(),
         BoxSpec::default().content_alignment(Alignment::TOP_START),
@@ -3769,7 +3782,7 @@ fn DifficultyField(
             .padding_symmetric(12.0, 10.0),
         BoxSpec::default(),
         move || {
-            let state = state.clone();
+            let state = state;
             let selected = selected.clone();
             Row(
                 icon_overlay_modifier(
@@ -3783,7 +3796,7 @@ fn DifficultyField(
                 RowSpec::default().horizontal_arrangement(LinearArrangement::spaced_by(16.0)),
                 move || {
                     Spacer(Size::new(44.0, 0.0));
-                    let state = state.clone();
+                    let state = state;
                     let selected = selected.clone();
                     Column(
                         Modifier::empty().weight(1.0),
@@ -3795,7 +3808,7 @@ fn DifficultyField(
                                 Modifier::empty(),
                                 label_style(theme, is_changed),
                             );
-                            let state = state.clone();
+                            let state = state;
                             let selected = selected.clone();
                             Row(
                                 Modifier::empty().fill_max_width(),
@@ -3807,7 +3820,7 @@ fn DifficultyField(
                                             label,
                                             value,
                                             selected == value,
-                                            state.clone(),
+                                            state,
                                             status,
                                             theme,
                                         );
@@ -5462,7 +5475,7 @@ fn labeled_field(
     let current_text = state.text();
     track_field_interaction(field_id, current_text.clone(), ui_preferences);
     if field_is_numeric(field_id) {
-        enforce_numeric_input(state.clone(), current_text.clone());
+        enforce_numeric_input(state, current_text.clone());
     }
     let is_changed = current_text != saved_text;
     let icon = UiIcon::for_field_id(field_id);
@@ -5487,7 +5500,7 @@ fn labeled_field(
             .padding_symmetric(12.0, 10.0),
         BoxSpec::default(),
         move || {
-            let state = state.clone();
+            let state = state;
             let input_box_modifier = input_box_modifier.clone();
             let text_style = text_style.clone();
             Row(
@@ -5502,7 +5515,7 @@ fn labeled_field(
                 RowSpec::default().horizontal_arrangement(LinearArrangement::spaced_by(16.0)),
                 move || {
                     Spacer(Size::new(44.0, 0.0));
-                    let field_state = state.clone();
+                    let field_state = state;
                     let input_box_modifier = input_box_modifier.clone();
                     let text_style = text_style.clone();
                     Column(
@@ -5510,17 +5523,16 @@ fn labeled_field(
                         ColumnSpec::default()
                             .vertical_arrangement(LinearArrangement::spaced_by(6.0)),
                         {
-                            let field_state = field_state.clone();
                             move || {
                                 Text(label, Modifier::empty(), label_style(theme, is_changed));
-                                let field_state = field_state.clone();
+                                let field_state = field_state;
                                 let text_style = text_style.clone();
                                 ComposeBox(
                                     input_box_modifier.clone(),
                                     BoxSpec::default(),
                                     move || {
                                         BasicTextFieldWithOptions(
-                                            field_state.clone(),
+                                            field_state,
                                             Modifier::empty().fill_max_width(),
                                             BasicTextFieldOptions {
                                                 text_style: text_style.clone(),
@@ -5543,7 +5555,7 @@ fn labeled_field(
                     field_action_buttons(
                         label,
                         field_id,
-                        state.clone(),
+                        state,
                         status,
                         allow_paste,
                         ui_preferences,
@@ -5569,10 +5581,9 @@ fn field_action_buttons(
         Modifier::empty(),
         RowSpec::default().horizontal_arrangement(LinearArrangement::spaced_by(10.0)),
         {
-            let state = state.clone();
             move || {
                 if allow_paste {
-                    let paste_state = state.clone();
+                    let paste_state = state;
                     let paste_status = status;
                     subtle_button(
                         "Paste".to_string(),
@@ -5580,12 +5591,12 @@ fn field_action_buttons(
                         ui_preferences,
                         theme,
                         move || {
-                            paste_text_from_clipboard(paste_state.clone(), paste_status, label);
+                            paste_text_from_clipboard(paste_state, paste_status, label);
                         },
                     );
                 }
 
-                let clear_state = state.clone();
+                let clear_state = state;
                 let clear_status = status;
                 subtle_button(
                     "Clear".to_string(),
@@ -5593,7 +5604,7 @@ fn field_action_buttons(
                     ui_preferences,
                     theme,
                     move || {
-                        clear_field(clear_state.clone(), clear_status, label);
+                        clear_field(clear_state, clear_status, label);
                     },
                 );
             }
@@ -5607,7 +5618,7 @@ fn track_field_interaction(
     current_text: String,
     ui_preferences: MutableState<UiPreferences>,
 ) {
-    let last_text = useState(|| current_text.clone());
+    let last_text = rememberMutableStateOf(|| current_text.clone());
     cranpose_core::LaunchedEffect!(current_text.clone(), {
         let current_text = current_text.clone();
         let component_key = format!("field.{field_id}");
