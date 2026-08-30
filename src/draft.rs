@@ -1318,8 +1318,10 @@ mod tests {
 
     #[test]
     fn youtube_template_spells_out_angle_brackets() {
-        let mut draft = PostDraft::default();
-        draft.approach = "keep if a < b and b > c".to_string();
+        let draft = PostDraft {
+            approach: "keep if a < b and b > c".to_string(),
+            ..Default::default()
+        };
 
         let youtube = draft.youtube_template();
         assert!(!youtube.contains('<'));
