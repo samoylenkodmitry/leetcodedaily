@@ -453,7 +453,7 @@ fn App() {
     )
     .field;
 
-    cranpose_core::LaunchedEffect!(queue_reset_done.value(), {
+    cranpose_core::LaunchedEffect(queue_reset_done.value(), {
         move |_scope| {
             if queue_reset_done.value() {
                 return;
@@ -476,7 +476,7 @@ fn App() {
     // frame, which keeps the loop hot so every flame keeps animating.
     AnimationPump();
 
-    cranpose_core::LaunchedEffect!(current_draft.clone(), {
+    cranpose_core::LaunchedEffect(current_draft.clone(), {
         let draft = current_draft.clone();
         move |_scope| {
             if let Err(error) = persist_autosave(&draft) {
@@ -485,7 +485,7 @@ fn App() {
         }
     });
 
-    cranpose_core::LaunchedEffect!(queued_action.clone(), {
+    cranpose_core::LaunchedEffect(queued_action.clone(), {
         let fields = fields.clone();
         move |scope| {
             let Some(action) = queued_action.clone() else {
@@ -1555,7 +1555,7 @@ fn AnimationPump() {
     let tick = rememberMutableStateOf(|| 0u64);
     // Read the tick so this scope subscribes and recomposes when it changes.
     let _ = tick.value();
-    cranpose_core::LaunchedEffectAsync!((), move |scope| {
+    cranpose_core::LaunchedEffectAsync((), move |scope| {
         Box::pin(async move {
             let clock = scope.runtime().frame_clock();
             let mut n = 0u64;
@@ -1842,7 +1842,7 @@ fn InteractiveQueuePanel(
                                     (max_scroll_probe * 10.0).round() as i32,
                                     scroll_retry.value(),
                                 );
-                                cranpose_core::LaunchedEffect!(scroll_effect_key, {
+                                cranpose_core::LaunchedEffect(scroll_effect_key, {
                                     let scroll_state = scroll_state;
                                     let selected_key = selected_key_for_effect.clone();
                                     move |scope| {
@@ -5619,7 +5619,7 @@ fn track_field_interaction(
     ui_preferences: MutableState<UiPreferences>,
 ) {
     let last_text = rememberMutableStateOf(|| current_text.clone());
-    cranpose_core::LaunchedEffect!(current_text.clone(), {
+    cranpose_core::LaunchedEffect(current_text.clone(), {
         let current_text = current_text.clone();
         let component_key = format!("field.{field_id}");
         move |_scope| {
@@ -5641,7 +5641,7 @@ fn field_is_numeric(field_id: &str) -> bool {
 /// field, so runtime (ms) inputs can only ever hold a plain number.
 #[composable]
 fn enforce_numeric_input(state: TextFieldState, current_text: String) {
-    cranpose_core::LaunchedEffect!(current_text.clone(), {
+    cranpose_core::LaunchedEffect(current_text.clone(), {
         let current_text = current_text.clone();
         move |_scope| {
             let filtered: String = current_text.chars().filter(char::is_ascii_digit).collect();
