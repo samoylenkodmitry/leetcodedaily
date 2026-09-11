@@ -1,6 +1,6 @@
 [package]
 name = "leetcodedaily"
-version = "0.1.49"
+version = "0.1.50"
 edition = "2024"
 
 [lib]
@@ -10,24 +10,29 @@ crate-type = ["rlib", "cdylib"]
 ab_glyph = "0.2.32"
 anyhow = "1.0.104"
 chrono = "0.4.45"
-# Cranpose is pinned to =0.1.117: 0.1.116 (render refactor, Cranpose#617)
-# renders only the background gradient — the whole UI is missing, on both the
-# headless robot and a live window. Exact pins keep the broken 0.1.116 out of
-# the subtree too, since cranpose 0.1.117 accepts ^0.1.117 for its siblings.
-cranpose-animation = "=0.1.117"
-cranpose-core = "=0.1.117"
-cranpose-foundation = "=0.1.117"
+# Exact pins across every Cranpose crate. The framework is pre-alpha and
+# states no compatibility policy, so a caret range can mix one crate from this
+# release with a sibling from the next and break at link time rather than at
+# resolve time. Move them together or not at all.
+#
+# The blank window that first forced these pins (Cranpose#634, the whole UI
+# missing behind the background gradient) is fixed in 0.1.118: a layer whose
+# content outgrew the surface budget was dropped whole instead of falling back
+# to its own box.
+cranpose-animation = "=0.1.118"
+cranpose-core = "=0.1.118"
+cranpose-foundation = "=0.1.118"
 image = "0.25.10"
 imageproc = "0.27.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 arboard = "3.6.1"
 base64 = "0.23.1"
-cranpose = { version = "=0.1.117", default-features = false, features = ["desktop", "renderer-wgpu", "robot"] }
+cranpose = { version = "=0.1.118", default-features = false, features = ["desktop", "renderer-wgpu", "robot"] }
 webp = "0.3.1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-cranpose = { version = "=0.1.117", default-features = false, features = ["web", "renderer-wgpu"] }
+cranpose = { version = "=0.1.118", default-features = false, features = ["web", "renderer-wgpu"] }
 # Cranpose pulls getrandom 0.3 through ahash; browser wasm needs its JS backend.
 # Keep this on the 0.3 line: it exists to configure *that* copy, not the 0.4 one.
 getrandom = { version = "0.3.4", features = ["wasm_js"] }
