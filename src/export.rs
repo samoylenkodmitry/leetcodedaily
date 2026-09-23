@@ -47,7 +47,7 @@ pub struct PreviewFrame {
     pub pixels: Vec<u8>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct PreviewState {
     pub bitmap: ImageBitmap,
     pub last_saved_webp_path: Option<String>,

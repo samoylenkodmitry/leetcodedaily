@@ -3,7 +3,6 @@ use anyhow::{Context, Result, anyhow};
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 const DEFAULT_BLOG_REPO: &str = "/home/s/develop/projects/s-a--m.github.io";
@@ -213,7 +212,7 @@ fn image_relative_path(draft: &PostDraft) -> String {
 }
 
 fn git<const N: usize>(repo: &Path, args: [&str; N]) -> Result<String> {
-    let output = Command::new("git")
+    let output = cranpose::windowless_command("git")
         .arg("-C")
         .arg(repo)
         .args(args)
@@ -235,7 +234,7 @@ fn git<const N: usize>(repo: &Path, args: [&str; N]) -> Result<String> {
 }
 
 fn git_quiet<const N: usize>(repo: &Path, args: [&str; N]) -> Result<bool> {
-    let output = Command::new("git")
+    let output = cranpose::windowless_command("git")
         .arg("-C")
         .arg(repo)
         .args(args)
