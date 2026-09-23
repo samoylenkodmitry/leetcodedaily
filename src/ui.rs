@@ -44,7 +44,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Command,
 };
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsValue;
@@ -6060,7 +6059,7 @@ fn post_telegram_comment_result(
 #[cfg(not(target_arch = "wasm32"))]
 fn run_telegram_channel_script(draft: &PostDraft, webp_path: &str) -> Result<String> {
     let script_path = telegram_script_path("telegram_post_channel.py")?;
-    let output = Command::new("python3")
+    let output = cranpose::windowless_command("python3")
         .arg(script_path)
         .arg("--date")
         .arg(draft.date_or_placeholder())
@@ -6091,7 +6090,7 @@ fn run_telegram_comment_script(draft: &PostDraft, post_link: &str) -> Result<Str
         .with_context(|| format!("writing Telegram comment body {}", body_path.display()))?;
 
     let result = (|| {
-        let mut command = Command::new("python3");
+        let mut command = cranpose::windowless_command("python3");
         command.arg(script_path).arg("--body-file").arg(&body_path);
         if !post_link.trim().is_empty() {
             command.arg("--post-link").arg(post_link.trim());
