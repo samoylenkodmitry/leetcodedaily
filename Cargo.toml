@@ -1,6 +1,6 @@
 [package]
 name = "leetcodedaily"
-version = "0.1.54"
+version = "0.1.55"
 edition = "2024"
 
 [lib]
@@ -19,20 +19,20 @@ chrono = "0.4.45"
 # missing behind the background gradient) is fixed in 0.1.118: a layer whose
 # content outgrew the surface budget was dropped whole instead of falling back
 # to its own box.
-cranpose-animation = "=0.1.154"
-cranpose-core = "=0.1.154"
-cranpose-foundation = "=0.1.154"
+cranpose-animation = "=0.1.158"
+cranpose-core = "=0.1.158"
+cranpose-foundation = "=0.1.158"
 image = "0.25.10"
 imageproc = "0.27.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 arboard = "3.6.1"
 base64 = "0.23.1"
-cranpose = { version = "=0.1.154", default-features = false, features = ["desktop", "renderer-wgpu", "robot"] }
+cranpose = { version = "=0.1.158", default-features = false, features = ["desktop", "renderer-wgpu", "robot"] }
 webp = "0.3.1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-cranpose = { version = "=0.1.154", default-features = false, features = ["web", "renderer-wgpu"] }
+cranpose = { version = "=0.1.158", default-features = false, features = ["web", "renderer-wgpu"] }
 # Cranpose pulls getrandom 0.3 through ahash; browser wasm needs its JS backend.
 # Keep this on the 0.3 line: it exists to configure *that* copy, not the 0.4 one.
 getrandom = { version = "0.3.4", features = ["wasm_js"] }
