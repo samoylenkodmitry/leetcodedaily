@@ -322,7 +322,7 @@ pub async fn run_web() -> Result<(), wasm_bindgen::JsValue> {
         .await
 }
 
-fn launcher_with_size(width: u32, height: u32) -> AppLauncher {
+fn launcher_with_size(width: u32, height: u32) -> AppLauncher<cranpose::AppFonts> {
     AppLauncher::new()
         .with_title("LeetCode Daily Composer")
         .with_size(width, height)
@@ -812,7 +812,8 @@ fn ActionsCard(
                     Row(
                         Modifier::empty().fill_max_width(),
                         RowSpec::default()
-                            .horizontal_arrangement(LinearArrangement::spaced_by(18.0)),
+                            .horizontal_arrangement(LinearArrangement::spaced_by(18.0))
+                            .vertical_alignment(VerticalAlignment::CenterVertically),
                         {
                             let fields = fields.clone();
                             let session = session.clone();
@@ -1083,7 +1084,9 @@ fn HeaderBar(
 fn HeaderTitle(autosave_destination: String, theme: ThemeMode, compact: bool) {
     Row(
         Modifier::empty(),
-        RowSpec::default().horizontal_arrangement(LinearArrangement::spaced_by(18.0)),
+        RowSpec::default()
+            .horizontal_arrangement(LinearArrangement::spaced_by(18.0))
+            .vertical_alignment(VerticalAlignment::CenterVertically),
         move || {
             let autosave_destination = autosave_destination.clone();
             AppLogo();
@@ -1160,7 +1163,9 @@ fn StatusStrip(message: String, theme: ThemeMode) {
             let message = message.clone();
             Row(
                 Modifier::empty().fill_max_width(),
-                RowSpec::default().horizontal_arrangement(LinearArrangement::spaced_by(10.0)),
+                RowSpec::default()
+                    .horizontal_arrangement(LinearArrangement::spaced_by(10.0))
+                    .vertical_alignment(VerticalAlignment::CenterVertically),
                 move || {
                     StatusDot(true, theme);
                     BasicText(
@@ -1656,7 +1661,9 @@ fn NextWorkPanel(
         move || {
             Row(
                 Modifier::empty().fill_max_width(),
-                RowSpec::default().horizontal_arrangement(LinearArrangement::spaced_by(18.0)),
+                RowSpec::default()
+                    .horizontal_arrangement(LinearArrangement::spaced_by(18.0))
+                    .vertical_alignment(VerticalAlignment::CenterVertically),
                 {
                     let fields = fields.clone();
                     let row_title = title.clone();
@@ -1683,38 +1690,31 @@ fn NextWorkPanel(
                                             let skip_key = skip_key.clone();
                                             let skip_label = title.clone();
                                             move || {
-                                                Text(
-                                                    "Now",
+                                                // The eyebrow sits above the stage so
+                                                // the Skip button keeps its width in the
+                                                // narrow column beside the artwork.
+                                                Column(
                                                     Modifier::empty(),
-                                                    eyebrow_style(theme),
-                                                );
-                                                Row(
-                                                    Modifier::empty(),
-                                                    RowSpec::default()
-                                                        .horizontal_arrangement(
-                                                            LinearArrangement::spaced_by(10.0),
-                                                        )
-                                                        .vertical_alignment(
-                                                            VerticalAlignment::CenterVertically,
-                                                        ),
-                                                    {
-                                                        let skip_key = skip_key.clone();
-                                                        let skip_label = skip_label.clone();
-                                                        move || {
-                                                            Text(
-                                                                next_item.stage().label(),
-                                                                Modifier::empty(),
-                                                                stage_label_style(theme),
-                                                            );
-                                                            skip_work_button(
-                                                                skip_key.clone(),
-                                                                skip_label.clone(),
-                                                                skipped_queue,
-                                                                status,
-                                                                theme,
-                                                            );
-                                                        }
+                                                    ColumnSpec::default(),
+                                                    move || {
+                                                        Text(
+                                                            "Now",
+                                                            Modifier::empty(),
+                                                            eyebrow_style(theme),
+                                                        );
+                                                        Text(
+                                                            next_item.stage().label(),
+                                                            Modifier::empty(),
+                                                            stage_label_style(theme),
+                                                        );
                                                     },
+                                                );
+                                                skip_work_button(
+                                                    skip_key.clone(),
+                                                    skip_label.clone(),
+                                                    skipped_queue,
+                                                    status,
+                                                    theme,
                                                 );
                                             }
                                         },
@@ -2527,7 +2527,9 @@ fn interactive_queue_content(
             theme,
             busy,
         ),
-        RowSpec::default().horizontal_arrangement(LinearArrangement::spaced_by(5.0)),
+        RowSpec::default()
+            .horizontal_arrangement(LinearArrangement::spaced_by(5.0))
+            .vertical_alignment(VerticalAlignment::CenterVertically),
         move || {
             Spacer(Size::new(icon_size, 0.0));
             BasicText(
@@ -2579,7 +2581,8 @@ fn ActionButtons(
                             Row(
                                 Modifier::empty().fill_max_width(),
                                 RowSpec::default()
-                                    .horizontal_arrangement(LinearArrangement::spaced_by(12.0)),
+                                    .horizontal_arrangement(LinearArrangement::spaced_by(12.0))
+                                    .vertical_alignment(VerticalAlignment::CenterVertically),
                                 move || {
                                     let fields = fields.clone();
                                     ForEach(&row_actions, move |action| {
@@ -3480,7 +3483,8 @@ fn ProblemMetaCard(
                             Row(
                                 Modifier::empty().fill_max_width(),
                                 RowSpec::default()
-                                    .horizontal_arrangement(LinearArrangement::spaced_by(18.0)),
+                                    .horizontal_arrangement(LinearArrangement::spaced_by(18.0))
+                                    .vertical_alignment(VerticalAlignment::CenterVertically),
                                 {
                                     let fields = fields.clone();
                                     let saved_draft = saved_draft.clone();
@@ -3792,7 +3796,9 @@ fn DifficultyField(
                     theme,
                     false,
                 ),
-                RowSpec::default().horizontal_arrangement(LinearArrangement::spaced_by(16.0)),
+                RowSpec::default()
+                    .horizontal_arrangement(LinearArrangement::spaced_by(16.0))
+                    .vertical_alignment(VerticalAlignment::CenterVertically),
                 move || {
                     Spacer(Size::new(44.0, 0.0));
                     let state = state;
@@ -3812,7 +3818,8 @@ fn DifficultyField(
                             Row(
                                 Modifier::empty().fill_max_width(),
                                 RowSpec::default()
-                                    .horizontal_arrangement(LinearArrangement::spaced_by(8.0)),
+                                    .horizontal_arrangement(LinearArrangement::spaced_by(8.0))
+                                    .vertical_alignment(VerticalAlignment::CenterVertically),
                                 move || {
                                     for (label, value) in DIFFICULTY_OPTIONS {
                                         DifficultySegment(
@@ -4688,7 +4695,9 @@ fn AppLogo() {
 fn SectionHeader(title: &'static str, icon: UiIcon, theme: ThemeMode) {
     Row(
         icon_overlay_modifier(Modifier::empty(), icon, 24.0, 0.0, theme, false),
-        RowSpec::default().horizontal_arrangement(LinearArrangement::spaced_by(10.0)),
+        RowSpec::default()
+            .horizontal_arrangement(LinearArrangement::spaced_by(10.0))
+            .vertical_alignment(VerticalAlignment::CenterVertically),
         move || {
             Spacer(Size::new(24.0, 0.0));
             Text(title, Modifier::empty(), heading_style(24.0, theme));
@@ -4775,7 +4784,9 @@ fn FieldSuggestion(
         move || {
             Row(
                 icon_overlay_modifier(Modifier::empty(), icon, 24.0, 0.0, theme, false),
-                RowSpec::default().horizontal_arrangement(LinearArrangement::spaced_by(9.0)),
+                RowSpec::default()
+                    .horizontal_arrangement(LinearArrangement::spaced_by(9.0))
+                    .vertical_alignment(VerticalAlignment::CenterVertically),
                 move || {
                     Spacer(Size::new(24.0, 0.0));
                     Text(field.label(), Modifier::empty(), queue_text_style(theme));
@@ -5239,7 +5250,9 @@ fn theme_button(label: String, theme: ThemeMode, on_click: impl FnMut() + 'stati
             let label = label.clone();
             Row(
                 icon_overlay_modifier(Modifier::empty(), UiIcon::Theme, 24.0, 0.0, theme, false),
-                RowSpec::default().horizontal_arrangement(LinearArrangement::spaced_by(8.0)),
+                RowSpec::default()
+                    .horizontal_arrangement(LinearArrangement::spaced_by(8.0))
+                    .vertical_alignment(VerticalAlignment::CenterVertically),
                 move || {
                     Spacer(Size::new(24.0, 0.0));
                     Text(
@@ -5320,7 +5333,9 @@ fn button_content(
     };
     Row(
         icon_overlay_modifier(row_modifier, icon, icon_size, 0.0, theme, busy),
-        RowSpec::default().horizontal_arrangement(LinearArrangement::spaced_by(4.0)),
+        RowSpec::default()
+            .horizontal_arrangement(LinearArrangement::spaced_by(4.0))
+            .vertical_alignment(VerticalAlignment::CenterVertically),
         move || {
             let label = label.clone();
             Spacer(Size::new(icon_size, 0.0));
@@ -5511,7 +5526,9 @@ fn labeled_field(
                     theme,
                     false,
                 ),
-                RowSpec::default().horizontal_arrangement(LinearArrangement::spaced_by(16.0)),
+                RowSpec::default()
+                    .horizontal_arrangement(LinearArrangement::spaced_by(16.0))
+                    .vertical_alignment(VerticalAlignment::CenterVertically),
                 move || {
                     Spacer(Size::new(44.0, 0.0));
                     let field_state = state;
@@ -5578,7 +5595,9 @@ fn field_action_buttons(
 ) {
     Row(
         Modifier::empty(),
-        RowSpec::default().horizontal_arrangement(LinearArrangement::spaced_by(10.0)),
+        RowSpec::default()
+            .horizontal_arrangement(LinearArrangement::spaced_by(10.0))
+            .vertical_alignment(VerticalAlignment::CenterVertically),
         {
             move || {
                 if allow_paste {
