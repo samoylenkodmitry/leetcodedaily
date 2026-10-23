@@ -611,7 +611,7 @@ fn App() {
                                                                                             },
                                                                                         );
                                                                                         GuidedWorkspace(fields.clone(), previews, session.clone(), actions, theme, compact, current_field);
-                                                                                        Spacer(Size::new(0.0, 86.0));
+                                                                                        Spacer(Modifier::empty().size_points(0.0, 86.0));
                                                                                     },
                                                                                 );
                                                                             }
@@ -670,7 +670,7 @@ fn GuidedWorkspace(
         theme,
         current_field,
     );
-    Spacer(Size::new(0.0, 82.0));
+    Spacer(Modifier::empty().size_points(0.0, 82.0));
     CodeCard(fields, session, actions, theme, current_field);
     PreviewCard(previews.preview_state, previews.preview_loading, theme);
 }
@@ -2531,7 +2531,7 @@ fn interactive_queue_content(
             .horizontal_arrangement(LinearArrangement::spaced_by(5.0))
             .vertical_alignment(VerticalAlignment::CenterVertically),
         move || {
-            Spacer(Size::new(icon_size, 0.0));
+            Spacer(Modifier::empty().size_points(icon_size, 0.0));
             BasicText(
                 label.clone(),
                 Modifier::empty().weight(1.0),
@@ -3800,7 +3800,7 @@ fn DifficultyField(
                     .horizontal_arrangement(LinearArrangement::spaced_by(16.0))
                     .vertical_alignment(VerticalAlignment::CenterVertically),
                 move || {
-                    Spacer(Size::new(44.0, 0.0));
+                    Spacer(Modifier::empty().size_points(44.0, 0.0));
                     let state = state;
                     let selected = selected.clone();
                     Column(
@@ -4699,7 +4699,7 @@ fn SectionHeader(title: &'static str, icon: UiIcon, theme: ThemeMode) {
             .horizontal_arrangement(LinearArrangement::spaced_by(10.0))
             .vertical_alignment(VerticalAlignment::CenterVertically),
         move || {
-            Spacer(Size::new(24.0, 0.0));
+            Spacer(Modifier::empty().size_points(24.0, 0.0));
             Text(title, Modifier::empty(), heading_style(24.0, theme));
         },
     );
@@ -4788,7 +4788,7 @@ fn FieldSuggestion(
                     .horizontal_arrangement(LinearArrangement::spaced_by(9.0))
                     .vertical_alignment(VerticalAlignment::CenterVertically),
                 move || {
-                    Spacer(Size::new(24.0, 0.0));
+                    Spacer(Modifier::empty().size_points(24.0, 0.0));
                     Text(field.label(), Modifier::empty(), queue_text_style(theme));
                 },
             );
@@ -5254,7 +5254,7 @@ fn theme_button(label: String, theme: ThemeMode, on_click: impl FnMut() + 'stati
                     .horizontal_arrangement(LinearArrangement::spaced_by(8.0))
                     .vertical_alignment(VerticalAlignment::CenterVertically),
                 move || {
-                    Spacer(Size::new(24.0, 0.0));
+                    Spacer(Modifier::empty().size_points(24.0, 0.0));
                     Text(
                         label.clone(),
                         Modifier::empty(),
@@ -5338,7 +5338,7 @@ fn button_content(
             .vertical_alignment(VerticalAlignment::CenterVertically),
         move || {
             let label = label.clone();
-            Spacer(Size::new(icon_size, 0.0));
+            Spacer(Modifier::empty().size_points(icon_size, 0.0));
             if expand_label {
                 BasicText(
                     label,
@@ -5530,7 +5530,7 @@ fn labeled_field(
                     .horizontal_arrangement(LinearArrangement::spaced_by(16.0))
                     .vertical_alignment(VerticalAlignment::CenterVertically),
                 move || {
-                    Spacer(Size::new(44.0, 0.0));
+                    Spacer(Modifier::empty().size_points(44.0, 0.0));
                     let field_state = state;
                     let input_box_modifier = input_box_modifier.clone();
                     let text_style = text_style.clone();
@@ -5561,6 +5561,7 @@ fn labeled_field(
                                                         max_lines,
                                                     }
                                                 },
+                                                ..Default::default()
                                             },
                                         );
                                     },
